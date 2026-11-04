@@ -1,0 +1,5 @@
+name: hearth
+version: 0.1.0
+description: Rooms where people and their own Hermes agents hang out together.
+provides_tools: []
+provides_hooks: []
