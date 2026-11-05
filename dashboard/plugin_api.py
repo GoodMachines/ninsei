@@ -35,7 +35,9 @@ async def _engine():
 async def _run(fn, *args, **kwargs) -> Any:
     eng = await _engine()
     try:
-        return await asyncio.wrap_future(eng.call(fn, *args, **kwargs))
+        # Shielded: if the browser goes away (a closed tab, a timeout), the route is cancelled but the
+        # engine's work finishes. Otherwise a game start would die after its questions were paid for.
+        return await asyncio.shield(asyncio.wrap_future(eng.call(fn, *args, **kwargs)))
     except (ValueError, KeyError) as e:
         raise HTTPException(status_code=400, detail=str(e).strip("'\""))
 

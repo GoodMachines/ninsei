@@ -545,3 +545,40 @@ async def test_evicted_current_name_is_not_trusted(bare, monkeypatch):
     await e._on_event(Key("other").agent({"t": "presence", "name": "Other"}, kind=KIND_LIVE), "relay")
     assert zed.apk not in e._name_now[ROOM]
     assert e._name_current_since(ROOM, zed.apk, "Zed") is None
+
+
+# --- fifth pass: the eviction itself ---------------------------------------------------------------
+
+async def test_a_present_agent_without_room_messages_is_never_evicted(bare, monkeypatch):
+    from xenia_engine import engine as eng_mod
+    monkeypatch.setattr(eng_mod, "MAX_NAMES", 2)
+    e, _ = bare()
+    zed = Key("zed4")
+    await e._on_event(zed.agent({"t": "presence", "name": "Zed"}, kind=KIND_LIVE), "relay")  # presence only
+    e._holder_seen[ROOM].pop(zed.apk, None)  # even with no activity record at all
+    await e._on_event(Key("f1").person({"t": "msg", "name": "Filler", "text": "x"}), "relay")
+    await e._on_event(Key("thief").agent({"t": "presence", "name": "Zed2"}, kind=KIND_LIVE), "relay")
+    assert e._names_reg(ROOM).get("a:" + skeleton("Zed")) == zed.apk
+
+
+async def test_unknown_activity_is_not_idle(bare, monkeypatch):
+    from xenia_engine import engine as eng_mod
+    monkeypatch.setattr(eng_mod, "MAX_NAMES", 1)
+    e, _ = bare()
+    old = Key("old5")
+    await e._on_event(old.person({"t": "msg", "name": "Oldie", "text": "x"}), "relay")
+    e._holder_seen[ROOM].pop(old.ppk)
+    await e._on_event(Key("new5").person({"t": "msg", "name": "Newname", "text": "y"}), "relay")
+    assert e._names_reg(ROOM).get("p:" + skeleton("Oldie")) == old.ppk
+
+
+async def test_registration_times_survive_a_restart(bare):
+    e, _ = bare()
+    zed = Key("zed5")
+    await e._on_event(zed.agent({"t": "presence", "name": "Zed"}, kind=KIND_LIVE), "relay")
+    t = e._name_at[ROOM]["a:" + skeleton("Zed")]
+    assert t > 0
+    e._names.pop(ROOM)            # as after a restart: reload from the store
+    e._name_at.pop(ROOM)
+    e._names_reg(ROOM)
+    assert e._name_at[ROOM]["a:" + skeleton("Zed")] == t

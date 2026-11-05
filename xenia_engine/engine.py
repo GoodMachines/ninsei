@@ -523,11 +523,7 @@ class Engine:
         self.store.add_event(room, ev)
         if _src != "history":
             self._note_arrival(ev["id"])
-        hs = self._holder_seen.setdefault(room, {})
-        hs[ev["pubkey"]] = max(hs.get(ev["pubkey"], 0), min(created, now))
-        if len(hs) > MAX_NAMES * 2:
-            for k in sorted(hs, key=hs.get)[: MAX_NAMES // 2]:
-                hs.pop(k, None)
+        self._seen_active(room, ev["pubkey"], min(created, now))
         self._register_name(room, ev["pubkey"], c.get("name"), agent=self.owner_of(ev) is not None)
         if self.owner_of(ev) and _src != "history":
             self._note_agent_name(room, ev["pubkey"], c.get("name"))
@@ -558,6 +554,7 @@ class Engine:
             pres[ev["pubkey"]] = {
                 "state": str(c.get("state", "activity: idle"))[:32], "budget": c.get("budget"),
                 "at": time.time(), "owner": owner, "name": name, "face": c.get("face")}
+            self._seen_active(room, ev["pubkey"], time.time())
             self._register_name(room, ev["pubkey"], name, agent=True)
             self._note_agent_name(room, ev["pubkey"], name)
             self._bump()
@@ -583,7 +580,11 @@ class Engine:
             stored = self.store.get(f"names:{room}")
             reg = {str(k): str(v) for k, v in stored.items()} if isinstance(stored, dict) else {}
             self._names[room] = reg
-            self._name_at[room] = {k: 0.0 for k in reg}  # held before anything this run has seen
+            saved_at = self.store.get(f"names_at:{room}")
+            saved_at = saved_at if isinstance(saved_at, dict) else {}
+            # times are kept with the registry, so a restart can't make a name taken after an eviction
+            # look as if it had always been held; names from before times were saved count as history
+            self._name_at[room] = {k: float(saved_at.get(k, 0.0)) for k in reg}
             if not isinstance(stored, dict):  # first use: seed from history in created_at order
                 for e in self._sorted(room):
                     self._register_name(room, e["pubkey"], self._content(e).get("name"),
@@ -616,6 +617,17 @@ class Engine:
         self._name_at.setdefault(room, {})[key] = time.time() if save else 0.0  # bounded like reg
         if save:
             self.store.set(f"names:{room}", reg)
+            self.store.set(f"names_at:{room}", self._name_at[room])
+
+    def _seen_active(self, room: str, pk: str, at: float) -> None:
+        """Last activity per key, for idle-name eviction. Trimming drops only keys that hold no name, so a
+        holder's record is never lost (a missing record would otherwise read as idle)."""
+        hs = self._holder_seen.setdefault(room, {})
+        hs[pk] = max(hs.get(pk, 0), at)
+        if len(hs) > MAX_NAMES * 2:
+            holders = set(self._names_reg(room).values())
+            for k in sorted((k for k in hs if k not in holders), key=hs.get)[: MAX_NAMES // 2]:
+                hs.pop(k, None)
 
     def _evict_idle_names(self, room: str, reg: dict) -> None:
         """A full registry makes room by dropping names whose holder hasn't been seen for NAME_IDLE_EVICT.
@@ -623,7 +635,9 @@ class Engine:
         is visible warnings on newcomers (fail closed), never a name handed to the wrong key."""
         seen = self._holder_seen.get(room, {})
         cutoff = time.time() - NAME_IDLE_EVICT
-        idle = [k for k, v in reg.items() if seen.get(v, 0) < cutoff]
+        live = set(self.presence.get(room, {})) | set(self._name_now.get(room, {}))
+        # unknown activity is NOT idle: only a holder we saw, long ago, and not present now makes room
+        idle = [k for k, v in reg.items() if v not in live and seen.get(v) is not None and seen[v] < cutoff]
         counts = self._name_count.get(room, {})
         at = self._name_at.get(room, {})
         for k in idle[: max(1, MAX_NAMES // 10)]:
@@ -631,6 +645,9 @@ class Engine:
             at.pop(k, None)
             if counts.get(holder):
                 counts[holder] -= 1
+        if idle:
+            self.store.set(f"names:{room}", reg)
+            self.store.set(f"names_at:{room}", at)
 
     def _held_since(self, room: str, pk: str, name: str) -> Optional[float]:
         """When `pk` became the holder of agent name `name` in this room (0 for names loaded from
@@ -1570,6 +1587,7 @@ class Engine:
         await self._end_hosted(room)
         self.store.forget_room(room)
         self.store.set(f"names:{room}", None)
+        self.store.set(f"names_at:{room}", None)
         self._names.pop(room, None)
         self._name_count.pop(room, None)
         self._name_at.pop(room, None)

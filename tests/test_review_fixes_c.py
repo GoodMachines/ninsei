@@ -412,3 +412,30 @@ def test_disclosures_are_in_readme_and_catalog_entry():
                    "xenia_room_engine", "same user", "turns itself on", "plan"):
         assert needle in entry, needle
     assert "full tools" not in readme and "can't make it do anything" not in readme
+
+
+def test_engine_work_survives_the_browser_hanging_up():
+    # A closed tab cancels the route; the engine call must still finish (a game start pays for its
+    # questions before it publishes anything). Defensive: whether the host cancels routes on disconnect
+    # depends on its server stack, so don't rely on it either way.
+    api = (ROOT / "dashboard" / "plugin_api.py").read_text()
+    run_fn = api.split("async def _run(", 1)[1].split("\nasync def ", 1)[0]
+    assert "asyncio.shield(asyncio.wrap_future(eng.call(" in run_fn
+
+
+async def test_shielded_engine_call_completes_after_the_caller_is_cancelled(engine):
+    import asyncio as aio
+    done = []
+
+    async def slow():
+        await aio.sleep(0.2)
+        done.append(1)
+
+    async def route():
+        return await aio.shield(aio.wrap_future(engine.call(slow)))
+
+    t = aio.ensure_future(route())
+    await aio.sleep(0.05)
+    t.cancel()
+    await aio.sleep(0.4)
+    assert done == [1]
