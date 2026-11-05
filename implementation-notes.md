@@ -67,3 +67,12 @@ Optional second cap, off by default: `plan_pct` (0 = off, 1-100) means "Hearth m
 - **Overshoot.** The gate checks dollars already settled, so calls in flight when the cap is crossed can finish; the token budget's atomic reserve doesn't have this. At most a few small calls.
 - **`/state` budget** gains `plan_pct, available, checked, plan_cap_usd, plan_used_usd, plan_snapshot_usd, cost_basis`. `pct` (the ring) is the larger of token use and cap use. Settings gains one field and one line under the ring ("Not on a Nous plan" when unreadable).
 - **Not verified live.** No Nous plan available here (default model is openai-codex), so the real `build_usage_model` read, the real price lookup and the real `res.provider` string on a Nous call are verified by reading source only. Tests use a stubbed source and cost.
+
+## Overnight, 2026-11-04 (main session)
+
+- **Merged** the widgets + theme branch and the plan-cap branch. Rebuilt the UI from the merged sources. 59 tests pass and validate passes. The new warning is the plan cap's import of `agent.billing_usage` / `agent.usage_pricing`, which aren't public. That's a decision for Justin: keep it, or drop the plan cap.
+- **Test-gateway pitfalls (important):**
+  - `hermes -p <profile> gateway start` *installs a launchd service* (`~/Library/LaunchAgents/ai.hermes.gateway-<profile>.plist`) that starts at every login. It happened once on `hearthmaya` at 20:27. I removed it with `gateway uninstall` and stopped its process (PID 61600). The plist never held channel keys. Only ever use `gateway run` under `lg run` with `TELEGRAM_*` stripped.
+  - A test profile's gateway logs "Cron scheduler will tick 10 profile(s)", including Justin's. Hermes serialises ticks with `~/.hermes/cron/.tick.lock`, so jobs don't double-fire, and the logs show no job ran from the test gateway. Still, keep test gateways short-lived.
+  - Desktop auto-starts the profile's gateway when the window is on that profile and you use chat or sessions.
+- **The in-chat cards are not verified in Desktop yet.** Desktop's chat composer is a rich editor, so agent-desktop `set-value` doesn't register text there (the Hearth page's plain textarea does). Physical typing needs `--headed`, which takes over the screen, so it waits for Justin. I made a chat with both directives through the CLI (session `local-f3efb5d5…`), but Desktop showed "Could not load sessions" for the test profile even with its gateway running. Verify with Justin present.
