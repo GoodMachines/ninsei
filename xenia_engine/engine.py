@@ -315,7 +315,7 @@ class Engine:
         for room in self.store.rooms():
             self.events[room] = {e["id"]: e for e in self.store.room_events(room)}
             self.topics[room] = TopicTracker()
-        self.pool = RelayPool(self.relays())
+        self.pool = RelayPool(self.relays(), outbox=self.store)
         self.pool.start()
         await self._resubscribe()
         self._spawn(self._presence_loop())
@@ -336,7 +336,7 @@ class Engine:
     async def reconnect(self) -> None:
         if self.pool:
             await self.pool.stop()
-        self.pool = RelayPool(self.relays())
+        self.pool = RelayPool(self.relays(), outbox=self.store)
         self.pool.start()
         await self._resubscribe()
         self._bump()
@@ -1317,6 +1317,10 @@ class Engine:
                     item["impostor"]["agent"] = self.persona()["name"]
             if c.get("system") == "budget" and owner:
                 item["system"] = "budget"
+            if item["mine"] and self.pool:  # only our own events can be undelivered; "sent" stays implicit
+                d = self.pool.delivery(e["id"])
+                if d != "sent":
+                    item["delivery"] = d
             if t == "offer":
                 local = offers_local.get(e["id"])
                 item.update(title=str(c.get("title", ""))[:60], pitch=str(c.get("pitch", ""))[:280],

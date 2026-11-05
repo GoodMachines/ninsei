@@ -260,3 +260,19 @@ def test_malformed_host_events_are_skipped():
     Engine._apply_host_event(view, {"t": "tales_reveal", "n": 1, "names": ["x"], "authors": "y", "picks": 3,
                                     "scores": [1], "lucky": "z"})
     assert view["reveal"]["names"] == {} and view["reveal"]["authors"] == {} and view["scores"] == {}
+
+
+async def test_own_message_shows_not_delivered_while_no_relay_is_up(tmp_path):
+    # The engine hands its store to the relay pool, so an unsent message is queued and the view says so.
+    e = Engine(tmp_path / "x", lambda: StubLLM("Ada"), relays=["ws://127.0.0.1:1"], lock=False)
+    e.save_settings({"display_name": "Maya", "agent_name": "Ada", "onboarded": True})
+    e.start()
+    try:
+        meta = await run(e, e.create_room, "offline", "", [])
+        await run(e, e.post, meta["id"], "hello?")
+        ok = await wait_for(lambda: any(m.get("delivery") == "pending" and m["text"] == "hello?"
+                                        for m in read(e, e.messages, meta["id"])))
+        assert ok, read(e, e.messages, meta["id"])
+        assert e.pool._store is e.store
+    finally:
+        await asyncio.to_thread(e.stop)

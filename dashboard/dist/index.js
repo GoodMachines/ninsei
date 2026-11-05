@@ -1152,7 +1152,10 @@ function Message(props) {
         ] }),
         agent ? jsx('div', { className: 'h-bubble', children: jsx('div', { className: 'h-text', children: m.text }) })
           : jsx('div', { className: 'h-text', children: m.text }),
-        imp && jsx(ImpostorChip, { imp })
+        imp && jsx(ImpostorChip, { imp }),
+        m.delivery && jsx('div', { className: 'h-faint h-tiny', role: m.delivery === 'failed' ? 'alert' : undefined,
+          children: m.delivery === 'pending' ? 'Not delivered yet. Xenia will resend it when a relay is back.'
+            : 'Not delivered. The relays turned it down or it waited too long.' })
       ] })
     ] })
 }
