@@ -61,7 +61,11 @@ def _now() -> int:
 
 
 def _short(pk: str) -> str:
-    return nostr.npub(pk)[:12] + "…" if pk else ""
+    """A short display handle for a pubkey. Keys can come from strangers' content, so a malformed
+    one becomes a neutral label instead of an exception."""
+    if not isinstance(pk, str) or not re.fullmatch(r"[0-9a-f]{64}", pk):
+        return "someone"
+    return nostr.npub(pk)[:12] + "…"
 
 
 def _as_dict(x) -> dict:

@@ -25,12 +25,19 @@ def junk(rng, depth=0):
     return rng.choice(makers)()
 
 
+def _wrap(fn, *a):
+    async def w():
+        return fn(*a)
+    return w
+
+
 async def test_views_survive_malformed_events(world):
     _, engines, _ = world
     room = await setup_room(engines)
     maya = engines["Maya"]
     rng = random.Random(1234)
-    person, agent = nostr.new_secret(), nostr.new_secret()
+    import hashlib  # fixed keys: a failure must reproduce
+    person, agent = (hashlib.sha256(b"fuzz-person").hexdigest(), hashlib.sha256(b"fuzz-agent").hexdigest())
     apk = nostr.pubkey(agent)
     bind = nostr.owner_binding(person, apk)
     gid = "fuzzgid"
@@ -46,7 +53,10 @@ async def test_views_survive_malformed_events(world):
         ev = nostr.build_event(agent if as_agent else person, kind, content, tags)
         await run(maya, maya._on_event, ev, "history")  # "history": no reactions, no model calls
     # Every view the UI reads must still render.
-    snap = read(maya, maya.snapshot, room)
+    import time as _t
+    t0 = _t.time()
+    snap = await asyncio.wrap_future(maya.call(_wrap(maya.snapshot, room)))
+    assert _t.time() - t0 < 1.0, "room views got slow"  # was ~2 s before binding checks were cached
     assert snap["room"]["id"] == room
     json.dumps(snap)  # and stay JSON-serialisable for the API
     await asyncio.sleep(0)

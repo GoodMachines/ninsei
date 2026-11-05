@@ -130,7 +130,8 @@ async def test_budget_blocks_calls_and_agent_rests(world):
     await run(sam, sam.post, room, "Ada are you there?")
     assert await wait_for(lambda: any(m.get("system") == "budget" for m in read(sam, sam.messages, room)))
     assert "hearth.reply" not in llms["Maya"].calls
-    assert maya.agent_state == "system: waiting"
+    # The agent shows "speaking" while it posts the rest notice, then settles on waiting.
+    assert await wait_for(lambda: maya.agent_state == "system: waiting"), maya.agent_state
 
 
 async def test_impostor_is_flagged_and_not_treated_as_owner(world):

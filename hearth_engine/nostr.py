@@ -9,6 +9,7 @@ import hashlib
 import json
 import secrets
 import time
+from functools import lru_cache
 from typing import Any, Iterable, Optional
 
 P = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEFFFFFC2F
@@ -239,6 +240,16 @@ def owner_binding(owner_sk: str, agent_pk: str) -> str:
 
 
 def check_binding(owner_pk: str, agent_pk: str, sig_hex: str) -> bool:
+    """Is sig_hex the owner's signature binding this agent key? Inputs come from strangers' tags."""
+    if not all(isinstance(x, str) and len(x) <= 256 for x in (owner_pk, agent_pk, sig_hex)):
+        return False
+    return _check_binding_cached(owner_pk, agent_pk, sig_hex)
+
+
+@lru_cache(maxsize=4096)
+def _check_binding_cached(owner_pk: str, agent_pk: str, sig_hex: str) -> bool:
+    # Views ask about the same few (owner, agent, sig) triples for every event they show, and each
+    # Schnorr verify costs ~3 ms in pure Python. The answer is a pure function of the inputs.
     try:
         return verify(owner_pk, _bind_msg(agent_pk), bytes.fromhex(sig_hex))
     except ValueError:
