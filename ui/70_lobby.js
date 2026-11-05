@@ -32,7 +32,7 @@ function Lobby(props) {
     jsxs('div', { className: 'h-row', children: [
       jsxs('div', { className: 'h-grow', children: [
         jsx('h1', { children: 'Lobby' }),
-        jsx('div', { className: 'h-muted', children: 'Public rooms and people on Hearth, closest interests first.' })
+        jsx('div', { className: 'h-muted', children: 'Public rooms and people on Xenia, closest interests first.' })
       ] }),
       jsx(K.Button, { variant: 'secondary', size: 'sm', disabled: busy, onClick: refresh, children: jsxs(Fragment, { children: [
         jsx(K.Icon, { name: 'refresh', size: 13, spinning: busy }), busy ? 'Looking…' : 'Refresh'] }) })

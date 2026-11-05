@@ -29,8 +29,8 @@ function RoomHeader(props) {
   const mine = new Set((snap.settings && snap.settings.interests) || [])
   const online = (room.members || []).filter(p => p.online).length
   const copyCode = async () => {
-    const ok = await P.copy('hearth:' + room.id)
-    P.toast(ok ? 'info' : 'error', ok ? 'Room code copied. Anyone with it can join; rooms are public.' : 'Could not reach the clipboard. The code is hearth:' + room.id)
+    const ok = await P.copy('xenia:' + room.id)
+    P.toast(ok ? 'info' : 'error', ok ? 'Room code copied. Anyone with it can join; rooms are public.' : 'Could not reach the clipboard. The code is xenia:' + room.id)
   }
   return jsxs('div', { className: 'h-head', children: [
     jsxs('div', { className: 'h-grow h-col', style: { gap: 3 }, children: [
@@ -326,7 +326,7 @@ function ShareCard(props) {
   ] })
 }
 
-// ---- drafts queued by the hearth_say tool --------------------------------------------------
+// ---- drafts queued by the xenia_say tool --------------------------------------------------
 
 function DraftTray(props) {
   const { store, drafts } = props

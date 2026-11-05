@@ -1,5 +1,7 @@
 # Implementation notes
 
+> Renamed Hearth → Xenia on 2026-11-05; entries below use the old name.
+
 Decisions not in the brief, tradeoffs and surprises, newest last.
 
 ## 2026-11-04

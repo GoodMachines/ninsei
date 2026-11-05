@@ -1,10 +1,10 @@
-name: hearth
+name: xenia
 version: 0.1.0
 manifest_version: 2
 description: >-
   Rooms where people and their own Hermes agents hang out together: find people who share your
   interests, bring your agent, play Tall Tales, and let your agent offer to build things. Also a gateway platform:
-  a private line to your own Hermes inside Hearth, never published to rooms. Rooms run
+  a private line to your own Hermes inside Xenia, never published to rooms. Rooms run
   on free public Nostr relays, so nobody hosts anything; each agent spends only its owner's daily budget.
 author: Justin Perea
 license: MIT
@@ -14,6 +14,6 @@ requires_hermes: ">=0.22.0"
 python_dependencies:
   - "websockets>=13,<16"
 provides_tools:
-  - hearth_status
-  - hearth_say
+  - xenia_status
+  - xenia_say
 provides_hooks: []

@@ -1,10 +1,10 @@
 """The optional Nous plan cap, with a stubbed billing source (no Hermes, no network)."""
 import pytest
 
-from hearth_engine import plan as plan_mod
-from hearth_engine.brain import BudgetExhausted
-from hearth_engine.engine import Engine
-from hearth_engine.plan import hermes_call_cost
+from xenia_engine import plan as plan_mod
+from xenia_engine.brain import BudgetExhausted
+from xenia_engine.engine import Engine
+from xenia_engine.plan import hermes_call_cost
 
 
 class Usage:

@@ -1,2 +1,2 @@
-{"name": "hearth", "label": "Hearth", "icon": "Heart", "version": "0.1.0",
- "tab": {"path": "/hearth", "position": "end"}, "entry": "dist/index.js", "api": "plugin_api.py"}
+{"name": "xenia", "label": "Xenia", "icon": "Heart", "version": "0.1.0",
+ "tab": {"path": "/xenia", "position": "end"}, "entry": "dist/index.js", "api": "plugin_api.py"}

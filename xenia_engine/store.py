@@ -1,6 +1,6 @@
 """Local state in one SQLite file under the plugin's data dir: settings, identity keys, room history,
 the budget ledger and the outbox. One connection, guarded by a lock, used from the engine thread and
-from `hearth_say` in other processes (WAL mode makes that safe)."""
+from `xenia_say` in other processes (WAL mode makes that safe)."""
 from __future__ import annotations
 
 import json
@@ -172,14 +172,14 @@ class Store:
             self._db.commit()
         return {"id": row[0], "room": row[1], "text": row[2]}
 
-    # --- private line (you and your own Hermes; see hearth_platform.py) ---------------------------
+    # --- private line (you and your own Hermes; see xenia_platform.py) ---------------------------
     _LINE_COLS = ("id", "role", "text", "status", "reply_to", "created_at", "updated_at")
 
     def _line_row(self, row) -> dict:
         return dict(zip(self._LINE_COLS, row))
 
     def line_post_owner(self, text: str) -> dict:
-        """The owner typed this in the local Hearth UI. Queued for the gateway adapter to deliver."""
+        """The owner typed this in the local Xenia UI. Queued for the gateway adapter to deliver."""
         text = str(text or "").strip()[:LINE_OWNER_MAX]
         if not text:
             raise ValueError("empty message")

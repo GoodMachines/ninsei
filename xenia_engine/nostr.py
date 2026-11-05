@@ -1,6 +1,6 @@
 """Nostr primitives: BIP-340 Schnorr keys and signatures, event building and checking, NIP-13 proof of work.
 
-Pure Python on purpose: Hermes ships no secp256k1 library, and Hearth signs a handful of events per
+Pure Python on purpose: Hermes ships no secp256k1 library, and Xenia signs a handful of events per
 minute, so speed doesn't matter. Verification follows BIP-340 exactly (tests use the official vectors).
 """
 from __future__ import annotations
@@ -232,7 +232,7 @@ def first_tag(ev: dict, name: str) -> Optional[list[str]]:
 # another agent.
 
 def _bind_msg(agent_pk: str) -> bytes:
-    return hashlib.sha256(b"hearth-bind:v1:" + bytes.fromhex(agent_pk)).digest()
+    return hashlib.sha256(b"xenia-bind:v1:" + bytes.fromhex(agent_pk)).digest()
 
 
 def owner_binding(owner_sk: str, agent_pk: str) -> str:

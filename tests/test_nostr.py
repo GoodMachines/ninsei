@@ -1,10 +1,10 @@
-"""Tests for hearth_engine.nostr: BIP-340 official vectors, events, PoW, binding, npub."""
+"""Tests for xenia_engine.nostr: BIP-340 official vectors, events, PoW, binding, npub."""
 import csv
 import io
 
 import pytest
 
-from hearth_engine import nostr
+from xenia_engine import nostr
 
 # Official BIP-340 test vectors: https://github.com/bitcoin/bips/blob/master/bip-0340/test-vectors.csv
 VECTORS_CSV = """index,secret key,public key,aux_rand,message,signature,verification result,comment

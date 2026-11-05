@@ -4,8 +4,8 @@ import asyncio
 import json
 import random
 
-from hearth_engine import nostr
-from hearth_engine.engine import KIND_LIVE, KIND_ROOM
+from xenia_engine import nostr
+from xenia_engine.engine import KIND_LIVE, KIND_ROOM
 from test_engine import read, run, setup_room, world  # noqa: F401  (fixture re-export)
 
 TYPES = ["msg", "join", "offer", "offer_state", "share", "tales_start", "tales_round", "tales_vote_open",

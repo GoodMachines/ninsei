@@ -21,7 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from websockets.asyncio.server import serve  # noqa: E402
 from websockets.exceptions import ConnectionClosed  # noqa: E402
 
-from hearth_engine.nostr import check_event  # noqa: E402
+from xenia_engine.nostr import check_event  # noqa: E402
 
 
 def _is_replaceable(kind: int) -> bool:

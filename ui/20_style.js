@@ -1,6 +1,6 @@
 // ---------------------------------------------------------------------------------------------
 // styles. Every colour is a theme variable: each platform prelude maps the `--h-*` tokens below
-// onto its own theme (`--ui-*` in Desktop, `--color-*` in the dashboard), so Hearth reskins with
+// onto its own theme (`--ui-*` in Desktop, `--color-*` in the dashboard), so Xenia reskins with
 // every theme. Agent tints are the theme's own foreground rotated to the agent's hue.
 // ---------------------------------------------------------------------------------------------
 

@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 import pytest
 
-from hearth_engine.engine import Engine
+from xenia_engine.engine import Engine
 from local_relay import LocalRelay
 
 
@@ -30,14 +30,14 @@ class StubLLM:
 
     def complete(self, messages, max_tokens=None, purpose=None, task=None, **_):
         self.calls.append(purpose)
-        if purpose == "hearth.reply":
+        if purpose == "xenia.reply":
             return Result(f"{self.name} says hello", Usage(50))
-        if purpose == "hearth.offer":
+        if purpose == "xenia.offer":
             return Result(json.dumps({"pitch": "Want me to build a pixel sorter?", "title": "Pixel sorter toy",
                                       "task": "A canvas that sorts pixels by brightness."}), Usage(80))
-        if purpose == "hearth.tales.questions":
+        if purpose == "xenia.tales.questions":
             return Result(json.dumps({"questions": [{"q": "Octopuses have how many hearts?", "a": "three"}]}), Usage(90))
-        if purpose == "hearth.tales.fake":
+        if purpose == "xenia.tales.fake":
             return Result(f"{self.name} hearts", Usage(20))
         return Result("ok", Usage(10))
 
@@ -107,7 +107,7 @@ async def test_addressed_agent_replies_and_only_it(world):
     await run(sam, sam.post, room, "Ada, what do you think of dithering?")
     assert await wait_for(lambda: any(m["text"] == "Ada says hello" for m in read(sam, sam.messages, room)))
     await asyncio.sleep(0.6)
-    assert "hearth.reply" not in llms["Sam"].calls  # Bo wasn't addressed and chattiness is quiet
+    assert "xenia.reply" not in llms["Sam"].calls  # Bo wasn't addressed and chattiness is quiet
 
 
 async def test_open_question_from_owner_one_agent_answers(world):
@@ -118,8 +118,8 @@ async def test_open_question_from_owner_one_agent_answers(world):
     assert await wait_for(lambda: any(m["role"] == "agent" and m["t"] == "msg" for m in read(maya, maya.messages, room)))
     await asyncio.sleep(0.5)
     # Only Maya's own agent treats an open question from its owner as a cue; Bo stays quiet.
-    assert llms["Maya"].calls.count("hearth.reply") == 1
-    assert llms["Sam"].calls.count("hearth.reply") == 0
+    assert llms["Maya"].calls.count("xenia.reply") == 1
+    assert llms["Sam"].calls.count("xenia.reply") == 0
 
 
 async def test_budget_blocks_calls_and_agent_rests(world):
@@ -129,7 +129,7 @@ async def test_budget_blocks_calls_and_agent_rests(world):
     maya.save_settings({"budget_daily": 10})
     await run(sam, sam.post, room, "Ada are you there?")
     assert await wait_for(lambda: any(m.get("system") == "budget" for m in read(sam, sam.messages, room)))
-    assert "hearth.reply" not in llms["Maya"].calls
+    assert "xenia.reply" not in llms["Maya"].calls
     # The agent shows "speaking" while it posts the rest notice, then settles on waiting.
     assert await wait_for(lambda: maya.agent_state == "system: waiting"), maya.agent_state
 
@@ -167,7 +167,7 @@ async def test_offer_build_share_loop(world, tmp_path):
     res = await run(owner_engine, owner_engine.answer_offer, offer["id"], True, "Make it tiny.")
     assert "untrusted" in res["prompt"] and res["path"].endswith("index.html")
     # the owner's chat gets told to draw the offer card, and the directive fits a hidden-turn budget
-    directive = '::hearth-offer{id="%s"}' % offer["id"]
+    directive = '::xenia-offer{id="%s"}' % offer["id"]
     assert directive in res["prompt"] and len(directive) < 500
     p = owner_engine.build_path(offer["id"])
     p.write_text("<html><body>toy</body></html>")
@@ -201,7 +201,7 @@ async def test_tall_tales_round(world):
     scores = read(sam, sam.game_view, room)["scores"]
     sam_pk = sam._identity()["person_pk"]
     assert scores[sam_pk] == 3  # 2 for the truth + 1 for Bo fooling Maya
-    assert "hearth.tales.fake" in llms["Sam"].calls and "hearth.tales.fake" not in llms["Maya"].calls  # Ada hosts
+    assert "xenia.tales.fake" in llms["Sam"].calls and "xenia.tales.fake" not in llms["Maya"].calls  # Ada hosts
 
 
 async def test_tales_phase_secs_and_reveal_names(world):
@@ -237,8 +237,8 @@ async def test_default_faces_differ(world):
 
 def test_store_files_are_owner_only(tmp_path):
     import stat
-    from hearth_engine.store import Store
-    st = Store(tmp_path / "data" / "hearth.db")
+    from xenia_engine.store import Store
+    st = Store(tmp_path / "data" / "xenia.db")
     st.set("identity", {"person_sk": "x"})
     assert stat.S_IMODE((tmp_path / "data").stat().st_mode) == 0o700
     for f in (tmp_path / "data").iterdir():
@@ -247,7 +247,7 @@ def test_store_files_are_owner_only(tmp_path):
 
 
 def test_malformed_host_events_are_skipped():
-    from hearth_engine.engine import Engine
+    from xenia_engine.engine import Engine
     view = {"n": 1, "phase": "fakes", "options": [], "reveal": None, "scores": {}}
     for bad in ({"t": "tales_reveal", "n": 1, "names": ["x"], "authors": "y", "picks": 3, "scores": [1]},
                 {"t": "tales_vote_open", "n": 1, "options": {"a": 1}, "ends_at": "soon"},

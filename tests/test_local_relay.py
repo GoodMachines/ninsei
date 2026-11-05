@@ -4,7 +4,7 @@ import json
 import pytest
 from websockets.asyncio.client import connect
 
-from hearth_engine import nostr
+from xenia_engine import nostr
 from local_relay import LocalRelay
 
 

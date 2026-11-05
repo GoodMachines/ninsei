@@ -93,7 +93,7 @@ function makePlatform(ctx) {
       return false
     },
     openSettings() {
-      host.navigate(sdk.pluginSettingsHref ? sdk.pluginSettingsHref('hearth') : '/settings?tab=plugins&plugin=hearth')
+      host.navigate(sdk.pluginSettingsHref ? sdk.pluginSettingsHref('xenia') : '/settings?tab=plugins&plugin=xenia')
     }
   }
 }
@@ -112,21 +112,21 @@ function watchForPet(ctx, store) {
       if (said.has(key) || (o.status !== 'open' && o.status !== 'ready')) continue
       said.add(key)
       const room = ((snap.rooms || []).find(r => r.id === o.room) || {}).name || 'a room'
-      const line = o.status === 'open' ? agent + ' has an idea in ' + room + ': ' + o.title + '. Review it in Hearth.'
+      const line = o.status === 'open' ? agent + ' has an idea in ' + room + ': ' + o.title + '. Review it in Xenia.'
         : 'Your build “' + o.title + '” is ready to share in ' + room + '.'
       ctx.pet.say(line, { id: 'offer', tone: 'wait', ttlMs: 15000 })
     }
   }))
 }
 
-// The "Hearth" theme: warm paper by day, banked embers by night. The hue is Hearth's own default
-// agent colour (28, ember orange) pulled down to a calm, low-chroma family. Every text pair is
+// The "Xenia" theme: warm paper by day, dim lamplight by night. The hue is Xenia's own default
+// agent colour (28, amber) pulled down to a calm, low-chroma family. Every text pair is
 // at least WCAG AA (4.5:1): checked with the SDK's contrastRatio formula, lowest pair 5.0:1 light
 // (primary on card) and 7.1:1 dark.
-const HEARTH_THEME = {
-  name: 'hearth',
-  label: 'Hearth',
-  description: 'Warm, calm and low-contrast: paper and embers',
+const XENIA_THEME = {
+  name: 'xenia',
+  label: 'Xenia',
+  description: 'Warm, calm and low-contrast: paper and lamplight',
   colors: {
     background: '#f6efe4', foreground: '#3a2f27', card: '#efe6d8', cardForeground: '#3a2f27',
     muted: '#e9dfcf', mutedForeground: '#66564a', popover: '#f1e9dc', popoverForeground: '#3a2f27',
@@ -148,8 +148,8 @@ const HEARTH_THEME = {
 }
 
 export default {
-  id: 'hearth',
-  name: 'Hearth',
+  id: 'xenia',
+  name: 'Xenia',
   description: 'Rooms where people and their own agents hang out: Lobby, Tall Tales, offers to build small toys.',
   defaultEnabled: false,
   register(ctx) {
@@ -164,39 +164,39 @@ export default {
     store.start()
     ctx.onDispose(() => store.stop())
     // the backend pushes after every change; polling stays as the fallback
-    ctx.onEvent('plugin.hearth.changed', () => store.refresh())
+    ctx.onEvent('plugin.xenia.changed', () => store.refresh())
 
-    const open = () => host.navigate('/hearth')
+    const open = () => host.navigate('/xenia')
     const startTales = async () => {
       const room = store.room()
-      if (!room) { host.notify({ kind: 'info', message: 'Open a Hearth room first, then start Tall Tales there.' }); open(); return }
+      if (!room) { host.notify({ kind: 'info', message: 'Open a Xenia room first, then start Tall Tales there.' }); open(); return }
       open()
       try { await store.post('/game/start', { room }, 'Tall Tales is starting') } catch (_) { /* toasted */ }
     }
 
     ctx.registerMany([
-      { id: 'page', area: sdk.ROUTES_AREA, data: { path: '/hearth' }, render: () => jsx(App, { store }) },
-      { id: 'nav', area: sdk.SIDEBAR_NAV_AREA, data: { path: '/hearth', label: 'Hearth', codicon: 'flame' } },
+      { id: 'page', area: sdk.ROUTES_AREA, data: { path: '/xenia' }, render: () => jsx(App, { store }) },
+      { id: 'nav', area: sdk.SIDEBAR_NAV_AREA, data: { path: '/xenia', label: 'Xenia', codicon: 'home' } },
       { id: 'chip', area: sdk.STATUSBAR_AREAS.right, order: 140, render: () => jsx(StatusChip, { store, onOpen: open }) },
-      { id: 'open', area: sdk.PALETTE_AREA, data: { id: 'hearth.open', label: 'Open Hearth', keywords: ['hearth', 'rooms', 'lobby', 'agents'], run: open } },
-      { id: 'tales', area: sdk.PALETTE_AREA, data: { id: 'hearth.tales', label: 'Hearth: Start Tall Tales in current room', keywords: ['hearth', 'game', 'tall tales'], run: startTales } }
+      { id: 'open', area: sdk.PALETTE_AREA, data: { id: 'xenia.open', label: 'Open Xenia', keywords: ['xenia', 'rooms', 'lobby', 'agents'], run: open } },
+      { id: 'tales', area: sdk.PALETTE_AREA, data: { id: 'xenia.tales', label: 'Xenia: Start Tall Tales in current room', keywords: ['xenia', 'game', 'tall tales'], run: startTales } }
     ])
 
-    // Hearth inside an ordinary chat: the model writes ::hearth-offer{id="…"} or ::hearth-tales{room="…"}
+    // Xenia inside an ordinary chat: the model writes ::xenia-offer{id="…"} or ::xenia-tales{room="…"}
     // on its own line, and the card renders in the message. Older Desktops lack the area: skip it.
     if (sdk.TRANSCRIPT_DIRECTIVE_AREA) {
       ctx.registerMany([
-        { id: 'card-offer', area: sdk.TRANSCRIPT_DIRECTIVE_AREA, data: { name: 'hearth-offer', render: p => jsx(OfferDirective, { attrs: p.attrs, streaming: p.streaming }) } },
-        { id: 'card-tales', area: sdk.TRANSCRIPT_DIRECTIVE_AREA, data: { name: 'hearth-tales', render: p => jsx(TalesDirective, { attrs: p.attrs, streaming: p.streaming }) } }
+        { id: 'card-offer', area: sdk.TRANSCRIPT_DIRECTIVE_AREA, data: { name: 'xenia-offer', render: p => jsx(OfferDirective, { attrs: p.attrs, streaming: p.streaming }) } },
+        { id: 'card-tales', area: sdk.TRANSCRIPT_DIRECTIVE_AREA, data: { name: 'xenia-tales', render: p => jsx(TalesDirective, { attrs: p.attrs, streaming: p.streaming }) } }
       ])
     }
 
     // A theme for the picker. Registering lists it; it is never selected for the user.
-    if (sdk.THEMES_AREA) ctx.register({ id: 'theme-hearth', area: sdk.THEMES_AREA, data: HEARTH_THEME })
+    if (sdk.THEMES_AREA) ctx.register({ id: 'theme-xenia', area: sdk.THEMES_AREA, data: XENIA_THEME })
 
-    const page = { id: 'settings', title: 'Hearth', icon: 'flame', render: () => jsx(Settings, { store }) }
+    const page = { id: 'settings', title: 'Xenia', icon: 'home', render: () => jsx(Settings, { store }) }
     if (typeof ctx.registerSettingsPage === 'function') ctx.registerSettingsPage(page)
-    else if (sdk.SETTINGS_PLUGINS_AREA) ctx.register({ id: 'settings', area: sdk.SETTINGS_PLUGINS_AREA, title: 'Hearth', render: page.render, data: { icon: 'flame' } })
+    else if (sdk.SETTINGS_PLUGINS_AREA) ctx.register({ id: 'settings', area: sdk.SETTINGS_PLUGINS_AREA, title: 'Xenia', render: page.render, data: { icon: 'home' } })
 
     watchForPet(ctx, store)
   }

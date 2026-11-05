@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build Hearth's two UI files from the one shared source in ui/.
+"""Build Xenia's two UI files from the one shared source in ui/.
 
     python3 scripts/build_ui.py          # writes desktop/plugin.js and dashboard/dist/index.js
     python3 scripts/build_ui.py --check  # exits 1 if either output is out of date

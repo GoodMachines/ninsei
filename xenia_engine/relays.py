@@ -18,7 +18,7 @@ import websockets
 
 from . import nostr
 
-log = logging.getLogger("hearth.relays")
+log = logging.getLogger("xenia.relays")
 
 EventHandler = Callable[[dict, str], Awaitable[None] | None]
 
@@ -141,7 +141,7 @@ class RelayPool:
                 if asyncio.iscoroutine(res):
                     await res
             except Exception:
-                log.exception("hearth: event handler failed")
+                log.exception("xenia: event handler failed")
         elif typ == "OK" and len(msg) >= 3:
             fut = self._pending_ok.get(url, {}).pop(msg[1], None)
             st = self.status[url]
