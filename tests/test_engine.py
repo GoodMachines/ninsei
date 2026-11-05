@@ -243,3 +243,18 @@ def test_store_files_are_owner_only(tmp_path):
     for f in (tmp_path / "data").iterdir():
         assert stat.S_IMODE(f.stat().st_mode) & 0o077 == 0, f
     st.close()
+
+
+def test_malformed_host_events_are_skipped():
+    from hearth_engine.engine import Engine
+    view = {"n": 1, "phase": "fakes", "options": [], "reveal": None, "scores": {}}
+    for bad in ({"t": "tales_reveal", "n": 1, "names": ["x"], "authors": "y", "picks": 3, "scores": [1]},
+                {"t": "tales_vote_open", "n": 1, "options": {"a": 1}, "ends_at": "soon"},
+                {"t": "tales_round", "n": "x"}):
+        try:
+            Engine._apply_host_event(view, bad)
+        except (TypeError, ValueError, AttributeError, KeyError):
+            pass  # game_view skips these; the point is the view stays well-typed
+    Engine._apply_host_event(view, {"t": "tales_reveal", "n": 1, "names": ["x"], "authors": "y", "picks": 3,
+                                    "scores": [1], "lucky": "z"})
+    assert view["reveal"]["names"] == {} and view["reveal"]["authors"] == {} and view["scores"] == {}

@@ -64,6 +64,24 @@ def _short(pk: str) -> str:
     return nostr.npub(pk)[:12] + "…" if pk else ""
 
 
+def _as_dict(x) -> dict:
+    return x if isinstance(x, dict) else {}
+
+
+def _as_list(x) -> list:
+    return x if isinstance(x, list) else []
+
+
+def _int_map(x) -> dict[str, int]:
+    out = {}
+    for k, v in list(_as_dict(x).items())[:24]:
+        try:
+            out[str(k)[:64]] = int(v)
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
 def _secs(c: dict) -> float:
     try:
         return max(0.0, min(float(c.get("secs") or 0), 600.0))
@@ -892,6 +910,30 @@ class Engine:
     async def submit_vote(self, room: str, gid: str, n: int, option: str) -> None:
         await self._publish_room(room, False, {"t": "tales_vote", "gid": gid, "n": n, "option": option[:16]})
 
+    @staticmethod
+    def _apply_host_event(view: dict, c: dict) -> None:
+        """Fold one host event into the game view, keeping only well-typed fields."""
+        t = c.get("t")
+        if t == "tales_round":
+            view.update(n=int(c.get("n", 0)), phase="fakes", q=str(c.get("q", ""))[:240],
+                        ends_at=float(c.get("ends_at") or 0), secs=_secs(c), options=[], reveal=None)
+        elif t == "tales_vote_open" and c.get("n") == view["n"]:
+            opts = [{"id": str(o.get("id", ""))[:16], "text": str(o.get("text", ""))[:80]}
+                    for o in _as_list(c.get("options"))[:12] if isinstance(o, dict)]
+            view.update(phase="vote", options=opts, ends_at=float(c.get("ends_at") or 0), secs=_secs(c))
+        elif t == "tales_reveal" and c.get("n") == view["n"]:
+            view.update(phase="reveal", scores=_int_map(c.get("scores")), reveal={
+                "truth": str(c.get("truth", ""))[:16], "answer": str(c.get("answer", ""))[:80],
+                "authors": {str(k)[:16]: str(v)[:600] for k, v in list(_as_dict(c.get("authors")).items())[:12]},
+                "picks": {str(k)[:16]: [str(x)[:64] for x in _as_list(v)[:24]]
+                          for k, v in list(_as_dict(c.get("picks")).items())[:12]},
+                "points": _int_map(c.get("points")),
+                "lucky": [str(x)[:64] for x in _as_list(c.get("lucky"))[:24]],
+                "names": {str(k)[:64]: _name_ok(str(v), "Someone")
+                          for k, v in list(_as_dict(c.get("names")).items())[:24]}})
+        elif t == "tales_end":
+            view.update(phase="end", scores=_int_map(c.get("scores")), aborted=bool(c.get("aborted")))
+
     def game_view(self, room: str) -> Optional[dict]:
         ident = self._identity()
         evs = self._sorted(room)
@@ -917,21 +959,10 @@ class Engine:
                     continue
         host_evs.sort(key=lambda x: x[0])
         for _seq, e, c in host_evs:  # host events apply in the host's own order
-            t = c.get("t")
-            if t == "tales_round":
-                view.update(n=c.get("n", 0), phase="fakes", q=str(c.get("q", ""))[:240], ends_at=c.get("ends_at", 0),
-                            secs=_secs(c),
-                            options=[], reveal=None)
-            elif t == "tales_vote_open" and c.get("n") == view["n"]:
-                view.update(phase="vote", options=c.get("options", [])[:12], ends_at=c.get("ends_at", 0), secs=_secs(c))
-            elif t == "tales_reveal" and c.get("n") == view["n"]:
-                view.update(phase="reveal", reveal={**{k: c.get(k) for k in ("truth", "answer", "authors", "picks",
-                                                                             "points", "lucky")},
-                                    "names": {str(k)[:64]: _name_ok(v, "Someone")
-                                              for k, v in list((c.get("names") or {}).items())[:24]}},
-                            scores=c.get("scores", {}))
-            elif t == "tales_end":
-                view.update(phase="end", scores=c.get("scores", {}), aborted=bool(c.get("aborted")))
+            try:  # a host is a stranger: a malformed event is skipped, never breaks the view
+                self._apply_host_event(view, c)
+            except (TypeError, ValueError, AttributeError, KeyError):
+                log.debug("hearth: skipped malformed host event %s", e.get("id"))
         my = {ident["person_pk"]}
         fakers, voters = set(), set()
         agent_fake = ""
