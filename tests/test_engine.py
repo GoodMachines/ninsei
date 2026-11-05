@@ -203,6 +203,37 @@ async def test_tall_tales_round(world):
     assert "hearth.tales.fake" in llms["Sam"].calls and "hearth.tales.fake" not in llms["Maya"].calls  # Ada hosts
 
 
+async def test_tales_phase_secs_and_reveal_names(world):
+    _, engines, _ = world
+    room = await setup_room(engines)
+    maya, sam = engines["Maya"], engines["Sam"]
+    assert await wait_for(lambda: len(maya.presence.get(room, {})) >= 2)
+    await run(maya, maya.start_tales, room, 1)
+    assert await wait_for(lambda: (read(sam, sam.game_view, room) or {}).get("phase") == "fakes")
+    g = read(sam, sam.game_view, room)
+    assert g["secs"] > 0  # the countdown knows the phase length
+    await run(sam, sam.submit_fake, room, g["gid"], g["n"], "seven")
+    await run(maya, maya.submit_fake, room, g["gid"], g["n"], "nine")
+    assert await wait_for(lambda: (read(sam, sam.game_view, room) or {}).get("phase") == "vote", 10)
+    g = read(sam, sam.game_view, room)
+    assert g["secs"] > 0
+    truth = [o for o in g["options"] if o["text"] == "three"][0]["id"]
+    await run(sam, sam.submit_vote, room, g["gid"], g["n"], truth)
+    await run(maya, maya.submit_vote, room, g["gid"], g["n"], truth)
+    assert await wait_for(lambda: (read(sam, sam.game_view, room) or {}).get("phase") in ("reveal", "end"), 10)
+    assert await wait_for(lambda: (read(sam, sam.game_view, room) or {}).get("phase") == "reveal"
+                          or bool(((read(sam, sam.game_view, room) or {}).get("reveal") or {}).get("names")), 10)
+    names = read(sam, sam.game_view, room)["reveal"]["names"]
+    assert names.get(sam._identity()["person_pk"]) == "Sam"
+
+
+async def test_default_faces_differ(world):
+    _, engines, _ = world
+    fm, fs = engines["Maya"].settings()["face"], engines["Sam"].settings()["face"]
+    assert fm != fs and 0 <= fm["hue"] < 360
+    assert engines["Maya"].settings()["face"] == fm  # stable
+
+
 def test_store_files_are_owner_only(tmp_path):
     import stat
     from hearth_engine.store import Store

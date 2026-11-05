@@ -64,6 +64,13 @@ def _short(pk: str) -> str:
     return nostr.npub(pk)[:12] + "…" if pk else ""
 
 
+def _secs(c: dict) -> float:
+    try:
+        return max(0.0, min(float(c.get("secs") or 0), 600.0))
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def _name_ok(name: str, fallback: str) -> str:
     name = re.sub(r"[\x00-\x1f\x7f]", "", str(name or "")).strip()
     return name[:32] or fallback
@@ -214,11 +221,19 @@ class Engine:
         s = self.store.get("settings") or {}
         defaults = {
             "onboarded": False, "display_name": "", "interests": [], "line": "",
-            "agent_name": "", "vibe": "warm, curious, a little playful", "face": {"hue": 28, "shape": "round"},
+            "agent_name": "", "vibe": "warm, curious, a little playful", "face": None,
             "budget_daily": 40000, "chattiness": "normal", "offers": True, "share_budget": False,
             "relays": DEFAULT_RELAYS, "card_published_at": 0, "plan_pct": 0,
         }
-        return {**defaults, **s}
+        out = {**defaults, **s}
+        if not out.get("face"):
+            out["face"] = self._default_face()
+        return out
+
+    def _default_face(self) -> dict:
+        """Until the owner picks one, every agent gets its own face, derived from its key."""
+        pk = self._identity()["agent_pk"]
+        return {"hue": int(pk[:6], 16) % 360, "shape": FACE_SHAPES[int(pk[6:8], 16) % len(FACE_SHAPES)]}
 
     def save_settings(self, patch: dict) -> dict:
         cur = self.settings()
@@ -749,6 +764,16 @@ class Engine:
         g["seq"] += 1
         await self._publish_room(room or g["room"], True, {**content, "seq": g["seq"]})
 
+    def _names_in(self, room: str, pks: set) -> dict[str, str]:
+        """Display names for the people and agents a reveal mentions, so clients that never saw them
+        (a player who left) still show a name. Clients sanitise these like any other name."""
+        names = {}
+        for person in self.members(room):
+            names[person["pk"]] = person["name"]
+            for a in person.get("agents", []):
+                names[a["pk"]] = a["name"]
+        return {pk: names[pk] for pk in pks if pk in names}
+
     def _team_of(self, room: str) -> dict[str, str]:
         team = {}
         for e in self.events.get(room, {}).values():
@@ -785,7 +810,8 @@ class Engine:
                 people, agents = self._present_players(room, me)
                 ends = time.time() + game.FAKE_SECONDS * self.ts
                 await self._host_post(gid, {"t": "tales_round", "gid": gid, "n": n, "of": len(g["qs"]),
-                                                      "q": q["q"], "ends_at": ends})
+                                                      "q": q["q"], "ends_at": ends,
+                                                      "secs": game.FAKE_SECONDS * self.ts})
                 await self._wait_until(g, ends, lambda: set(self._round_events(room, gid, n, "tales_fake"))
                                        >= (people | agents))
                 fakes = {pk: c.get("text", "") for pk, c in self._round_events(room, gid, n, "tales_fake").items()
@@ -793,7 +819,8 @@ class Engine:
                 options, truth_id, author_of, lucky = game.build_options(q["a"], fakes, f"{g['seed']}:{n}")
                 ends = time.time() + game.VOTE_SECONDS * self.ts
                 await self._host_post(gid, {"t": "tales_vote_open", "gid": gid, "n": n,
-                                                      "options": options, "ends_at": ends})
+                                                      "options": options, "ends_at": ends,
+                                                      "secs": game.VOTE_SECONDS * self.ts})
                 await self._wait_until(g, ends, lambda: set(self._round_events(room, gid, n, "tales_vote"))
                                        >= people)
                 team = self._team_of(room)
@@ -809,7 +836,8 @@ class Engine:
                     scores[k] = scores.get(k, 0) + v
                 await self._host_post(gid, {
                     "t": "tales_reveal", "gid": gid, "n": n, "truth": truth_id, "answer": q["a"],
-                    "authors": author_of, "picks": picks, "points": points, "scores": scores, "lucky": lucky})
+                    "authors": author_of, "picks": picks, "points": points, "scores": scores, "lucky": lucky,
+                    "names": self._names_in(room, set(fakes) | set(votes) | set(lucky) | set(points))})
                 await asyncio.sleep(game.REVEAL_SECONDS * self.ts)
             await self._host_post(gid, {"t": "tales_end", "gid": gid, "scores": scores})
         except asyncio.CancelledError:
@@ -877,7 +905,7 @@ class Engine:
         sev, sc = start
         gid, host = sc.get("gid"), sev["pubkey"]
         view = {"gid": gid, "host": host, "host_name": _name_ok(sc.get("name"), "Host"), "rounds": sc.get("rounds", 3),
-                "n": 0, "phase": "starting", "q": "", "ends_at": 0, "options": [], "reveal": None, "scores": {},
+                "n": 0, "phase": "starting", "q": "", "ends_at": 0, "secs": 0, "options": [], "reveal": None, "scores": {},
                 "fakes_in": 0, "votes_in": 0, "my_fake": "", "my_vote": "", "started_at": sev["created_at"]}
         host_evs = []
         for e in evs:
@@ -892,12 +920,15 @@ class Engine:
             t = c.get("t")
             if t == "tales_round":
                 view.update(n=c.get("n", 0), phase="fakes", q=str(c.get("q", ""))[:240], ends_at=c.get("ends_at", 0),
+                            secs=_secs(c),
                             options=[], reveal=None)
             elif t == "tales_vote_open" and c.get("n") == view["n"]:
-                view.update(phase="vote", options=c.get("options", [])[:12], ends_at=c.get("ends_at", 0))
+                view.update(phase="vote", options=c.get("options", [])[:12], ends_at=c.get("ends_at", 0), secs=_secs(c))
             elif t == "tales_reveal" and c.get("n") == view["n"]:
-                view.update(phase="reveal", reveal={k: c.get(k) for k in ("truth", "answer", "authors", "picks",
-                                                                          "points", "lucky")},
+                view.update(phase="reveal", reveal={**{k: c.get(k) for k in ("truth", "answer", "authors", "picks",
+                                                                             "points", "lucky")},
+                                    "names": {str(k)[:64]: _name_ok(v, "Someone")
+                                              for k, v in list((c.get("names") or {}).items())[:24]}},
                             scores=c.get("scores", {}))
             elif t == "tales_end":
                 view.update(phase="end", scores=c.get("scores", {}), aborted=bool(c.get("aborted")))

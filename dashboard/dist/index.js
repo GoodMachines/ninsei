@@ -1473,8 +1473,8 @@ function TallTales(props) {
   ] })
 }
 
-// The ring empties as the phase runs out. Its full length is the longest remaining time we have
-// seen for this phase, so it works without knowing the host's timer settings.
+// The ring empties as the phase runs out. Its full length is the phase duration the host sent
+// (game.secs); older hosts don't send it, so fall back to the longest remaining time seen.
 function Countdown(props) {
   const { game, now } = props
   const total = useRef({ key: '', max: 1 })
@@ -1482,6 +1482,7 @@ function Countdown(props) {
   const left = Math.max(0, game.ends_at - now)
   if (total.current.key !== key) total.current = { key, max: Math.max(1, left) }
   else total.current.max = Math.max(total.current.max, left)
+  if (game.secs > 0) total.current.max = Math.max(game.secs, left, 1)
   const secs = Math.ceil(left)
   return jsx(Ring, { pct: left / total.current.max, from: 1, size: 34, stroke: 3, spring: SPRING.tick, tone: secs <= 5 ? 'warn' : '',
     label: secs + ' seconds left', children: secs })
@@ -1538,8 +1539,11 @@ function VotePhase(props) {
 }
 
 function RevealPhase(props) {
-  const { game, book } = props
+  const { game } = props
   const rv = game.reveal || {}
+  // Names the host sent fill gaps for players who have left the room since.
+  const book = Object.assign({}, props.book)
+  Object.keys(rv.names || {}).forEach(pk => { if (!book[pk]) book[pk] = { name: String(rv.names[pk]) } })
   const authors = rv.authors || {}
   const picks = rv.picks || {}
   const points = rv.points || {}
