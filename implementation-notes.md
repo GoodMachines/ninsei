@@ -107,3 +107,18 @@ Optional second cap, off by default: `plan_pct` (0 = off, 1-100) means "Hearth m
   - Maya's full Hermes ran code and replied "17 × 23 = 391." into the private thread;
   - "Post to room" created a draft only: neither Maya's nor Sam's room view showed it. The test draft was discarded.
 - **Desktop after the rename: not verified.** After `hermes profile rename`, Desktop showed "Could not load agent plugins: profile_mismatch" for `xeniamaya`. I ran `hermes profile migrate-identity hearthmaya xeniamaya` (and the same for sam), which reported success, but the agent-desktop accessibility tree went stale (screenshots unchanged, a menu wouldn't close). So I quit Desktop rather than click blind. Each time the window sat on the test profile, Desktop re-spawned that profile's gateway (20:28, 20:56). I stopped both. To redo with Justin present: open Desktop, switch to `xeniamaya`, check the error is gone, turn on the Xenia desktop toggle, then check the Xenia page, the theme, the private-line view and an in-chat card. Desktop will reopen on `xeniamaya`, the last profile selected.
+
+## Review fixes C (agent)
+
+Findings 4, 5, 9, 11, 12, 16, 18 (offer ids and lobby tags), 19, 20, 21. Tests: `tests/test_review_fixes_c.py`.
+
+- **Out-of-scope touch:** `_publish_room` got `ensure_ascii=False` on both `json.dumps` calls (needed for finding 9; two lines). `Brain._complete` and `PlanCap` changed shape together: `preflight(est)` now returns a `PlanTicket`, and `record(res, ticket)` / `ticket.fail()` / `ticket.release()` close it. Engine wiring in `__init__` is unchanged.
+- **New module `xenia_engine/toy.py`:** the CSP string, `inject_csp`, `scan_secrets`, the 48 KB limit. The CSP goes after a leading doctype (before it would force quirks mode). I kept the exact policy from the brief; it doesn't cover `form-action` or `base-uri`, and the iframe sandbox is what stops navigation and popups.
+- **Backend `/offers/build` now returns a report** (`html` with the CSP, `bytes`, `serialized_bytes`, `limit`, `fits`, `secrets`). `read_build` returns CSP-wrapped HTML; `share_build` publishes the raw file, not the wrapped one.
+- **Finding 4 test:** this venv has neither fastapi nor pydantic. The always-on test parses `dashboard/plugin_api.py` and checks that `Settings` declares every key the engine's `save_settings` allows (it would have caught this). A TestClient test runs when fastapi and httpx are importable (skipped here, so not run).
+- **Finding 9:** shares are measured as serialized event content (UTF-8, `ensure_ascii=False`) against 48,000 bytes and refused with a clear message. Relay acknowledgement isn't surfaced: `publish` is fire-and-forget and that belongs with the outbox work (finding 10, not mine).
+- **Finding 12:** with no snapshot yet, a call proceeds uncapped while a background thread reads the plan, and its spend is still counted. A yesterday snapshot is used as the provisional cap until today's lands. Tests call `plan.probe()` first, as the engine does at start.
+- **Finding 18:** only offer-id validation and lobby tag caps; the boot-lock leak belongs to another agent.
+- **Catalog entry:** the description is now about 2,600 characters. I don't know the catalog's length limit; check it before submitting.
+- **ARCHITECTURE.md** was 1537 words; it's 1507 after rewording and trimming unrelated detail (test-profile notes, scoring detail).
+- **Not verified:** no live Hermes, Desktop or dashboard run (no servers allowed). The UI changes (task review in the chat card, share dialog, auto-growing draft, `withCsp`) are syntax-checked and covered by source-level tests only.
