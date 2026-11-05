@@ -463,3 +463,54 @@ def test_flooded_fakes_cannot_crowd_out_the_players():
     a = {o["text"] for o in game.build_options("Mac", fakes, "s1")[0]}
     b = {o["text"] for o in game.build_options("Mac", dict(reversed(list(fakes.items()))), "s1")[0]}
     assert a == b
+
+
+# --- third pass ------------------------------------------------------------------------------------
+
+async def test_switching_back_to_an_old_name_after_the_trigger_does_not_count(bare):
+    e, _ = bare()
+    sly = Key("sly2")
+    await e._on_event(sly.agent({"t": "presence", "name": "palettes"}, kind=KIND_LIVE), "relay")  # registers it
+    await asyncio.sleep(0.01)
+    await e._on_event(sly.agent({"t": "presence", "name": "Sly"}, kind=KIND_LIVE), "relay")
+    await asyncio.sleep(0.01)
+    trig = own_person_event(e, {"t": "msg", "text": "which palettes do you all like?"})
+    await e._on_event(trig, "relay")
+    await asyncio.sleep(0.01)
+    await e._on_event(sly.agent({"t": "presence", "name": "palettes"}, kind=KIND_LIVE), "relay")
+    assert e._held_since(ROOM, sly.apk, "palettes") is not None   # it did hold the name before
+    assert e._allowed_prio(ROOM, trig["id"], sly.apk, sly.ppk, 100) == 20
+
+
+async def test_missing_registration_time_is_not_trusted(bare):
+    e, _ = bare()
+    zed = Key("zed2")
+    await e._on_event(zed.agent({"t": "presence", "name": "Zed"}, kind=KIND_LIVE), "relay")
+    e._name_at[ROOM].pop("a:" + skeleton("Zed"))
+    assert e._held_since(ROOM, zed.apk, "Zed") is None
+
+
+async def test_earlier_dead_starts_cannot_crowd_out_the_live_game(bare):
+    e, _ = bare(ts=1.0)
+    for i in range(40):  # finished games from many teams, all before the real one
+        k = Key(f"d{i}")
+        await e._on_event(k.agent({"t": "tales_start", "gid": f"d{i}", "rounds": 3, "seq": 1}), "relay")
+        await e._on_event(k.agent({"t": "tales_end", "gid": f"d{i}", "seq": 2, "scores": {}}), "relay")
+    await asyncio.sleep(1.05)
+    host = Key("host2")
+    await e._on_event(host.agent({"t": "tales_start", "gid": "real", "rounds": 3, "seq": 1}), "relay")
+    await e._on_event(host.agent({"t": "tales_round", "gid": "real", "n": 1, "q": "?", "secs": 45,
+                                  "ends_at": time.time() + 45, "seq": 2}), "relay")
+    g = e.game_view(ROOM)
+    assert g["gid"] == "real" and g["phase"] == "fakes"
+
+
+async def test_a_flood_of_new_names_fails_closed_not_open(bare, monkeypatch):
+    from xenia_engine import engine as eng_mod
+    monkeypatch.setattr(eng_mod, "NEW_NAMES_PER_WINDOW", 3)
+    e, _ = bare()
+    for i in range(5):
+        await e._on_event(Key(f"n{i}").person({"t": "msg", "name": f"Flood{i}", "text": "flood"}), "relay")
+    await e._on_event(Key("imp").person({"t": "msg", "name": "Newbie", "text": "i am newbie"}), "relay")
+    msgs = {m["text"]: m for m in e.messages(ROOM)}
+    assert msgs["i am newbie"].get("impostor")  # unverifiable during the flood, so flagged, not trusted

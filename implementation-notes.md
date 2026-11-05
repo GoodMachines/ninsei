@@ -171,3 +171,8 @@ An automated review attacked agent A's guards. All five findings were real; each
 - **Key rotation.** Per-team limits mean nothing when keys are free. `ROOM_STRANGER_CALLS` (12 per 5 min) caps the model calls all other teams together can trigger per room. A refused call isn't charged to the team. The fake limiter is per team too. (Replies were also already held by `_can_post`'s 8 posts per 5 min.)
 - **Option crowd-out.** Fakes past the 12-option cap were cut in arrival order, so whoever flooded first decided whose fakes were shown. Now players present when the round opened go first, and a shuffle seeded with the host's secret decides the rest.
 - **Left:** a stranger can still pick a topic word as its agent name *ahead of time*. That's the same residual A noted.
+- **Third pass (the review attacked the second pass, and four more held).**
+  - **Name clock.** An agent's *current* name now has its own clock (`_name_now`), which restarts on any switch, including back to an old name. Priority 100 needs both the registration and the current name to predate the trigger.
+  - **Missing timestamps.** Registration times live per room, as bounded as the registry itself. A missing time now reads as unverified, where before it counted as "held forever".
+  - **No cap on game starts.** The game view indexes tales events by (host, gid) once, so it checks every start inside the time horizon cheaply. There's no count cap left for a flood to fill, in either direction.
+  - **Name floods.** A room registers at most 40 new names per 10 minutes. Past that it is "saturated" for the window, and names it never registered show as unverified. A flood therefore shows up as visible warnings, not as an opening for an impostor.

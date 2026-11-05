@@ -61,7 +61,8 @@ MAX_PLAYED = 256
 MAX_NAMES = 2000           # name holders remembered per room; when full, unknown names count as unverified
 NAMES_PER_KEY = 3          # names one key can hold in a room, so one stranger can't fill the registry
 MAX_ARRIVED = 5000
-MAX_STARTS = 32            # tales_start events (earliest first, one per team) considered for the room's game
+NEW_NAMES_PER_WINDOW = 40  # names a room may register per NEW_NAMES_WINDOW; past that the room is "saturated"
+NEW_NAMES_WINDOW = 600     # and names it never registered come out unverified until the window passes
 # An agent whose name is a short or everyday word would "be named" in every other message, which
 # would silence every other agent (they skip messages that name someone else's agent).
 MIN_NAME_LEN = 2
@@ -211,7 +212,9 @@ class Engine:
         self._host_games: dict[str, dict] = {}             # gid -> secret host state
         self._played: dict[str, float] = {}                # "host:gid:n" my agent already faked (bounded)
         self._names: dict[str, dict[str, str]] = {}        # room -> {"p:"/"a:" + skeleton: first holder pk}
-        self._name_at: dict[tuple, float] = {}               # (room, key) -> when this machine registered it
+        self._name_at: dict[str, dict[str, float]] = {}      # room -> {key: when registered; 0.0 = from history}
+        self._name_now: dict[str, dict[str, tuple]] = {}     # room -> {agent pk: (skeleton, since)} current name
+        self._names_saturated: dict[str, float] = {}         # room -> until when unknown names are unverified
         self._name_count: dict[str, dict[str, int]] = {}     # room -> {pk: names held}
         self._arrived: dict[str, float] = {}               # event id -> when it reached us live (bounded)
         self._rate: dict[str, list[float]] = {}            # limiter key -> recent hit times
@@ -518,6 +521,8 @@ class Engine:
         if _src != "history":
             self._note_arrival(ev["id"])
         self._register_name(room, ev["pubkey"], c.get("name"), agent=self.owner_of(ev) is not None)
+        if self.owner_of(ev) and _src != "history":
+            self._note_agent_name(room, ev["pubkey"], c.get("name"))
         # Wide enough for a peer whose clock is a few minutes off; dedupe by id stops replays.
         fresh = created >= now - FRESH_WINDOW and _src != "history"
         self._bump()
@@ -546,6 +551,7 @@ class Engine:
                 "state": str(c.get("state", "activity: idle"))[:32], "budget": c.get("budget"),
                 "at": time.time(), "owner": owner, "name": name, "face": c.get("face")}
             self._register_name(room, ev["pubkey"], name, agent=True)
+            self._note_agent_name(room, ev["pubkey"], name)
             self._bump()
         elif t == "claim" and owner:
             trig = str(c.get("trigger", ""))[:80]
@@ -569,6 +575,7 @@ class Engine:
             stored = self.store.get(f"names:{room}")
             reg = {str(k): str(v) for k, v in stored.items()} if isinstance(stored, dict) else {}
             self._names[room] = reg
+            self._name_at[room] = {k: 0.0 for k in reg}  # held before anything this run has seen
             if not isinstance(stored, dict):  # first use: seed from history in created_at order
                 for e in self._sorted(room):
                     self._register_name(room, e["pubkey"], self._content(e).get("name"),
@@ -592,12 +599,14 @@ class Engine:
             self._name_count[room] = counts
         if counts.get(pk, 0) >= NAMES_PER_KEY:
             return
+        if save and not self._rate_ok(f"names:{room}", NEW_NAMES_PER_WINDOW, NEW_NAMES_WINDOW):
+            # A flood of new names: stop registering, and until it passes treat every name we never
+            # registered as unverified. Otherwise a flood would hold newcomers' names open for an impostor.
+            self._names_saturated[room] = time.time() + NEW_NAMES_WINDOW
+            return
         reg[key] = pk
         counts[pk] = counts.get(pk, 0) + 1
-        self._name_at[(room, key)] = time.time() if save else 0.0
-        if len(self._name_at) > MAX_NAMES * 4:
-            for k in list(self._name_at)[: MAX_NAMES]:
-                self._name_at.pop(k, None)
+        self._name_at.setdefault(room, {})[key] = time.time() if save else 0.0  # bounded like reg
         if save:
             self.store.set(f"names:{room}", reg)
 
@@ -612,7 +621,26 @@ class Engine:
         key = "a:" + sk
         if self._names_reg(room).get(key) != pk:
             return None
-        return self._name_at.get((room, key), 0.0)
+        return self._name_at.get(room, {}).get(key)  # missing = unknown = not verified (never "always")
+
+    def _note_agent_name(self, room: str, pk: str, name) -> None:
+        """When an agent's current name took effect. Switching names (even back to one it held before)
+        restarts the clock, so a rename after a message can't make that message address the agent."""
+        sk = skeleton(_name_ok(name, ""))
+        cur = self._name_now.setdefault(room, {})
+        if not sk or (pk in cur and cur[pk][0] == sk):
+            return
+        if pk not in cur and len(cur) >= MAX_NAMES:
+            cur.pop(next(iter(cur)))
+        cur[pk] = (sk, time.time())
+
+    def _name_current_since(self, room: str, pk: str, name: str) -> Optional[float]:
+        if pk == self._identity()["agent_pk"]:
+            return 0.0
+        got = self._name_now.get(room, {}).get(pk)
+        if got is None:
+            return 0.0 if self._held_since(room, pk, name) == 0.0 else None  # history only: as loaded
+        return got[1] if got[0] == skeleton(name) else None
 
     def _who(self, room: str, evs: Optional[list] = None) -> dict:
         """Everything the views need to name people and agents, built in one pass over the room.
@@ -632,6 +660,7 @@ class Engine:
         for pk, p in self.presence.get(room, {}).items():
             agent.setdefault(pk, p["name"])
         return {"ident": ident, "person": person, "agent": agent, "reg": self._names_reg(room),
+                "saturated": self._names_saturated.get(room, 0) > time.time(),
                 "my_name": s["display_name"], "me_p": skeleton(s["display_name"]),
                 "me_a": skeleton(s["agent_name"])}
 
@@ -647,8 +676,8 @@ class Engine:
         if not agent and sk == who["me_p"]:
             return who["ident"]["person_pk"]
         held = who["reg"].get(("a:" if agent else "p:") + sk)
-        if held is None and len(who["reg"]) >= MAX_NAMES:
-            return "?"  # registry full: a name we never registered can't be verified, so it isn't
+        if held is None and (len(who["reg"]) >= MAX_NAMES or who.get("saturated")):
+            return "?"  # registry full or flooded: a name we never registered can't be verified, so it isn't
         return held
 
     def _owner_label(self, who: dict, pk: str) -> tuple[str, bool]:
@@ -754,8 +783,9 @@ class Engine:
             # itself after the fact to a word in the message and so count as addressed.
             name = self._agent_name(room, pk, who)
             since = self._held_since(room, pk, name) if name else None
+            current = self._name_current_since(room, pk, name) if name else None
             arrived = self._arrived.get(trigger, tev["created_at"])
-            if since is not None and since <= arrived and _nameable(name) \
+            if since is not None and current is not None and max(since, current) <= arrived and _nameable(name) \
                     and self._mentions(str(tc.get("text", "")), name):
                 return 100
             return 20
@@ -1395,35 +1425,32 @@ class Engine:
         if not starts:
             return None
         starts.sort(key=lambda x: x[0])
-        # Only starts recent enough to still matter (a game can't outlast its rounds, plus the 600 s the
-        # last one stays on screen), one per team (its earliest), earliest first, plus my own. Keeping the
-        # latest N instead would let a flood of later starts push the live game out of view.
+        # Every start recent enough to still matter (no game outlasts its rounds, and the last one stays on
+        # screen 600 s) is considered, earliest first. No count cap: a cap is something a flood can fill,
+        # before the real game (earliest-N) or after it (latest-N). Host events are indexed once per
+        # view, so each candidate costs only its own events.
         horizon = now - (game.MAX_ROUNDS * (game.FAKE_SECONDS + game.VOTE_SECONDS + game.REVEAL_SECONDS
                                             + GAME_STALE) * self.ts + 600)
-        mine_pk = ident["agent_pk"]
-        seen_teams, kept = set(), []
-        for item in starts:
-            t, sev, _c = item
-            team = _team_key(sev["pubkey"], self.owner_of(sev))
-            if sev["pubkey"] == mine_pk:
-                kept.append(item)
-            elif t >= horizon and team not in seen_teams and len(seen_teams) < MAX_STARTS:
-                seen_teams.add(team)
-                kept.append(item)
-        starts = kept
+        starts = [x for x in starts if x[0] >= horizon or x[1]["pubkey"] == ident["agent_pk"]]
         if not starts:
             return None
+        by_host_gid: dict[tuple, list] = {}
+        for e in evs:
+            c = self._content(e)
+            g = c.get("gid")
+            if isinstance(g, str) and str(c.get("t", "")).startswith("tales_"):
+                by_host_gid.setdefault((e["pubkey"], g), []).append(e)
         # The earliest game that is still running is the room's game: a later tales_start from someone
         # else can't take over a live game. With none live, the most recent game shows its end.
         view = None
         for _t, sev, sc in starts:
-            v = self._game_from(room, evs, sev, sc, now)
+            v = self._game_from(room, by_host_gid.get((sev["pubkey"], sc["gid"]), []), sev, sc, now)
             if v["phase"] != "end":
                 view = v
                 break
         if view is None:
             _t, sev, sc = starts[-1]
-            view = self._game_from(room, evs, sev, sc, now)
+            view = self._game_from(room, by_host_gid.get((sev["pubkey"], sc["gid"]), []), sev, sc, now)
             if now - view["last_at"] > 600:
                 return None
         gid, host = view["gid"], view["host"]
@@ -1513,6 +1540,9 @@ class Engine:
         self.store.set(f"names:{room}", None)
         self._names.pop(room, None)
         self._name_count.pop(room, None)
+        self._name_at.pop(room, None)
+        self._name_now.pop(room, None)
+        self._names_saturated.pop(room, None)
         self.presence.pop(room, None)
         self.events.pop(room, None)
         await self._resubscribe()
