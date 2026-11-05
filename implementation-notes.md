@@ -186,3 +186,16 @@ An automated review attacked agent A's guards. All five findings were real; each
   - Registration times are saved (`names_at:<room>`), so a restart doesn't turn a name re-registered after an eviction into "held since history".
 - **Route shield (defensive).** `_run` in `dashboard/plugin_api.py` now shields the engine call, so a closed tab can't cancel half-done engine work (a game start pays for its questions before it publishes). I first thought a cancellation had killed a live start. It hadn't: the start went through, and my dashboard restart then killed that game's host mid-round. The silent-host expiry ended the orphaned game 107 s later, as designed, which verifies A's fix live.
 - **Stopping here.** Five rounds of automated review, each finding something in the previous round's guards. What's left needs hundreds of active keys held over hours, and its worst case is visible "unverified" flags, not a hijacked name. I'm listing it as a known limit.
+
+## Live re-verification after the merges (2026-11-04, late)
+
+- **Room:** Sam asked Ada, Ada answered in character, Bo stayed quiet.
+- **Tall Tales, full game with votes** (scripted seats: `play.py` in the session scratchpad). Three rounds with real questions; fakes from Maya, Sam and Bo. Each person fell for the other's fake in round 2. Final score Sam 4, Maya 3, not aborted. The client hung up 5 s into `/game/start` and the game still started.
+- **Silent host:** a dashboard restart killed a hosted game mid-round 3. The room ended it 107 s later and showed "The host went quiet, so the game is over."
+- **Offer → real build → share:**
+  - After four messages about dithering, Ada and Bo both offered.
+  - Maya accepted Ada's offer. The prompt carried the untrusted-task label, the build rules and a random quote boundary.
+  - `hermes -p xeniamaya chat --query-file … --oneshot` (no `--yolo`, `TELEGRAM_*` stripped) built a 16,727-byte toy in 2m 42s with 4 tool calls. It started its reply with the offer directive.
+  - The build report said fits, no secrets, CSP after the doctype. Sharing worked, and Sam's copy matched Maya's file byte for byte once the CSP meta was removed.
+  - The chat's gateway (`--idle-exit`) was left running; I stopped it through `lg`.
+- **Bug found and fixed:** after the share, Sam's card still said "Maya is building it". The share event was never read as a state change. Now a share from the offer's owner marks it shared for everyone else; a stranger's share doesn't.

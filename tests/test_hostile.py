@@ -582,3 +582,19 @@ async def test_registration_times_survive_a_restart(bare):
     e._name_at.pop(ROOM)
     e._names_reg(ROOM)
     assert e._name_at[ROOM]["a:" + skeleton("Zed")] == t
+
+
+async def test_others_see_an_offer_as_shared_once_its_owner_shares_it(bare):
+    # Seen live: Sam's card kept saying "Maya is building it" after Maya shared the toy.
+    e, _ = bare()
+    owner, spoof = Key("owner6"), Key("spoof6")
+    offer = owner.agent({"t": "offer", "title": "Toy", "pitch": "p", "topic": "t"})
+    await e._on_event(offer, "history")
+    await e._on_event(owner.person({"t": "offer_state", "name": "Owner", "offer": offer["id"], "state": "building"}),
+                      "history")
+    await e._on_event(spoof.person({"t": "share", "name": "Spoof", "offer": offer["id"], "title": "x", "html": "<p>"}),
+                      "history")
+    assert [m for m in e.messages(ROOM) if m["t"] == "offer"][0]["state"] == "building"  # not from a stranger
+    await e._on_event(owner.person({"t": "share", "name": "Owner", "offer": offer["id"], "title": "Toy", "html": "<p>"}),
+                      "history")
+    assert [m for m in e.messages(ROOM) if m["t"] == "offer"][0]["state"] == "shared"

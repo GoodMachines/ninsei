@@ -1787,6 +1787,10 @@ class Engine:
             if c.get("t") == "offer_state" and not self.owner_of(e) \
                     and offer_owner.get(str(c.get("offer"))) == e["pubkey"]:
                 offer_state[str(c.get("offer"))] = str(c.get("state"))[:16]
+        for e in evs:  # the owner sharing the build is what "shared" means for everyone else
+            c = self._content(e)
+            if c.get("t") == "share" and not self.owner_of(e) and offer_owner.get(str(c.get("offer"))) == e["pubkey"]:
+                offer_state[str(c.get("offer"))] = "shared"
         my_agent_name = self.persona()["name"]
         out = []
         for e in evs:
