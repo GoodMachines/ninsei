@@ -42,7 +42,7 @@ const K = {
   },
   // a shared toy: the SDK's sandboxed frame (opaque origin, scripts only) on a data: URL
   Toy(props) {
-    return jsx(sdk.SandboxedFrame, { src: 'data:text/html;base64,' + b64(props.html), title: props.title, style: { width: '100%', height: '100%', border: 0 } })
+    return jsx(sdk.SandboxedFrame, { src: 'data:text/html;base64,' + b64(withCsp(props.html)), title: props.title, style: { width: '100%', height: '100%', border: 0 } })
   }
 }
 

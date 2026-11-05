@@ -48,6 +48,7 @@ def make(tmp_path, billing, pct=10):
 
 
 async def call(e):
+    await e.plan.probe()   # the engine does this at start and on a day change; a model call never waits for it
     return await e.brain._complete("chat", [{"role": "user", "content": "hi"}], 20, "reply")
 
 

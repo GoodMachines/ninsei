@@ -108,6 +108,8 @@ function OfferChatCard(props) {
   const { m, room, state } = props.d
   const [busy, setBusy] = useState('')
   const [sure, setSure] = useState(false)
+  const [review, setReview] = useState(false)
+  const [prompt, setPrompt] = useState(null)
   const enter = useEnter(true)
   const cs = cardPost(props.refresh)
   const f = faceFor(m.face, m.pk)
@@ -119,11 +121,8 @@ function OfferChatCard(props) {
     try { await fn() } catch (_) { /* toasted */ }
     setBusy('')
   }
-  const accept = () => run('accept', async () => {
-    const out = await cs.post('/offers/answer', { offer: m.id, accept: true })
-    // the same hand-off as the Xenia page: a fresh chat with the task in its composer
-    await P.openBuild(out.prompt)
-  })
+  // Accept never hands anything over unseen: it opens the same review as the Xenia page, with the
+  // full task in an editable box. The hand-off (a fresh chat with the task in its composer) happens there.
   const decline = () => run('decline', async () => {
     await cs.post('/offers/answer', { offer: m.id, accept: false })
     tellAgent('Xenia: I passed on offer ' + m.id.slice(0, 12) + '. No action needed.')
@@ -138,7 +137,7 @@ function OfferChatCard(props) {
   let actions = null
   if (m.yours) {
     if (state === 'open') actions = [
-      jsx(K.Button, { variant: 'primary', size: 'sm', disabled: !!busy, onClick: accept, children: busy === 'accept' ? 'Opening…' : 'Accept' }, 'a'),
+      jsx(K.Button, { variant: 'primary', size: 'sm', disabled: !!busy, onClick: () => setReview(true), children: 'Review & build' }, 'a'),
       jsx(K.Button, { variant: 'ghost', size: 'sm', disabled: !!busy, onClick: decline, children: 'Not now' }, 'n')]
     else if (state === 'building') status = 'Your Hermes is building it. When the file is saved, you can share it here.'
     else if (state === 'ready') actions = sure ? [
@@ -164,7 +163,9 @@ function OfferChatCard(props) {
     ] }),
     jsx('div', { className: 'h-text', children: m.pitch }),
     status && jsx('div', { className: 'h-faint h-small', children: status }),
-    actions && jsx('div', { className: 'h-actions', children: actions })
+    actions && jsx('div', { className: 'h-actions', children: actions }),
+    review && jsx(ReviewDialog, { m, store: cs, onClose: () => { setReview(false); props.refresh() }, onPrompt: setPrompt }),
+    prompt && jsx(PromptDialog, { prompt, onClose: () => setPrompt(null) })
   ] })
 }
 
