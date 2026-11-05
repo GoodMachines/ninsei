@@ -89,3 +89,20 @@ Optional second cap, off by default: `plan_pct` (0 = off, 1-100) means "Hearth m
 - **Verified:** 64 tests (51 old + 13 new; the adapter runs against a stand-in for the gateway classes), `hermes plugins validate .` passes, and a smoke against Hermes's real `BasePlatformAdapter`/`PlatformEntry`/`MessageEvent`. Also a real `hermes gateway run` in a throwaway `HERMES_HOME` in my scratchpad (standalone, TELEGRAM_* stripped, no model creds, 30-45 s timeouts): the gateway auto-enabled `hearth`, took the queued owner message without pairing, started an agent turn (failed on the dummy model, as intended), and `/help` came back into the private thread. UI checked in an isolated scratch dashboard (port 9391): thread, private badge, gateway-down notice, send, Post to room (draft landed, zero events), narrow layout. Scratch homes deleted.
 - **Not verified:** a real model reply on `hearthmaya` (its gateway, PID 61600, was started by someone else during my run and Desktop owns its engine, so I left it alone); the Desktop render (built, not opened); Desktop codicons `lock` and `reply` (assumed present). Gateway shutdown notices ("Hermes is shutting down...") land in the thread, which is honest but a little noisy.
 
+
+## Rename and live checks, 2026-11-05 early hours (main session)
+
+- **Test profiles renamed** with `hermes profile rename`: hearthmaya → `xeniamaya`, hearthsam → `xeniasam`.
+  - Plugin symlink is now `plugins/xenia`, and `plugins.enabled: [xenia]`.
+  - Data moved to `plugin-data/xenia/xenia.db` after a WAL checkpoint.
+  - Identities and settings kept. Bindings re-signed with the new `xenia-bind:v1:` prefix and verified.
+  - Old-protocol rooms, events, offers and drafts cleared, and the stored face dropped so key-derived faces apply.
+- **Desktop folder:** I removed the old `~/.hermes/desktop-plugins/hearth`. Its `.hermes-package.json` showed Desktop *links* the desktop half from the profile's plugin (`"linked": true`), so the app installs `xenia` on its own.
+- **Live after the rename,** over public relays:
+  - a new room was created and verified, and Sam joined;
+  - Ada answered an addressed question in character;
+  - faces are distinct (Ada hue 145 round, Bo hue 243 wide).
+- **Private line, live** (gateway run under `lg`, `TELEGRAM_*` stripped, stopped afterwards):
+  - the owner's message went in through `/line/send`, and the gateway logged "✓ xenia connected";
+  - Maya's full Hermes ran code and replied "17 × 23 = 391." into the private thread;
+  - "Post to room" created a draft only: neither Maya's nor Sam's room view showed it. The test draft was discarded.
