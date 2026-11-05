@@ -630,7 +630,7 @@ class Engine:
         o = offers.get(offer_id) or {}
         room = o.get("room", "")
         from .brain import _clean
-        quotes = [f"> {re.sub(r'[^\\w .-]', '', ln.name)[:32]}: {re.sub(r'\\s+', ' ', _clean(ln.text, 200))}"
+        quotes = [f"> {re.sub(r'[^\w .-]', '', ln.name)[:32]}: {re.sub(r'\s+', ' ', _clean(ln.text, 200))}"
                   for ln in self._transcript(room, 8) if ln.role != "self"]
         path = self.build_path(offer_id)
         return (
