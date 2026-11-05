@@ -505,12 +505,43 @@ async def test_earlier_dead_starts_cannot_crowd_out_the_live_game(bare):
     assert g["gid"] == "real" and g["phase"] == "fakes"
 
 
-async def test_a_flood_of_new_names_fails_closed_not_open(bare, monkeypatch):
+async def test_full_registry_makes_room_from_idle_holders(bare, monkeypatch):
     from xenia_engine import engine as eng_mod
-    monkeypatch.setattr(eng_mod, "NEW_NAMES_PER_WINDOW", 3)
+    monkeypatch.setattr(eng_mod, "MAX_NAMES", 4)
     e, _ = bare()
-    for i in range(5):
-        await e._on_event(Key(f"n{i}").person({"t": "msg", "name": f"Flood{i}", "text": "flood"}), "relay")
-    await e._on_event(Key("imp").person({"t": "msg", "name": "Newbie", "text": "i am newbie"}), "relay")
+    olds = [Key(f"o{i}") for i in range(4)]
+    for i, k in enumerate(olds):
+        await e._on_event(k.person({"t": "msg", "name": f"Old{i}", "text": "old"}), "relay")
+    for k in olds:  # those four haven't been seen for days
+        e._holder_seen[ROOM][k.ppk] = time.time() - 4 * 86400
+    new, imp = Key("newbie"), Key("imp2")
+    await e._on_event(new.person({"t": "msg", "name": "Newbie", "text": "hi, new here"}), "relay")
+    await e._on_event(imp.person({"t": "msg", "name": "Newbie", "text": "i am the newbie"}), "relay")
     msgs = {m["text"]: m for m in e.messages(ROOM)}
-    assert msgs["i am newbie"].get("impostor")  # unverifiable during the flood, so flagged, not trusted
+    assert not msgs["hi, new here"].get("impostor")
+    assert msgs["i am the newbie"]["impostor"]["real"] == new.ppk
+
+
+async def test_repeated_starts_of_one_game_are_checked_once(bare, monkeypatch):
+    e, _ = bare(ts=1.0)
+    host = Key("rep")
+    for i in range(50):
+        await e._on_event(host.agent({"t": "tales_start", "gid": "same", "rounds": 3, "seq": 1, "pad": i}), "relay")
+    await e._on_event(host.agent({"t": "tales_end", "gid": "same", "seq": 2, "scores": {}}), "relay")  # ended:
+    calls = []                                                       # the old loop then checked every copy
+    real = e._game_from
+    monkeypatch.setattr(e, "_game_from", lambda *a: calls.append(1) or real(*a))
+    e.game_view(ROOM)
+    assert len(calls) <= 2
+
+
+async def test_evicted_current_name_is_not_trusted(bare, monkeypatch):
+    from xenia_engine import engine as eng_mod
+    e, _ = bare()
+    zed = Key("zed3")
+    await e._on_event(zed.agent({"t": "presence", "name": "Zed"}, kind=KIND_LIVE), "relay")
+    e._name_at[ROOM]["a:" + skeleton("Zed")] = 0.0  # as if loaded from history
+    monkeypatch.setattr(eng_mod, "MAX_NAMES", 1)
+    await e._on_event(Key("other").agent({"t": "presence", "name": "Other"}, kind=KIND_LIVE), "relay")
+    assert zed.apk not in e._name_now[ROOM]
+    assert e._name_current_since(ROOM, zed.apk, "Zed") is None

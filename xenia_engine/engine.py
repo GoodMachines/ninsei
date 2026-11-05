@@ -61,8 +61,7 @@ MAX_PLAYED = 256
 MAX_NAMES = 2000           # name holders remembered per room; when full, unknown names count as unverified
 NAMES_PER_KEY = 3          # names one key can hold in a room, so one stranger can't fill the registry
 MAX_ARRIVED = 5000
-NEW_NAMES_PER_WINDOW = 40  # names a room may register per NEW_NAMES_WINDOW; past that the room is "saturated"
-NEW_NAMES_WINDOW = 600     # and names it never registered come out unverified until the window passes
+NAME_IDLE_EVICT = 3 * 86400  # when the registry is full, holders not seen for this long make room
 # An agent whose name is a short or everyday word would "be named" in every other message, which
 # would silence every other agent (they skip messages that name someone else's agent).
 MIN_NAME_LEN = 2
@@ -214,7 +213,8 @@ class Engine:
         self._names: dict[str, dict[str, str]] = {}        # room -> {"p:"/"a:" + skeleton: first holder pk}
         self._name_at: dict[str, dict[str, float]] = {}      # room -> {key: when registered; 0.0 = from history}
         self._name_now: dict[str, dict[str, tuple]] = {}     # room -> {agent pk: (skeleton, since)} current name
-        self._names_saturated: dict[str, float] = {}         # room -> until when unknown names are unverified
+        self._name_now_lossy: set[str] = set()               # rooms where _name_now has dropped an entry
+        self._holder_seen: dict[str, dict[str, float]] = {}  # room -> {pk: last event time} for eviction
         self._name_count: dict[str, dict[str, int]] = {}     # room -> {pk: names held}
         self._arrived: dict[str, float] = {}               # event id -> when it reached us live (bounded)
         self._rate: dict[str, list[float]] = {}            # limiter key -> recent hit times
@@ -401,6 +401,9 @@ class Engine:
         for room in self.store.rooms():
             self.events[room] = {e["id"]: e for e in self.store.room_events(room)
                                  if isinstance(e.get("created_at"), int) and e["created_at"] <= horizon}
+            hs = self._holder_seen.setdefault(room, {})  # who has been active, for idle-name eviction
+            for e in self.events[room].values():
+                hs[e["pubkey"]] = max(hs.get(e["pubkey"], 0), e["created_at"])
             self.topics[room] = TopicTracker()
         self.pool = RelayPool(self.relays(), outbox=self.store)
         self.pool.start()
@@ -520,6 +523,11 @@ class Engine:
         self.store.add_event(room, ev)
         if _src != "history":
             self._note_arrival(ev["id"])
+        hs = self._holder_seen.setdefault(room, {})
+        hs[ev["pubkey"]] = max(hs.get(ev["pubkey"], 0), min(created, now))
+        if len(hs) > MAX_NAMES * 2:
+            for k in sorted(hs, key=hs.get)[: MAX_NAMES // 2]:
+                hs.pop(k, None)
         self._register_name(room, ev["pubkey"], c.get("name"), agent=self.owner_of(ev) is not None)
         if self.owner_of(ev) and _src != "history":
             self._note_agent_name(room, ev["pubkey"], c.get("name"))
@@ -589,8 +597,12 @@ class Engine:
             return
         reg = self._names_reg(room)
         key = ("a:" if agent else "p:") + sk
-        if key in reg or len(reg) >= MAX_NAMES:
+        if key in reg:
             return
+        if len(reg) >= MAX_NAMES and save:
+            self._evict_idle_names(room, reg)
+        if len(reg) >= MAX_NAMES:
+            return  # still full: names we never registered come out unverified (see _holder)
         counts = self._name_count.get(room)
         if counts is None:
             counts = {}
@@ -599,16 +611,26 @@ class Engine:
             self._name_count[room] = counts
         if counts.get(pk, 0) >= NAMES_PER_KEY:
             return
-        if save and not self._rate_ok(f"names:{room}", NEW_NAMES_PER_WINDOW, NEW_NAMES_WINDOW):
-            # A flood of new names: stop registering, and until it passes treat every name we never
-            # registered as unverified. Otherwise a flood would hold newcomers' names open for an impostor.
-            self._names_saturated[room] = time.time() + NEW_NAMES_WINDOW
-            return
         reg[key] = pk
         counts[pk] = counts.get(pk, 0) + 1
         self._name_at.setdefault(room, {})[key] = time.time() if save else 0.0  # bounded like reg
         if save:
             self.store.set(f"names:{room}", reg)
+
+    def _evict_idle_names(self, room: str, reg: dict) -> None:
+        """A full registry makes room by dropping names whose holder hasn't been seen for NAME_IDLE_EVICT.
+        Filling it therefore takes keeping MAX_NAMES / NAMES_PER_KEY keys active, and even then the result
+        is visible warnings on newcomers (fail closed), never a name handed to the wrong key."""
+        seen = self._holder_seen.get(room, {})
+        cutoff = time.time() - NAME_IDLE_EVICT
+        idle = [k for k, v in reg.items() if seen.get(v, 0) < cutoff]
+        counts = self._name_count.get(room, {})
+        at = self._name_at.get(room, {})
+        for k in idle[: max(1, MAX_NAMES // 10)]:
+            holder = reg.pop(k)
+            at.pop(k, None)
+            if counts.get(holder):
+                counts[holder] -= 1
 
     def _held_since(self, room: str, pk: str, name: str) -> Optional[float]:
         """When `pk` became the holder of agent name `name` in this room (0 for names loaded from
@@ -628,10 +650,15 @@ class Engine:
         restarts the clock, so a rename after a message can't make that message address the agent."""
         sk = skeleton(_name_ok(name, ""))
         cur = self._name_now.setdefault(room, {})
-        if not sk or (pk in cur and cur[pk][0] == sk):
+        if not sk:
             return
-        if pk not in cur and len(cur) >= MAX_NAMES:
+        if pk in cur:
+            prev = cur.pop(pk)  # re-insert at the back: eviction drops the least recently active agent
+            cur[pk] = prev if prev[0] == sk else (sk, time.time())
+            return
+        if len(cur) >= MAX_NAMES:
             cur.pop(next(iter(cur)))
+            self._name_now_lossy.add(room)  # from now on a missing entry may be an evicted one
         cur[pk] = (sk, time.time())
 
     def _name_current_since(self, room: str, pk: str, name: str) -> Optional[float]:
@@ -639,6 +666,8 @@ class Engine:
             return 0.0
         got = self._name_now.get(room, {}).get(pk)
         if got is None:
+            if room in self._name_now_lossy:
+                return None  # possibly evicted: unknown, so not verified
             return 0.0 if self._held_since(room, pk, name) == 0.0 else None  # history only: as loaded
         return got[1] if got[0] == skeleton(name) else None
 
@@ -660,7 +689,6 @@ class Engine:
         for pk, p in self.presence.get(room, {}).items():
             agent.setdefault(pk, p["name"])
         return {"ident": ident, "person": person, "agent": agent, "reg": self._names_reg(room),
-                "saturated": self._names_saturated.get(room, 0) > time.time(),
                 "my_name": s["display_name"], "me_p": skeleton(s["display_name"]),
                 "me_a": skeleton(s["agent_name"])}
 
@@ -676,8 +704,8 @@ class Engine:
         if not agent and sk == who["me_p"]:
             return who["ident"]["person_pk"]
         held = who["reg"].get(("a:" if agent else "p:") + sk)
-        if held is None and (len(who["reg"]) >= MAX_NAMES or who.get("saturated")):
-            return "?"  # registry full or flooded: a name we never registered can't be verified, so it isn't
+        if held is None and len(who["reg"]) >= MAX_NAMES:
+            return "?"  # registry still full after evicting idle holders: an unregistered name is unverified
         return held
 
     def _owner_label(self, who: dict, pk: str) -> tuple[str, bool]:
@@ -1431,7 +1459,11 @@ class Engine:
         # view, so each candidate costs only its own events.
         horizon = now - (game.MAX_ROUNDS * (game.FAKE_SECONDS + game.VOTE_SECONDS + game.REVEAL_SECONDS
                                             + GAME_STALE) * self.ts + 600)
-        starts = [x for x in starts if x[0] >= horizon or x[1]["pubkey"] == ident["agent_pk"]]
+        uniq: dict[tuple, tuple] = {}  # one candidate per (host, gid), its earliest start: a host repeating
+        for x in starts:               # the same start can't make the view re-scan the same game N times
+            if x[0] >= horizon or x[1]["pubkey"] == ident["agent_pk"]:
+                uniq.setdefault((x[1]["pubkey"], x[2]["gid"]), x)
+        starts = list(uniq.values())
         if not starts:
             return None
         by_host_gid: dict[tuple, list] = {}
@@ -1542,7 +1574,8 @@ class Engine:
         self._name_count.pop(room, None)
         self._name_at.pop(room, None)
         self._name_now.pop(room, None)
-        self._names_saturated.pop(room, None)
+        self._name_now_lossy.discard(room)
+        self._holder_seen.pop(room, None)
         self.presence.pop(room, None)
         self.events.pop(room, None)
         await self._resubscribe()
