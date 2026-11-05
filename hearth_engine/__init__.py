@@ -21,6 +21,17 @@ def data_dir() -> Path:
     return Path(plugin_data_dir("hearth"))
 
 
+def db_path_if_present() -> Optional[Path]:
+    """The store's path when Hearth has data in the active profile, else None. Passive: it never
+    creates the data folder (plugin_data_dir does), so status displays can call it freely."""
+    try:
+        from hermes_constants import get_hermes_home
+        path = Path(get_hermes_home()) / "plugin-data" / "hearth" / "hearth.db"
+    except Exception:
+        return None
+    return path if path.is_file() else None
+
+
 def _push(version: int) -> None:
     """Tell the Desktop half something changed (it re-fetches). Throttled; polling covers misses."""
     now = time.monotonic()

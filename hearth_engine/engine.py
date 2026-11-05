@@ -1245,6 +1245,8 @@ class Engine:
             "relays": [{"url": st.url, "state": st.state, "ok": st.ok, "rejected": st.rejected,
                         "error": st.last_error or st.last_reject} for st in (self.pool.status.values() if self.pool else [])],
             "drafts": self.store.drafts(),
+            # the private line's summary only (counts, never text): the UI fetches the thread itself
+            "line": self.store.line_summary(),
             "offers": pending,
             "lobby": self.lobby,
         }

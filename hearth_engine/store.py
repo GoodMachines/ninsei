@@ -25,7 +25,20 @@ CREATE TABLE IF NOT EXISTS ledger (
 CREATE INDEX IF NOT EXISTS ledger_day ON ledger(day);
 CREATE TABLE IF NOT EXISTS outbox (
   id TEXT PRIMARY KEY, room TEXT NOT NULL, text TEXT NOT NULL, origin TEXT, status TEXT NOT NULL, created_at REAL NOT NULL);
+-- The private line: the owner and their own full Hermes, never published. Only the local UI writes
+-- 'owner' rows; only the gateway adapter writes 'hermes' rows. Nothing that reads relays touches it.
+CREATE TABLE IF NOT EXISTS private_line (
+  id TEXT PRIMARY KEY, role TEXT NOT NULL, text TEXT NOT NULL, status TEXT NOT NULL,
+  reply_to TEXT, created_at REAL NOT NULL, updated_at REAL NOT NULL);
+CREATE INDEX IF NOT EXISTS private_line_status ON private_line(role, status);
+CREATE INDEX IF NOT EXISTS private_line_time ON private_line(created_at);
 """
+
+# private line limits: one owner message, one stored reply
+LINE_OWNER_MAX = 8000
+LINE_REPLY_MAX = 64000
+LINE_GATEWAY_FRESH = 45   # seconds: the adapter heartbeats every 10
+LINE_TYPING_FRESH = 12    # seconds: the gateway re-sends typing every few seconds while it works
 
 
 def today() -> str:
@@ -158,3 +171,118 @@ class Store:
             self._db.execute("UPDATE outbox SET status=? WHERE id=?", (status, oid))
             self._db.commit()
         return {"id": row[0], "room": row[1], "text": row[2]}
+
+    # --- private line (you and your own Hermes; see hearth_platform.py) ---------------------------
+    _LINE_COLS = ("id", "role", "text", "status", "reply_to", "created_at", "updated_at")
+
+    def _line_row(self, row) -> dict:
+        return dict(zip(self._LINE_COLS, row))
+
+    def line_post_owner(self, text: str) -> dict:
+        """The owner typed this in the local Hearth UI. Queued for the gateway adapter to deliver."""
+        text = str(text or "").strip()[:LINE_OWNER_MAX]
+        if not text:
+            raise ValueError("empty message")
+        now = time.time()
+        row = (uuid.uuid4().hex[:16], "owner", text, "queued", None, now, now)
+        with self._lock:
+            self._db.execute("INSERT INTO private_line(id,role,text,status,reply_to,created_at,updated_at) "
+                             "VALUES(?,?,?,?,?,?,?)", row)
+            self._db.commit()
+        return self._line_row(row)
+
+    def line_claim_owner(self, limit: int = 20) -> list[dict]:
+        """Atomically take queued owner messages (queued -> delivered), oldest first."""
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT id,role,text,status,reply_to,created_at,updated_at FROM private_line "
+                "WHERE role='owner' AND status='queued' ORDER BY created_at LIMIT ?", (limit,)).fetchall()
+            out = []
+            now = time.time()
+            for r in rows:
+                cur = self._db.execute("UPDATE private_line SET status='delivered', updated_at=? "
+                                       "WHERE id=? AND status='queued'", (now, r[0]))
+                if cur.rowcount:
+                    out.append({**self._line_row(r), "status": "delivered", "updated_at": now})
+            self._db.commit()
+        return out
+
+    def line_set_status(self, mid: str, status: str) -> None:
+        with self._lock:
+            self._db.execute("UPDATE private_line SET status=?, updated_at=? WHERE id=?", (status, time.time(), mid))
+            self._db.commit()
+
+    def line_add_reply(self, text: str, reply_to: Optional[str] = None) -> dict:
+        """A message from the owner's Hermes, written by the gateway adapter. Private: never published."""
+        now = time.time()
+        row = (uuid.uuid4().hex[:16], "hermes", str(text or "")[:LINE_REPLY_MAX], "new", reply_to, now, now)
+        with self._lock:
+            self._db.execute("INSERT INTO private_line(id,role,text,status,reply_to,created_at,updated_at) "
+                             "VALUES(?,?,?,?,?,?,?)", row)
+            self._db.execute("DELETE FROM kv WHERE k='line_typing'")
+            self._db.commit()
+        return self._line_row(row)
+
+    def line_edit_reply(self, mid: str, text: str) -> bool:
+        with self._lock:
+            cur = self._db.execute("UPDATE private_line SET text=?, updated_at=? WHERE id=? AND role='hermes'",
+                                   (str(text or "")[:LINE_REPLY_MAX], time.time(), mid))
+            self._db.commit()
+            return cur.rowcount > 0
+
+    def line_get(self, mid: str) -> Optional[dict]:
+        with self._lock:
+            row = self._db.execute("SELECT id,role,text,status,reply_to,created_at,updated_at FROM private_line "
+                                   "WHERE id=?", (mid,)).fetchone()
+        return self._line_row(row) if row else None
+
+    def line_messages(self, limit: int = 200) -> list[dict]:
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT id,role,text,status,reply_to,created_at,updated_at FROM private_line "
+                "ORDER BY created_at DESC, id DESC LIMIT ?", (limit,)).fetchall()
+        return [self._line_row(r) for r in reversed(rows)]
+
+    def line_reply_to_draft(self, reply_id: str, room: str) -> dict:
+        """"Post to room": one of your Hermes's replies becomes a room draft. Nothing is published here;
+        the owner sends (or edits, or discards) the draft from the room's tray like any other."""
+        msg = self.line_get(reply_id)
+        if not msg or msg["role"] != "hermes":
+            raise ValueError("That reply is not in your private line.")
+        rooms = self.rooms()
+        if room not in rooms:
+            raise ValueError("You are not in that room.")
+        full = msg["text"].strip()
+        if not full:
+            raise ValueError("That reply is empty.")
+        return {"draft": self.queue_draft(room, full[:1200], "your Hermes"), "room": room,
+                "room_name": rooms[room].get("name", ""), "truncated": len(full) > 1200}
+
+    def line_heartbeat(self) -> None:
+        self.set("line_gateway_at", time.time())
+
+    def line_typing(self, on: bool) -> None:
+        if on:
+            self.set("line_typing", time.time())
+        else:
+            with self._lock:
+                self._db.execute("DELETE FROM kv WHERE k='line_typing'")
+                self._db.commit()
+
+    def line_mark_read(self) -> None:
+        self.set("line_read_at", time.time())
+
+    def line_summary(self) -> dict:
+        """Small and stable enough to sit in every /state snapshot: it changes only when the thread does."""
+        now = time.time()
+        with self._lock:
+            n, last_at = self._db.execute("SELECT COUNT(*), MAX(updated_at) FROM private_line").fetchone()
+            (queued,) = self._db.execute(
+                "SELECT COUNT(*) FROM private_line WHERE role='owner' AND status='queued'").fetchone()
+        read_at = self.get("line_read_at", 0) or 0
+        with self._lock:
+            (unread,) = self._db.execute(
+                "SELECT COUNT(*) FROM private_line WHERE role='hermes' AND created_at>?", (read_at,)).fetchone()
+        return {"count": n, "rev": f"{n}:{last_at or 0:.3f}", "queued": queued, "unread": unread,
+                "typing": now - (self.get("line_typing", 0) or 0) < LINE_TYPING_FRESH,
+                "gateway": now - (self.get("line_gateway_at", 0) or 0) < LINE_GATEWAY_FRESH}
