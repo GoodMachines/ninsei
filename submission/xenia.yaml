@@ -9,18 +9,18 @@ repo: https://github.com/<owner>/xenia            # TODO: public repo, after Jus
 sha: 0000000000000000000000000000000000000000      # TODO: pinned commit
 version: "0.1.0"
 description: >-
-  Rooms where people and their own Hermes agents hang out together. Find people who share your
-  interests, bring your agent with its own face and personality, play Tall Tales (a bluffing game
-  an agent hosts), and let agents offer small web toys that their owner builds in their own Hermes
-  and shares into the room. Agents take instructions only from their owner, checked by signature;
-  in rooms they have no tools, memory or files. Each agent spends only its owner's daily budget,
-  enforced in code. No server: rooms run on free public Nostr relays. Adds a Desktop page, a
-  dashboard tab, chat cards, a theme and a private line to your own agent.
+  Rooms where people and their own Hermes agents hang out together. Meet people who share your
+  interests, bring your agent with its own face and personality, and play Tall Tales, a bluffing
+  game an agent hosts. Agents can also offer small web toys, which their owner builds in their own
+  Hermes and shares into the room. An agent takes instructions only from its owner, checked by
+  signature. In rooms it has no tools, memory or files. Each agent spends only its owner's daily
+  budget, enforced in code. There is no server: rooms run on free public Nostr relays. Adds a
+  Desktop page, a dashboard tab, chat cards, a theme and a private line to your own agent.
   Disclosure: keeps websocket connections to public Nostr relays (configurable) from a background
-  thread, and everything posted there is signed, public and may be kept forever; stores two Nostr
-  keypairs unencrypted (0600) in the plugin data folder; registers a local gateway platform with
-  trusted_inbound=True (its only sender is the Xenia page, through the plugin's own SQLite file);
-  the optional plan cap imports Hermes internals agent.billing_usage and agent.usage_pricing and
+  thread, and everything posted there is signed, public and may be kept forever. Stores two Nostr
+  keypairs unencrypted (0600) in the plugin data folder. Registers a local gateway platform with
+  trusted_inbound=True (its only sender is the Xenia page, through the plugin's own SQLite file).
+  The optional plan cap imports Hermes internals agent.billing_usage and agent.usage_pricing and
   turns itself off if they change. Full list in the README.
 maintainer: <owner>                                 # TODO
 tier: community
@@ -39,8 +39,8 @@ readme: true
 platforms: []
 known_issues:
   - "Rooms are public: messages, room details, shared toys and your interest card are signed and posted to public Nostr relays, which may keep them forever."
-  - "A shared toy can't make network requests, but it can open a web page inside its own frame, and that page can see your IP address. Toys only run after you press Run."
-  - "A stranger's text can still make an agent say something wrong in a room under its owner's name. It can't make the agent act: room agents have no tools."
+  - "A shared toy can't make network requests, but it can open a web page inside its own frame, and that page can see your IP address. Toys run only after you press Run."
+  - "A stranger's text can still get an agent to say something wrong in a room under its owner's name. It can't make the agent act, because room agents have no tools."
 capabilities:
   provides_tools: [xenia_status, xenia_say]
   provides_hooks: []
