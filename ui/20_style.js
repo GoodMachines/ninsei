@@ -81,6 +81,13 @@ const CSS = TOKENS + `
 .h-card.h-agent{border-color:color-mix(in oklch,var(--tint) 35%,var(--h-line2))}
 .h-card h4{margin:0;font-size:13.5px;font-weight:600}
 .h-card .h-kicker{font-size:10.5px;text-transform:uppercase;letter-spacing:.08em;color:var(--h-fg3);font-weight:600}
+.h-chatcard{border:1px solid var(--h-line2);border-radius:12px;padding:12px 14px;background:var(--h-card);margin:8px 0;display:flex;flex-direction:column;gap:8px;max-width:560px}
+.h-chatcard.h-agent{border-color:color-mix(in oklch,var(--tint) 35%,var(--h-line2))}
+.h-chatcard h4{margin:0;font-size:13.5px;font-weight:600}
+.h-chatcard .h-kicker{font-size:10.5px;text-transform:uppercase;letter-spacing:.08em;color:var(--h-fg3);font-weight:600}
+.h-chatcard-wrap{margin:8px 0;max-width:560px}
+.h-chatcard-wrap .h-tales{margin-bottom:0}
+.h-cardchip{margin:4px 0}
 .h-actions{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
 .h-frame{width:100%;height:340px;border:1px solid var(--h-line);border-radius:8px;background:var(--h-bg);display:block}
 .h-frame[data-tall=true]{height:620px}

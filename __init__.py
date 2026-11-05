@@ -50,7 +50,13 @@ def _status(_args=None, **_kw) -> str:
             "budget": {"used_tokens_today": used, "daily_limit": settings.get("budget_daily", 40000)},
             "offers_waiting_for_you": sum(1 for o in offers.values() if o.get("status") in ("open", "ready")),
             "drafts_waiting_to_send": len(store.drafts()),
-            "how_to_open": "Open the Hearth page in Hermes Desktop (sidebar) or the Hearth tab in `hermes dashboard`.",
+            "chat_cards": {
+                "offers": [f'::hearth-offer{{id="{k}"}}' for k, o in offers.items() if o.get("status") in ("open", "building", "ready")],
+                "tall_tales": {m.get("name") or rid: f'::hearth-tales{{room="{rid}"}}' for rid, m in rooms.items()},
+                "how_to_use": "When you tell the user about an offer, or a Tall Tales game running in a room, "
+                              "copy the matching line into your reply on its own line. It draws a live card in the chat.",
+            },
+            "how_to_open":"Open the Hearth page in Hermes Desktop (sidebar) or the Hearth tab in `hermes dashboard`.",
         }
     finally:
         store.close()

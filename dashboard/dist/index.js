@@ -589,6 +589,13 @@ const CSS = TOKENS + `
 .h-card.h-agent{border-color:color-mix(in oklch,var(--tint) 35%,var(--h-line2))}
 .h-card h4{margin:0;font-size:13.5px;font-weight:600}
 .h-card .h-kicker{font-size:10.5px;text-transform:uppercase;letter-spacing:.08em;color:var(--h-fg3);font-weight:600}
+.h-chatcard{border:1px solid var(--h-line2);border-radius:12px;padding:12px 14px;background:var(--h-card);margin:8px 0;display:flex;flex-direction:column;gap:8px;max-width:560px}
+.h-chatcard.h-agent{border-color:color-mix(in oklch,var(--tint) 35%,var(--h-line2))}
+.h-chatcard h4{margin:0;font-size:13.5px;font-weight:600}
+.h-chatcard .h-kicker{font-size:10.5px;text-transform:uppercase;letter-spacing:.08em;color:var(--h-fg3);font-weight:600}
+.h-chatcard-wrap{margin:8px 0;max-width:560px}
+.h-chatcard-wrap .h-tales{margin-bottom:0}
+.h-cardchip{margin:4px 0}
 .h-actions{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
 .h-frame{width:100%;height:340px;border:1px solid var(--h-line);border-radius:8px;background:var(--h-bg);display:block}
 .h-frame[data-tall=true]{height:620px}
@@ -1430,7 +1437,7 @@ function TallTales(props) {
 
   let body = null
   if (game.phase === 'starting') body = jsx('div', { className: 'h-muted', children: (game.host_name || 'The host') + ' is writing questions…' })
-  else if (game.phase === 'fakes') body = jsx(FakePhase, { store, room, game })
+  else if (game.phase === 'fakes') body = jsx(FakePhase, { store, room, game, quiet: props.quiet })
   else if (game.phase === 'vote') body = jsx(VotePhase, { store, room, game })
   else if (game.phase === 'reveal') body = jsx(RevealPhase, { game, book })
   else if (game.phase === 'end') body = jsx('div', { className: 'h-muted', children: game.aborted ? 'The game stopped early.' : 'That’s the game. Final scores:' })
@@ -1485,7 +1492,7 @@ function FakePhase(props) {
   return jsxs('div', { className: 'h-col', style: { gap: 6 }, children: [
     jsx('div', { className: 'h-faint h-small', children: 'Write a believable fake answer. You score for everyone it fools.' }),
     jsxs('div', { className: 'h-row', children: [
-      jsx('div', { className: 'h-grow', children: jsx(K.Input, { value: text, maxLength: 80, autoFocus: true, placeholder: 'Your fake answer', 'aria-label': 'Your fake answer',
+      jsx('div', { className: 'h-grow', children: jsx(K.Input, { value: text, maxLength: 80, autoFocus: !props.quiet, placeholder: 'Your fake answer', 'aria-label': 'Your fake answer',
         onChange: e => setText(e.target.value), onKeyDown: e => { if (e.key === 'Enter') { e.preventDefault(); submit() } } }) }),
       jsx(K.Button, { variant: 'primary', disabled: !text.trim() || busy, onClick: submit, children: 'Submit' })
     ] })
@@ -1561,6 +1568,211 @@ function Scoreboard(props) {
     jsxs('span', { className: 'h-team', 'data-you': !!(you && you.pk === t), children: [
       jsx('span', { children: teamName(game, book, t) }), jsx('b', { children: scores[t] || 0 })
     ] }, t)) })
+}
+
+// ===== ui/65_cards.js ===========================================================================
+
+// ---------------------------------------------------------------------------------------------
+// Chat cards (Desktop): `::hearth-offer{id="…"}` and `::hearth-tales{room="…"}` rendered inside a
+// normal Hermes conversation. The model writes the attributes, so they are untrusted: each is
+// checked for shape, then looked up in what the backend returns, and a miss is a small quiet chip.
+// Text is only ever rendered as text. Buttons call the same backend routes as the Hearth page.
+// ---------------------------------------------------------------------------------------------
+
+const OFFER_ID_RE = /^[0-9a-f]{64}$/
+const ROOM_ID_RE = /^[0-9a-f]{8,64}$/
+
+// A hidden turn that tells the agent what the owner just did. `window.hermes.send` is the SDK's
+// documented, rate-limited way for a widget to talk back; where the host does not provide it to a
+// plugin component (it is a preview-frame API), nothing is sent and the route call is the whole
+// effect. Limits per the SDK: 500 characters, one per second. Never a visible fallback.
+let lastTell = 0
+function tellAgent(text) {
+  const bridge = typeof window !== 'undefined' ? window.hermes : null
+  if (!bridge || typeof bridge.send !== 'function') return Promise.resolve({ ok: false, error: 'unavailable' })
+  const now = Date.now()
+  if (now - lastTell < 1100) return Promise.resolve({ ok: false, error: 'throttled' })
+  lastTell = now
+  try { return Promise.resolve(bridge.send(String(text).slice(0, 500))).catch(() => ({ ok: false, error: 'undelivered' })) } catch (_) { return Promise.resolve({ ok: false, error: 'undelivered' }) }
+}
+
+// Poll `load` while mounted (and enabled); keeps the last good value across a failed poll.
+function usePolled(load, key, ms, enabled) {
+  const [s, setS] = useState({ ready: false, data: null, status: 0 })
+  const loadRef = useRef(load)
+  loadRef.current = load
+  const [kick, setKick] = useState(0)
+  useEffect(() => {
+    if (!enabled) return
+    let dead = false
+    let busy = false
+    const run = async () => {
+      if (busy || dead) return
+      busy = true
+      try { const data = await loadRef.current(); if (!dead) setS({ ready: true, data, status: 0 }) }
+      catch (e) { if (!dead) setS(prev => ({ ready: true, data: prev.data, status: errStatus(e) || 500 })) }
+      busy = false
+    }
+    run()
+    const stop = P.setInterval(() => { if (!document.hidden) run() }, ms)
+    return () => { dead = true; if (stop) stop() }
+  }, [key, enabled, kick])
+  return [s, () => setKick(k => k + 1)]
+}
+
+// POST helper for a card: toast the engine's own words on failure, then re-poll.
+function cardPost(refresh) {
+  return {
+    async post(path, body, okMsg) {
+      try {
+        const out = await P.rest(path, { method: 'POST', body: body || {} })
+        if (okMsg) P.toast('info', okMsg)
+        refresh()
+        return out
+      } catch (e) { P.toast('error', errText(e)); throw e }
+    }
+  }
+}
+
+function CardChip(props) {
+  return jsxs('span', { className: 'hx h-chip h-cardchip', role: 'note', children: [jsx(K.Icon, { name: 'flame', size: 12 }), props.children || 'Hearth: not found'] })
+}
+
+// ---- offer ------------------------------------------------------------------------------------
+
+// The offer's message lives in its room's transcript (title, pitch, owner); the local list only
+// holds offers still waiting, building or ready. Fetching a room's state marks it read, so the
+// room is only fetched when we have nothing cached or the offer changed state.
+function useOffer(id, enabled) {
+  const cache = useRef({ id: '', m: null, room: null })
+  const load = async () => {
+    const snap = await P.rest('/state')
+    const rooms = snap.rooms || []
+    const pend = (snap.offers || []).find(o => o.id === id)
+    const c = cache.current.id === id ? cache.current : { id, m: null, room: null }
+    const final = c.m && (c.m.state === 'shared' || c.m.state === 'declined')
+    if (!c.m || (pend ? pend.status !== c.m.state : !final)) {
+      const order = pend ? rooms.filter(r => r.id === pend.room) : rooms.slice(0, 8)
+      c.m = null
+      for (const r of order) {
+        const s = await P.rest('/state?room=' + encodeURIComponent(r.id))
+        const m = ((s.room && s.room.messages) || []).find(x => x.t === 'offer' && x.id === id)
+        if (m) { c.m = m; c.room = { id: r.id, name: r.name }; break }
+      }
+    }
+    cache.current = c
+    if (!c.m) return null
+    return { m: c.m, room: c.room, state: pend ? pend.status : c.m.state }
+  }
+  return usePolled(load, id, 2500, enabled)
+}
+
+function OfferDirective(props) {
+  const id = String((props.attrs && props.attrs.id) || '').toLowerCase()
+  const valid = OFFER_ID_RE.test(id)
+  const [res, refresh] = useOffer(id, valid && !props.streaming)
+  if (!valid) return jsx(CardChip, {})
+  if (!res.ready) return jsx(CardChip, { children: 'Hearth…' })
+  if (res.status === 404) return jsx(CardChip, { children: 'Hearth: not available' })
+  if (!res.data) return jsx(CardChip, {})
+  return jsx(OfferChatCard, { d: res.data, refresh })
+}
+
+function OfferChatCard(props) {
+  const { m, room, state } = props.d
+  const [busy, setBusy] = useState('')
+  const [sure, setSure] = useState(false)
+  const enter = useEnter(true)
+  const cs = cardPost(props.refresh)
+  const f = faceFor(m.face, m.pk)
+  const owner = m.owner_name || 'its owner'
+
+  const run = async (name, fn) => {
+    if (busy) return
+    setBusy(name)
+    try { await fn() } catch (_) { /* toasted */ }
+    setBusy('')
+  }
+  const accept = () => run('accept', async () => {
+    const out = await cs.post('/offers/answer', { offer: m.id, accept: true })
+    // the same hand-off as the Hearth page: a fresh chat with the task in its composer
+    await P.openBuild(out.prompt)
+  })
+  const decline = () => run('decline', async () => {
+    await cs.post('/offers/answer', { offer: m.id, accept: false })
+    tellAgent('Hearth: I passed on offer ' + m.id.slice(0, 12) + '. No action needed.')
+  })
+  const share = () => run('share', async () => {
+    await cs.post('/offers/share', { offer: m.id, title: '' }, 'Shared with the room')
+    setSure(false)
+    tellAgent('Hearth: I shared the build for offer ' + m.id.slice(0, 12) + ' with the room.')
+  })
+
+  let status = null
+  let actions = null
+  if (m.yours) {
+    if (state === 'open') actions = [
+      jsx(K.Button, { variant: 'primary', size: 'sm', disabled: !!busy, onClick: accept, children: busy === 'accept' ? 'Opening…' : 'Accept' }, 'a'),
+      jsx(K.Button, { variant: 'ghost', size: 'sm', disabled: !!busy, onClick: decline, children: 'Not now' }, 'n')]
+    else if (state === 'building') status = 'Your Hermes is building it. When the file is saved, you can share it here.'
+    else if (state === 'ready') actions = sure ? [
+      jsx('span', { className: 'h-small', children: 'Share the built file with #' + room.name + '?' }, 'q'),
+      jsx(K.Button, { variant: 'primary', size: 'sm', disabled: !!busy, onClick: share, children: busy === 'share' ? 'Sharing…' : 'Yes, share' }, 'y'),
+      jsx(K.Button, { variant: 'ghost', size: 'sm', disabled: !!busy, onClick: () => setSure(false), children: 'Not yet' }, 'x')]
+      : [jsx(K.Button, { variant: 'primary', size: 'sm', onClick: () => setSure(true), children: 'Share to room' }, 's')]
+    else if (state === 'shared') status = 'Shared with #' + room.name + '.'
+    else if (state === 'declined') status = 'You passed on this one.'
+  } else {
+    status = state === 'open' ? 'Waiting for ' + owner + ' to decide.'
+      : state === 'building' || state === 'ready' ? owner + ' is building it.'
+      : state === 'shared' ? owner + ' shared it.' : state === 'declined' ? owner + ' passed.' : null
+  }
+
+  return jsxs('div', { ref: enter, className: 'hx h-chatcard h-agent', style: { '--hue': f.hue }, 'data-state': state, children: [
+    jsxs('div', { className: 'h-row', children: [
+      jsx(Face, { face: m.face, pk: m.pk, state: state === 'open' && m.yours ? 'system: waiting' : state === 'building' ? 'activity: working' : 'activity: idle', size: 28, name: m.name }),
+      jsxs('div', { className: 'h-grow', style: { minWidth: 0 }, children: [
+        jsx('div', { className: 'h-kicker', children: 'Hearth · ' + room.name + ' · ' + state }),
+        jsx('h4', { children: m.title })
+      ] })
+    ] }),
+    jsx('div', { className: 'h-text', children: m.pitch }),
+    status && jsx('div', { className: 'h-faint h-small', children: status }),
+    actions && jsx('div', { className: 'h-actions', children: actions })
+  ] })
+}
+
+// ---- Tall Tales -------------------------------------------------------------------------------
+
+function TalesDirective(props) {
+  const room = String((props.attrs && props.attrs.room) || '').toLowerCase()
+  const valid = ROOM_ID_RE.test(room)
+  const load = async () => {
+    const snap = await P.rest('/state?room=' + encodeURIComponent(room))
+    if (!(snap.rooms || []).some(r => r.id === room) || !snap.room || snap.room.id !== room) return null
+    return { room: snap.room, me: snap.me }
+  }
+  // the same one-second rhythm as the Hearth page while a game runs
+  const [res, refresh] = usePolled(load, room, 1000, valid && !props.streaming)
+  if (!valid) return jsx(CardChip, {})
+  if (!res.ready) return jsx(CardChip, { children: 'Hearth…' })
+  if (res.status === 404) return jsx(CardChip, { children: 'Hearth: not available' })
+  if (!res.data) return jsx(CardChip, {})
+  return jsx(TalesChatCard, { room: res.data.room, me: res.data.me, game: res.data.room.game, refresh })
+}
+
+function TalesChatCard(props) {
+  const { room, me, game } = props
+  const enter = useEnter(true)
+  const store = cardPost(props.refresh)
+  const book = nameBook(room, me)
+  return jsx('div', { ref: enter, className: 'hx h-chatcard-wrap', children:
+    game
+      ? jsx(TallTales, { store, room, game, book, quiet: true }, game.gid)
+      : jsxs('div', { className: 'h-chatcard', children: [
+          jsx('div', { className: 'h-kicker', children: 'Hearth · ' + room.name }),
+          jsx('div', { className: 'h-muted', children: 'No Tall Tales game is running in this room.' })
+        ] }) })
 }
 
 // ===== ui/70_lobby.js ===========================================================================
