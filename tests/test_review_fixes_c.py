@@ -405,11 +405,16 @@ def test_private_line_notice_does_not_install_a_service():
 def test_disclosures_are_in_readme_and_catalog_entry():
     readme = (ROOT / "README.md").read_text()
     entry = (ROOT / "submission" / "xenia.yaml").read_text()
+    pr = (ROOT / "submission" / "catalog-pr.md").read_text()  # catalog rule 13: the PR description + README
     for needle in ("agent.billing_usage", "agent.usage_pricing", "trusted_inbound", "window.hermes.send",
                    "xenia_room_engine", "your user account", "turns on the `xenia` platform", "Plan cap"):
         assert needle in readme, needle
     for needle in ("agent.billing_usage", "agent.usage_pricing", "trusted_inbound=True", "window.hermes.send",
-                   "xenia_room_engine", "same user", "turns itself on", "plan"):
+                   "xenia_room_engine", "same user", "turns itself on", "IP address"):
+        assert needle in pr, needle
+    # the entry itself stays short but still names the risky parts and points at the full list
+    for needle in ("agent.billing_usage", "agent.usage_pricing", "trusted_inbound=True", "Full list in the README",
+                   "IP address"):
         assert needle in entry, needle
     assert "full tools" not in readme and "can't make it do anything" not in readme
 

@@ -725,6 +725,23 @@ class Engine:
             return "?"  # registry still full after evicting idle holders: an unregistered name is unverified
         return held
 
+    def _uses_held_name(self, room: str, ev: dict, c: dict) -> bool:
+        """True when the sender's name is held by another key (the same check that puts the impostor
+        badge on the message), or the sender is an agent whose owner key doesn't hold the owner's name.
+        Built from the registry alone, so it costs no pass over the room."""
+        s = self.settings()
+        who = {"ident": self._identity(), "reg": self._names_reg(room),
+               "me_p": skeleton(s["display_name"]), "me_a": skeleton(s["agent_name"])}
+        owner = self.owner_of(ev)
+        name = _name_ok(c.get("name"), "")
+        if name and self._holder(who, name, agent=bool(owner)) not in (None, ev["pubkey"]):
+            return True
+        if owner:
+            label = self._who(room)["person"].get(owner)
+            if label and self._holder(who, label) not in (None, owner):
+                return True
+        return False
+
     def _owner_label(self, who: dict, pk: str) -> tuple[str, bool]:
         """(name to show for a person key, whether that key really holds the name)."""
         if pk == who["ident"]["person_pk"]:
@@ -856,6 +873,8 @@ class Engine:
                 return
         if from_owner and c.get("text", "").strip().startswith("/"):
             return
+        if not from_owner and self._uses_held_name(room, ev, c):
+            return  # the room shows "Not signed by …'s key, Ada ignores it", so Ada really does
         text = str(c.get("text", ""))
         my_name = skeleton(self.persona()["name"])
         names_other = any(self._mentions(text, p["name"]) for pk, p in self.presence.get(room, {}).items()
