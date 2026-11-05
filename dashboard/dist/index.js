@@ -614,6 +614,20 @@ const CSS = TOKENS + `
 .h-tray{display:flex;flex-direction:column;gap:6px;margin-bottom:8px}
 .h-draft{border:1px dashed var(--h-line2);border-radius:10px;padding:8px 10px;display:flex;gap:10px;align-items:flex-start}
 
+/* the private line */
+.h-private{display:inline-flex;align-items:center;gap:4px;padding:1px 7px;border-radius:999px;font-size:10.5px;color:var(--h-fg2);background:var(--h-raise)}
+.h-hmark{display:inline-grid;place-items:center;flex:none;border-radius:30%;font-weight:700;letter-spacing:-.02em;color:var(--h-bg);background:color-mix(in oklch,var(--h-fg) 78%,var(--h-bg))}
+.h-lmsg[data-role=hermes] .h-bubble{background:var(--h-raise);border:1px solid var(--h-line);border-radius:4px 12px 12px 12px;padding:7px 11px;display:inline-block;max-width:100%}
+.h-lactions{margin-top:2px;opacity:.72}
+.h-lmsg:hover .h-lactions,.h-lactions:focus-within{opacity:1}
+.h-lmsg [data-status=failed]{color:var(--h-bad)}
+.h-typing{display:inline-flex;gap:4px;align-items:center;padding:9px 12px;border-radius:4px 12px 12px 12px;background:var(--h-raise);border:1px solid var(--h-line);width:max-content}
+.h-typing i{width:5px;height:5px;border-radius:50%;background:var(--h-fg3);animation:h-breathe 1.1s cubic-bezier(.45,.05,.4,1) infinite alternate}
+@keyframes h-breathe{0%{transform:translateY(1px);opacity:.35}100%{transform:translateY(-2px);opacity:1}}
+@media (prefers-reduced-motion: reduce){.h-typing i{animation:none}}
+.h-compose-box[data-private=true]{align-items:center}
+.h-compose-box[data-private=true]>svg,.h-compose-box[data-private=true]>.codicon{color:var(--h-fg3);flex:none}
+
 /* right rail: people with their agents nested */
 .h-person{display:flex;flex-direction:column;gap:2px;padding:6px 4px;border-radius:8px}
 .h-person-row{display:flex;align-items:center;gap:8px;min-width:0}
@@ -1430,6 +1444,213 @@ function MyAgentCard(props) {
   ] })
 }
 
+// ===== ui/55_line.js ============================================================================
+
+// ---------------------------------------------------------------------------------------------
+// the private line: you and your own Hermes (tools, memory, approvals), through the gateway.
+//
+// Nothing in this view is published. What you type goes to the local store; the Hearth gateway
+// platform hands it to your Hermes and writes the reply back. Room messages never come in here.
+// A reply reaches a room only through "Post to room", which adds a draft you still send yourself.
+// ---------------------------------------------------------------------------------------------
+
+function useLine(store, snap) {
+  const [data, setData] = useState(null)
+  const [err, setErr] = useState('')
+  const sum = snap.line || {}
+  const load = useCallback(() => P.rest('/line').then(d => { setData(d); setErr('') }, e => setErr(errText(e))), [])
+  // the /state snapshot carries the thread's summary; refetch whenever it moves
+  useEffect(() => { load() }, [sum.rev, sum.typing, sum.gateway, sum.queued])
+  // waiting on a reply: look a little more often than the page does
+  const waiting = !!(data && (data.queued > 0 || data.typing))
+  useEffect(() => {
+    if (!waiting) return
+    return P.setInterval(load, 1200)
+  }, [waiting])
+  return { data, err, load, setData }
+}
+
+function LineView(props) {
+  const { store, snap } = props
+  const { data, err, load, setData } = useLine(store, snap)
+  const scroller = useRef(null)
+  const stick = useRef(true)
+  const seen = useRef(null)
+  const msgs = (data && data.messages) || []
+  if (data && seen.current === null) seen.current = new Set(msgs.map(m => m.id))
+  const fresh = id => {
+    if (!seen.current || seen.current.has(id)) return false
+    seen.current.add(id)
+    return true
+  }
+  const onScroll = () => {
+    const el = scroller.current
+    if (el) stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80
+  }
+  const lastId = msgs.length ? msgs[msgs.length - 1].id : ''
+  const typing = !!(data && data.typing)
+  useLayoutEffect(() => {
+    const el = scroller.current
+    if (el && stick.current) el.scrollTop = el.scrollHeight
+  }, [msgs.length, lastId, typing])
+
+  const send = async text => {
+    const m = await store.post('/line/send', { text })
+    stick.current = true
+    setData(d => d ? Object.assign({}, d, { messages: d.messages.concat([m]), queued: (d.queued || 0) + 1 }) : d)
+    load()
+  }
+
+  const gatewayDown = data && !data.gateway
+  return jsxs(Fragment, { children: [
+    jsxs('div', { className: 'h-head', children: [
+      jsx(HermesMark, { size: 28 }),
+      jsxs('div', { className: 'h-grow h-col', style: { gap: 2 }, children: [
+        jsxs('div', { className: 'h-row', children: [
+          jsx('h2', { children: 'Your Hermes' }),
+          jsxs('span', { className: 'h-private', children: [jsx(K.Icon, { name: 'lock', size: 11 }), 'private'] })
+        ] }),
+        jsx('div', { className: 'h-faint h-small h-trunc', children: 'Only you and your Hermes see this thread. Nothing here reaches a room unless you post it.' })
+      ] })
+    ] }),
+    jsx('div', { className: 'h-scroll', ref: scroller, onScroll, children: jsxs('div', { className: 'h-timeline', role: 'log', 'aria-live': 'polite', children: [
+      err && jsx(Notice, { icon: 'warning', role: 'alert', children: err }),
+      !data && !err && jsx('div', { className: 'h-empty', children: 'Opening your private line…' }),
+      data && msgs.length === 0 && jsx(LineEmpty, {}),
+      msgs.map((m, i) => jsx(LineMessage, { m, prev: msgs[i - 1], snap, store, gatewayDown, animate: fresh(m.id) }, m.id)),
+      typing && jsx(LineTyping, {}, 'typing')
+    ] }) }),
+    jsxs('div', { className: 'h-composer', children: [
+      gatewayDown && jsx('div', { style: { marginBottom: 8 }, children: jsx(Notice, { icon: 'clock', children:
+        'Your Hermes gateway isn’t running for this profile, so messages wait here. Start it (hermes gateway start) and they go through.' }) }),
+      jsx(LineComposer, { onSend: send })
+    ] })
+  ] })
+}
+
+function HermesMark(props) {
+  const s = props.size || 28
+  return jsx('span', { className: 'h-hmark', 'aria-hidden': true, style: { width: s, height: s, fontSize: Math.round(s * 0.46) }, children: 'H' })
+}
+
+function LineEmpty() {
+  return jsxs('div', { className: 'h-empty', children: [
+    jsx(HermesMark, { size: 44 }),
+    jsx('b', { children: 'A private line to your own Hermes' }),
+    jsx('div', { style: { maxWidth: 420 }, children: 'Ask it anything, with its tools and memory, without leaving Hearth. Room chat never comes in here. If you want it to see something from a room, paste it yourself.' })
+  ] })
+}
+
+function LineMessage(props) {
+  const { m, prev, snap, store } = props
+  const ref = useEnter(props.animate)
+  const mine = m.role === 'owner'
+  const first = !prev || prev.role !== m.role || m.created_at - prev.created_at > 300
+  let status = null
+  if (mine && m.status === 'queued') status = props.gatewayDown ? 'waiting for your gateway' : 'sending…'
+  else if (mine && m.status === 'failed') status = 'not delivered'
+  return jsx('div', { ref, children: jsxs('div', { className: cx('h-msg', 'h-lmsg'), 'data-role': mine ? 'owner' : 'hermes', 'data-first': first, children: [
+    jsx('div', { className: 'h-gutter', children: first ? (mine ? jsx(Initial, { name: snap.me.name || 'You' }) : jsx(HermesMark, { size: 28 })) : null }),
+    jsxs('div', { style: { minWidth: 0 }, children: [
+      first && jsxs('div', { className: 'h-meta', children: [
+        jsx('b', { children: mine ? 'You' : 'Your Hermes' }),
+        jsx('span', { className: 'h-faint h-tiny', children: fmtTime(m.created_at) })
+      ] }),
+      mine ? jsx('div', { className: 'h-text', children: m.text })
+        : jsx('div', { className: 'h-bubble', children: jsx('div', { className: 'h-text', children: m.text }) }),
+      status && jsx('div', { className: 'h-faint h-tiny', 'data-status': m.status, children: status }),
+      !mine && jsx(PostToRoom, { m, snap, store })
+    ] })
+  ] }) })
+}
+
+function LineTyping() {
+  const ref = useEnter(true)
+  return jsx('div', { ref, children: jsxs('div', { className: 'h-msg h-lmsg', 'data-role': 'hermes', 'data-first': true, children: [
+    jsx('div', { className: 'h-gutter', children: jsx(HermesMark, { size: 28 }) }),
+    jsxs('div', { className: 'h-typing', role: 'status', 'aria-label': 'Your Hermes is working', children: [0, 1, 2].map(i => jsx('i', { style: { animationDelay: (i * 0.16) + 's' } }, i)) })
+  ] }) })
+}
+
+// "Post to room": the reply becomes a draft in that room's tray. You still read it and press Send.
+function PostToRoom(props) {
+  const { m, snap, store } = props
+  const [open, setOpen] = useState(false)
+  const ref = useRef(null)
+  const rooms = snap.rooms || []
+  useEffect(() => {
+    if (!open) return
+    const away = e => { if (ref.current && !ref.current.contains(e.target)) setOpen(false) }
+    const esc = e => { if (e.key === 'Escape') setOpen(false) }
+    const off1 = P.listen(document, 'pointerdown', away)
+    const off2 = P.listen(document, 'keydown', esc)
+    return () => { off1(); off2() }
+  }, [open])
+  if (!rooms.length) return null
+  const post = async room => {
+    setOpen(false)
+    try {
+      const out = await store.post('/line/post', { id: m.id, room: room.id })
+      P.toast('info', 'Draft added to ' + (out.room_name || room.name) + '. Read it and send it from the room.' + (out.truncated ? ' It was cut to 1,200 characters.' : ''))
+    } catch (_) { /* toasted */ }
+  }
+  return jsxs('div', { className: 'h-lactions', ref, style: { position: 'relative' }, children: [
+    jsx(K.Tip, { label: 'Adds a draft to a room. Nothing is sent until you press Send there.', children:
+      jsx(K.Button, { variant: 'ghost', size: 'sm', 'aria-expanded': open, onClick: () => setOpen(!open),
+        children: jsxs(Fragment, { children: [jsx(K.Icon, { name: 'reply', size: 13 }), 'Post to room…'] }) }) }),
+    open && jsx('div', { className: 'h-menu', role: 'menu', style: { bottom: 'auto', top: 'calc(100% + 4px)' }, children: rooms.map(r =>
+      jsxs('button', { type: 'button', role: 'menuitem', onClick: () => post(r), children: [
+        jsx('span', { className: 'h-hash', children: '#' }),
+        jsx('span', { className: 'h-grow h-trunc', children: r.name })
+      ] }, r.id)) })
+  ] })
+}
+
+function LineComposer(props) {
+  const [text, setText] = useState('')
+  const [busy, setBusy] = useState(false)
+  const ta = useRef(null)
+  const send = async () => {
+    const t = text.trim()
+    if (!t || busy) return
+    setBusy(true)
+    setText('')
+    try { await props.onSend(t) } catch (_) { setText(t) }
+    setBusy(false)
+    ta.current && ta.current.focus()
+  }
+  useLayoutEffect(() => {
+    const el = ta.current
+    if (!el) return
+    el.style.height = 'auto'
+    el.style.height = Math.min(160, el.scrollHeight) + 'px'
+  }, [text])
+  return jsxs('div', { className: 'h-compose-box', 'data-private': true, children: [
+    jsx(K.Icon, { name: 'lock', size: 13 }),
+    jsx('textarea', { ref: ta, rows: 1, value: text, maxLength: 8000, placeholder: 'Message your Hermes (private)', 'aria-label': 'Message your Hermes',
+      onChange: e => setText(e.target.value),
+      onKeyDown: e => { if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); send() } } }),
+    jsx(K.Button, { variant: 'primary', size: 'icon', 'aria-label': 'Send to your Hermes', disabled: !text.trim() || busy, onClick: send,
+      children: jsx(K.Icon, { name: 'send', size: 14 }) })
+  ] })
+}
+
+// right rail while the private line is open: who is who, in one glance
+function LineAbout(props) {
+  const a = props.snap.me.agent
+  return jsxs('div', { className: 'h-col', style: { gap: 10 }, children: [
+    jsx('div', { className: 'h-sec', style: { padding: '0 4px' }, children: 'Two different agents' }),
+    jsxs('div', { className: 'h-mine', style: { marginTop: 0 }, children: [
+      jsxs('div', { className: 'h-row', children: [jsx(HermesMark, { size: 24 }), jsx('b', { children: 'Your Hermes' })] }),
+      jsx('div', { className: 'h-faint h-small', children: 'Full tools and memory, under your approvals. Hears only you, here. Never reads rooms.' })
+    ] }),
+    jsxs('div', { className: 'h-mine', style: { marginTop: 0 }, children: [
+      jsxs('div', { className: 'h-row', children: [jsx(Face, { face: a.face, pk: a.pk, state: a.state, size: 24, name: a.name }), jsx('b', { children: a.name || 'Your room agent' })] }),
+      jsx('div', { className: 'h-faint h-small', children: 'Chats in rooms. No tools, no memory, no files: a stranger can’t make it do anything that matters.' })
+    ] })
+  ] })
+}
+
 // ===== ui/60_tales.js ===========================================================================
 
 // ---------------------------------------------------------------------------------------------
@@ -1964,7 +2185,8 @@ function App(props) {
     const room = snap.room && snap.room.id === roomId ? snap.room : null
     const showRoom = view === 'room' && roomId
     let center
-    if (view === 'settings') center = jsx('div', { className: 'h-scroll', children: jsxs('div', { className: 'h-pane', children: [jsx('h1', { children: 'Settings' }, 'h'), jsx(SettingsForm, { store, snap, inset: true }, 's')] }) })
+    if (view === 'hermes') center = jsx(LineView, { store, snap })
+    else if (view === 'settings') center = jsx('div', { className: 'h-scroll', children: jsxs('div', { className: 'h-pane', children: [jsx('h1', { children: 'Settings' }, 'h'), jsx(SettingsForm, { store, snap, inset: true }, 's')] }) })
     else if (showRoom && room) center = jsx(RoomView, { store, snap, room, onPeople: () => setPeople(!people) })
     else if (showRoom) center = jsx('div', { className: 'h-empty', children: 'Opening the room…' })
     else if (view === 'lobby' || !(snap.rooms || []).length) center = jsx(Lobby, { store, snap })
@@ -1976,7 +2198,7 @@ function App(props) {
         st.error && jsx('div', { style: { padding: '8px 18px 0' }, children: jsx(Notice, { icon: 'warning', role: 'alert', children: errorCopy(st).title + '. Showing the last state we had.' }) }),
         center
       ] }),
-      jsx('aside', { className: 'h-right', 'aria-label': 'People', children: room && showRoom ? jsx(People, { room, snap }) : jsx(MyAgentCard, { snap }) })
+      jsx('aside', { className: 'h-right', 'aria-label': 'People', children: view === 'hermes' ? jsx(LineAbout, { snap }) : room && showRoom ? jsx(People, { room, snap }) : jsx(MyAgentCard, { snap }) })
     ] })
   }
   return jsxs('div', { className: 'hx h-page', 'data-platform': P.kind, children: [
@@ -2013,6 +2235,7 @@ function Rail(props) {
   const waiting = {}
   for (const o of snap.offers || []) if (o.status === 'open' || o.status === 'ready') waiting[o.room] = true
   const a = snap.me.agent
+  const line = snap.line || {}
   const open = id => { store.setRoom(id); go('room') }
   return jsxs(Fragment, { children: [
     jsxs('div', { className: 'h-brand', children: [
@@ -2025,6 +2248,8 @@ function Rail(props) {
     ] }),
     jsxs('div', { className: 'h-nav', children: [
       jsx(NavRow, { on: view === 'lobby', onClick: () => go('lobby'), icon: 'compass', label: 'Lobby' }),
+      jsx(NavRow, { on: view === 'hermes', onClick: () => go('hermes'), icon: 'lock', label: 'Your Hermes',
+        badge: line.typing ? 'working' : line.unread > 0 && view !== 'hermes' ? 'unread' : '' }),
       P.kind === 'dashboard'
         ? jsx(NavRow, { on: view === 'settings', onClick: () => go('settings'), icon: 'gear', label: 'Settings' })
         : jsx(NavRow, { onClick: () => P.openSettings(), icon: 'gear', label: 'Settings' })
@@ -2054,7 +2279,9 @@ function Rail(props) {
 
 function NavRow(props) {
   return jsxs('button', { type: 'button', className: 'h-navrow', 'data-on': !!props.on, onClick: props.onClick, children: [
-    jsx(K.Icon, { name: props.icon, size: 14 }), jsx('span', { className: 'h-grow', children: props.label })
+    jsx(K.Icon, { name: props.icon, size: 14 }), jsx('span', { className: 'h-grow', children: props.label }),
+    props.badge === 'unread' && jsx('span', { className: 'h-dot', 'aria-label': 'new reply' }),
+    props.badge === 'working' && jsx('span', { className: 'h-faint h-tiny', children: 'working' })
   ] })
 }
 
@@ -2191,7 +2418,9 @@ function StatusChip(props) {
     'sign-out': 'M6 2.5H3v11h3M10 5l3 3-3 3M13 8H6',
     clock: 'M8 1.8a6.2 6.2 0 1 0 0 12.4A6.2 6.2 0 0 0 8 1.8zM8 4.5V8l2.3 1.5',
     flame: 'M8 14c-2.6 0-4.5-1.8-4.5-4.3C3.5 6.5 6.5 5 7 1.8c2 1.4 5.5 4.3 5.5 7.9C12.5 12.2 10.6 14 8 14zM8 14c-1.2 0-2-.9-2-2 0-1.6 1.4-2.3 2-3.6.8.8 2 1.9 2 3.6 0 1.1-.8 2-2 2z',
-    close: 'M4 4l8 8M12 4l-8 8'
+    close: 'M4 4l8 8M12 4l-8 8',
+    lock: 'M4.5 7.5h7v6h-7zM6 7.5V5.5a2 2 0 0 1 4 0v2',
+    reply: 'M6.5 4L3 7.5 6.5 11M3 7.5h6.5a3.5 3.5 0 0 1 3.5 3.5v1'
   }
 
   function Icon(props) {

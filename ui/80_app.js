@@ -29,7 +29,8 @@ function App(props) {
     const room = snap.room && snap.room.id === roomId ? snap.room : null
     const showRoom = view === 'room' && roomId
     let center
-    if (view === 'settings') center = jsx('div', { className: 'h-scroll', children: jsxs('div', { className: 'h-pane', children: [jsx('h1', { children: 'Settings' }, 'h'), jsx(SettingsForm, { store, snap, inset: true }, 's')] }) })
+    if (view === 'hermes') center = jsx(LineView, { store, snap })
+    else if (view === 'settings') center = jsx('div', { className: 'h-scroll', children: jsxs('div', { className: 'h-pane', children: [jsx('h1', { children: 'Settings' }, 'h'), jsx(SettingsForm, { store, snap, inset: true }, 's')] }) })
     else if (showRoom && room) center = jsx(RoomView, { store, snap, room, onPeople: () => setPeople(!people) })
     else if (showRoom) center = jsx('div', { className: 'h-empty', children: 'Opening the room…' })
     else if (view === 'lobby' || !(snap.rooms || []).length) center = jsx(Lobby, { store, snap })
@@ -41,7 +42,7 @@ function App(props) {
         st.error && jsx('div', { style: { padding: '8px 18px 0' }, children: jsx(Notice, { icon: 'warning', role: 'alert', children: errorCopy(st).title + '. Showing the last state we had.' }) }),
         center
       ] }),
-      jsx('aside', { className: 'h-right', 'aria-label': 'People', children: room && showRoom ? jsx(People, { room, snap }) : jsx(MyAgentCard, { snap }) })
+      jsx('aside', { className: 'h-right', 'aria-label': 'People', children: view === 'hermes' ? jsx(LineAbout, { snap }) : room && showRoom ? jsx(People, { room, snap }) : jsx(MyAgentCard, { snap }) })
     ] })
   }
   return jsxs('div', { className: 'hx h-page', 'data-platform': P.kind, children: [
@@ -78,6 +79,7 @@ function Rail(props) {
   const waiting = {}
   for (const o of snap.offers || []) if (o.status === 'open' || o.status === 'ready') waiting[o.room] = true
   const a = snap.me.agent
+  const line = snap.line || {}
   const open = id => { store.setRoom(id); go('room') }
   return jsxs(Fragment, { children: [
     jsxs('div', { className: 'h-brand', children: [
@@ -90,6 +92,8 @@ function Rail(props) {
     ] }),
     jsxs('div', { className: 'h-nav', children: [
       jsx(NavRow, { on: view === 'lobby', onClick: () => go('lobby'), icon: 'compass', label: 'Lobby' }),
+      jsx(NavRow, { on: view === 'hermes', onClick: () => go('hermes'), icon: 'lock', label: 'Your Hermes',
+        badge: line.typing ? 'working' : line.unread > 0 && view !== 'hermes' ? 'unread' : '' }),
       P.kind === 'dashboard'
         ? jsx(NavRow, { on: view === 'settings', onClick: () => go('settings'), icon: 'gear', label: 'Settings' })
         : jsx(NavRow, { onClick: () => P.openSettings(), icon: 'gear', label: 'Settings' })
@@ -119,7 +123,9 @@ function Rail(props) {
 
 function NavRow(props) {
   return jsxs('button', { type: 'button', className: 'h-navrow', 'data-on': !!props.on, onClick: props.onClick, children: [
-    jsx(K.Icon, { name: props.icon, size: 14 }), jsx('span', { className: 'h-grow', children: props.label })
+    jsx(K.Icon, { name: props.icon, size: 14 }), jsx('span', { className: 'h-grow', children: props.label }),
+    props.badge === 'unread' && jsx('span', { className: 'h-dot', 'aria-label': 'new reply' }),
+    props.badge === 'working' && jsx('span', { className: 'h-faint h-tiny', children: 'working' })
   ] })
 }
 

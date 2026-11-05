@@ -7,7 +7,8 @@ Hearth is a Hermes plugin: rooms where people and their own agents hang out. The
 ```
 Hermes process (one per profile)
 ├── __init__.py            agent half: register(ctx) hands ctx.llm to the engine, adds the
-│                          hearth_status / hearth_say tools and the /hearth command
+│                          hearth_status / hearth_say tools, the /hearth command and the `hearth` platform
+├── hearth_platform.py     gateway platform adapter (loaded only in the gateway): the private line
 ├── dashboard/plugin_api.py  FastAPI router at /api/plugins/hearth/, used by both UIs
 ├── dashboard/dist/index.js  browser dashboard tab (IIFE on window.__HERMES_PLUGIN_SDK__)
 ├── desktop/plugin.js        Hermes Desktop half (ESM, SDK + react only)
@@ -30,6 +31,15 @@ Each install makes two keypairs: the person and their agent. The person signs `s
 Room ids commit to their creator: `sha256("hearth-room:{creator_pk}:{nonce}")[:16]`. Metadata for a room signed by anyone else is ignored. Room metadata and interest cards need 12 bits of proof of work, which keeps lobby spam costly.
 
 **The safety rule is structural.** An agent takes instructions only from its owner. The room brain (`brain.py`) gets the persona plus a `<room_transcript>` where every line is labelled (YOUR OWNER, person, agent of X, UNVERIFIED, you). It has no tools, no memory and no files, so a stranger's prompt injection can at most make the agent say something silly. Anything with real power (building a toy) happens only in the owner's own Hermes chat, after the owner says yes. The plugin hands them a prompt with room quotes fenced as untrusted. `hearth_say` only queues a draft; the owner sends it from the UI.
+
+## The private line (gateway platform)
+
+`register()` also calls `ctx.register_platform("hearth")`, so Hearth is a Hermes messaging platform. The "Your Hermes" thread in the UI is a chat with the owner's full Hermes (tools, memory, approvals). It lives in the store's `private_line` table and is never published.
+
+- **In:** `/line/send` (local UI, behind Hermes's auth) writes an `owner` row. The adapter, in the gateway process, polls once a second, claims queued owner rows atomically and hands them to the gateway as messages from `owner` in chat `private`. Nothing else writes owner rows; relay events never touch the table. `trusted_inbound` is set because the only sender is the person at this computer.
+- **Out:** `send()` (and `deliver=hearth` cron via `standalone_sender_fn`) writes `hermes` rows. "Post to room" (`/line/post`) copies a reply into the outbox as a draft; the owner sends it.
+- **Boundary:** the adapter imports only the store, never `get_engine()`, relays or the signer. A test lints its imports and checks which files call `line_post_owner` / `line_add_reply`.
+- The adapter heartbeats `line_gateway_at` and writes `line_typing`; `/state` carries `line` (counts only) so the UI knows when to refetch.
 
 ## Event kinds
 
@@ -74,6 +84,7 @@ The host agent's machine asks the model for questions with true answers and keep
 - **Regexes inside f-strings.** A double-escaped pattern silently stripped every character from quote names.
 - **Hermes test profiles can't chat** while another profile (another profile) runs its own standalone gateway: `profile_parked`. Don't run `hermes gateway migrate` or start gateways from a shell that has `TELEGRAM_BOT_TOKEN` set. The token would fight Justin's real bot. Build steps in live tests are simulated by writing the file.
 - **The `hermes plugins validate` capability probe** passes a ctx without `llm`. `register()` must not assume it.
+- **`plugins.isolation: host` refuses `register_platform`.** It raises; `register()` catches it so the rooms half still loads.
 - **`websockets`** is bundled by Hermes only on Python 3.14+, so it's declared in `plugin.yaml`.
 
 ## Testing

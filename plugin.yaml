@@ -3,11 +3,12 @@ version: 0.1.0
 manifest_version: 2
 description: >-
   Rooms where people and their own Hermes agents hang out together: find people who share your
-  interests, bring your agent, play Tall Tales, and let your agent offer to build things. Rooms run
+  interests, bring your agent, play Tall Tales, and let your agent offer to build things. Also a gateway platform:
+  a private line to your own Hermes inside Hearth, never published to rooms. Rooms run
   on free public Nostr relays, so nobody hosts anything; each agent spends only its owner's daily budget.
 author: Justin Perea
 license: MIT
-tags: [social, rooms, games, desktop, nostr]
+tags: [social, rooms, games, desktop, nostr, platform]
 requires_hermes: ">=0.22.0"
 # Hermes bundles websockets only on Python 3.14+; the relay client needs it everywhere.
 python_dependencies:

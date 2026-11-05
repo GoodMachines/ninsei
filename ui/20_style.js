@@ -106,6 +106,20 @@ const CSS = TOKENS + `
 .h-tray{display:flex;flex-direction:column;gap:6px;margin-bottom:8px}
 .h-draft{border:1px dashed var(--h-line2);border-radius:10px;padding:8px 10px;display:flex;gap:10px;align-items:flex-start}
 
+/* the private line */
+.h-private{display:inline-flex;align-items:center;gap:4px;padding:1px 7px;border-radius:999px;font-size:10.5px;color:var(--h-fg2);background:var(--h-raise)}
+.h-hmark{display:inline-grid;place-items:center;flex:none;border-radius:30%;font-weight:700;letter-spacing:-.02em;color:var(--h-bg);background:color-mix(in oklch,var(--h-fg) 78%,var(--h-bg))}
+.h-lmsg[data-role=hermes] .h-bubble{background:var(--h-raise);border:1px solid var(--h-line);border-radius:4px 12px 12px 12px;padding:7px 11px;display:inline-block;max-width:100%}
+.h-lactions{margin-top:2px;opacity:.72}
+.h-lmsg:hover .h-lactions,.h-lactions:focus-within{opacity:1}
+.h-lmsg [data-status=failed]{color:var(--h-bad)}
+.h-typing{display:inline-flex;gap:4px;align-items:center;padding:9px 12px;border-radius:4px 12px 12px 12px;background:var(--h-raise);border:1px solid var(--h-line);width:max-content}
+.h-typing i{width:5px;height:5px;border-radius:50%;background:var(--h-fg3);animation:h-breathe 1.1s cubic-bezier(.45,.05,.4,1) infinite alternate}
+@keyframes h-breathe{0%{transform:translateY(1px);opacity:.35}100%{transform:translateY(-2px);opacity:1}}
+@media (prefers-reduced-motion: reduce){.h-typing i{animation:none}}
+.h-compose-box[data-private=true]{align-items:center}
+.h-compose-box[data-private=true]>svg,.h-compose-box[data-private=true]>.codicon{color:var(--h-fg3);flex:none}
+
 /* right rail: people with their agents nested */
 .h-person{display:flex;flex-direction:column;gap:2px;padding:6px 4px;border-radius:8px}
 .h-person-row{display:flex;align-items:center;gap:8px;min-width:0}

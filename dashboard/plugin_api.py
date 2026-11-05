@@ -243,3 +243,54 @@ async def relays_reconnect():
     eng = await _engine()
     await _run(eng.reconnect)
     return {"ok": True}
+
+
+# ---- the private line: you and your own Hermes ----------------------------------------------------
+# These routes never touch the engine or the relays. They read and write the private_line table, which
+# the gateway adapter (hearth_platform.py, in the gateway process) delivers to the owner's full Hermes.
+# The only way a reply reaches a room is /line/post, which queues a draft the owner still has to send.
+
+_line_store_box: list = []
+
+
+def _line_store():
+    if not _line_store_box:
+        _line_store_box.append(_pkg().peek_store())
+    return _line_store_box[0]
+
+
+class LineIn(BaseModel):
+    text: str
+
+
+class LinePostIn(BaseModel):
+    id: str
+    room: str
+
+
+@router.get("/line")
+async def line(read: bool = True):
+    store = _line_store()
+
+    def view():
+        out = {"messages": store.line_messages(), **store.line_summary()}
+        if read:
+            store.line_mark_read()
+        return out
+    return await asyncio.to_thread(view)
+
+
+@router.post("/line/send")
+async def line_send(body: LineIn):
+    try:
+        return await asyncio.to_thread(_line_store().line_post_owner, body.text)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/line/post")
+async def line_post(body: LinePostIn):
+    try:
+        return await asyncio.to_thread(_line_store().line_reply_to_draft, body.id, body.room)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
