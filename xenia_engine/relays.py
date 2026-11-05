@@ -22,6 +22,20 @@ log = logging.getLogger("xenia.relays")
 
 EventHandler = Callable[[dict, str], Awaitable[None] | None]
 
+FUTURE_SKEW_S = 60          # events dated further ahead than this are dropped (and never move `newest`)
+MAX_VERIFIED = 20000        # remembered ids whose signature we already checked
+MAX_BAD = 5000              # remembered ids that failed verification
+BAD_STRIKES = 40            # bad events from one relay within BAD_WINDOW_S ...
+BAD_WINDOW_S = 10.0
+BAD_MUTE_S = 30.0           # ... and we ignore that relay's events for this long
+OUTBOX_MAX = 200            # unacknowledged events kept for resend
+OUTBOX_TTL_S = 24 * 3600    # after this an undelivered event is "failed"
+SYNTH = "xenia:"            # prefix on locally made (not relay-sent) OK results
+
+
+def _now() -> float:
+    return time.time()
+
 
 @dataclass
 class Subscription:
@@ -31,6 +45,7 @@ class Subscription:
     newest: int = 0  # newest created_at seen, for `since` on resubscribe
     eose: set[str] = field(default_factory=set)
     dedupe: bool = True  # live subs dedupe across relays; one-shot queries keep their own set
+    seen_ids: Optional[set] = None  # one-shot queries: ids already collected (skip before verifying)
 
 
 @dataclass
@@ -44,7 +59,9 @@ class RelayStatus:
 
 
 class RelayPool:
-    def __init__(self, urls: list[str], *, max_seen: int = 20000):
+    def __init__(self, urls: list[str], *, max_seen: int = 20000, outbox=None,
+                 outbox_max: int = OUTBOX_MAX, outbox_ttl: float = OUTBOX_TTL_S):
+        """`outbox` is an optional Store; with it, unacknowledged events survive a restart."""
         self.urls = list(dict.fromkeys(u.strip() for u in urls if u.strip()))
         self.status = {u: RelayStatus(u) for u in self.urls}
         self._ws: dict[str, object] = {}
@@ -54,6 +71,24 @@ class RelayPool:
         self._max_seen = max_seen
         self._pending_ok: dict[str, dict[str, asyncio.Future]] = {}
         self._stopped = False
+        self._verified: dict[str, None] = {}   # ids whose signature passed (insertion-ordered, bounded)
+        self._bad: dict[str, None] = {}        # ids that failed verification (bounded)
+        self._strikes: dict[str, list[float]] = {}
+        self._muted_until: dict[str, float] = {}
+        self._store = outbox
+        self._outbox_max = outbox_max
+        self._outbox_ttl = outbox_ttl
+        self._outbox: dict[str, tuple[dict, float]] = {}   # id -> (event, first queued at)
+        self._delivery: dict[str, str] = {}
+        self._flush_tasks: set[asyncio.Task] = set()
+        if self._store is not None:
+            try:
+                self._store.event_outbox_prune(self._outbox_ttl)
+                for ev, ts in self._store.event_outbox_pending():
+                    self._outbox[ev["id"]] = (ev, ts)
+                    self._delivery[ev["id"]] = "pending"
+            except Exception:
+                log.exception("xenia: could not load the event outbox")
 
     # --- lifecycle ------------------------------------------------------------------------------
     def start(self) -> None:
@@ -64,6 +99,8 @@ class RelayPool:
     async def stop(self) -> None:
         self._stopped = True
         for t in self._tasks.values():
+            t.cancel()
+        for t in list(self._flush_tasks):
             t.cancel()
         for ws in list(self._ws.values()):
             try:
@@ -97,6 +134,7 @@ class RelayPool:
                     delay = 1.0
                     for sub in list(self._subs.values()):
                         await self._send_req(url, ws, sub)
+                    self._spawn_flush(url, ws)
                     async for raw in ws:
                         await self._on_message(url, raw)
             except asyncio.CancelledError:
@@ -107,7 +145,7 @@ class RelayPool:
                 self._ws.pop(url, None)
                 for fut in self._pending_ok.pop(url, {}).values():
                     if not fut.done():
-                        fut.set_result((False, "disconnected"))
+                        fut.set_result((False, SYNTH + "disconnected"))
             if self._stopped:
                 break
             st.state = "backoff"
@@ -131,11 +169,20 @@ class RelayPool:
             eid = ev.get("id")
             if not isinstance(eid, str) or (sub.dedupe and eid in self._seen):
                 return
-            if not nostr.check_event(ev):
+            if sub.seen_ids is not None and eid in sub.seen_ids:
+                return   # one-shot query: already collected from another relay
+            if self._muted_until.get(url, 0) > time.monotonic() or eid in self._bad:
                 return
+            created = ev.get("created_at")
+            if not isinstance(created, int) or created > _now() + FUTURE_SKEW_S:
+                return   # a future-dated event must not move `since` or reach handlers
+            if not self._verify(url, ev):
+                return
+            if sub.seen_ids is not None:
+                sub.seen_ids.add(eid)
             if sub.dedupe:
                 self._remember(eid)
-            sub.newest = max(sub.newest, int(ev.get("created_at", 0)))
+            sub.newest = max(sub.newest, created)
             try:
                 res = sub.handler(ev, url)
                 if asyncio.iscoroutine(res):
@@ -158,6 +205,35 @@ class RelayPool:
                 sub.eose.add(url)
         elif typ == "CLOSED" and len(msg) >= 2:
             self.status[url].last_error = f"subscription closed: {msg[2] if len(msg) > 2 else ''}"[:120]
+
+    def _verify(self, url: str, ev: dict) -> bool:
+        """Full check, but the signature (the slow part) only once per id. A repeat still has its id
+        recomputed, so a forged copy of a known id can't ride on the earlier verification."""
+        eid = ev["id"]
+        if eid in self._verified:
+            try:
+                return nostr.event_id(ev) == eid and isinstance(ev.get("content"), str) \
+                    and isinstance(ev.get("tags"), list) and isinstance(ev.get("kind"), int)
+            except Exception:
+                return False
+        if nostr.check_event(ev):
+            self._verified[eid] = None
+            if len(self._verified) > MAX_VERIFIED:
+                for k in list(self._verified)[: MAX_VERIFIED // 4]:
+                    self._verified.pop(k, None)
+            return True
+        self._bad[eid] = None
+        if len(self._bad) > MAX_BAD:
+            for k in list(self._bad)[: MAX_BAD // 4]:
+                self._bad.pop(k, None)
+        now = time.monotonic()
+        hits = [t for t in self._strikes.get(url, []) if t > now - BAD_WINDOW_S] + [now]
+        self._strikes[url] = hits
+        if len(hits) >= BAD_STRIKES:   # a relay flooding forgeries: stop spending CPU on it for a while
+            self._muted_until[url] = now + BAD_MUTE_S
+            self._strikes[url] = []
+            self.status[url].last_error = "muted: sent many invalid events"
+        return False
 
     def _remember(self, eid: str) -> None:
         self._seen[eid] = time.monotonic()
@@ -206,22 +282,29 @@ class RelayPool:
 
     # --- publish --------------------------------------------------------------------------------
     async def publish(self, ev: dict, *, wait: float = 4.0) -> dict[str, tuple[bool, str]]:
-        """Send to every open relay; return {url: (accepted, message)} for the ones that answered."""
+        """Send to every open relay; return {url: (accepted, message)} for the ones that answered.
+        If no relay accepts it (none open, no answer), the event goes in the outbox and is resent when a
+        relay (re)connects; see `delivery`."""
+        out = await self._send_all(ev, wait)
+        self._settle(ev, out)
+        return out
+
+    async def _send_all(self, ev: dict, wait: float, only: Optional[dict] = None) -> dict[str, tuple[bool, str]]:
         self.mark_seen(ev["id"])
         futs: dict[str, asyncio.Future] = {}
         payload = json.dumps(["EVENT", ev])
         loop = asyncio.get_running_loop()
-        for url, ws in list(self._ws.items()):
+        for url, ws in list((only or self._ws).items()):
             fut = loop.create_future()
             self._pending_ok.setdefault(url, {})[ev["id"]] = fut
             futs[url] = fut
             try:
                 await ws.send(payload)
             except Exception as e:
-                fut.set_result((False, f"send failed: {e}"))
+                fut.set_result((False, f"{SYNTH}send failed: {e}"))
         if not futs:
             return {}
-        done, _ = await asyncio.wait(futs.values(), timeout=wait)
+        await asyncio.wait(futs.values(), timeout=wait)
         out = {}
         for url, fut in futs.items():
             if fut.done():
@@ -229,6 +312,76 @@ class RelayPool:
             else:
                 self._pending_ok.get(url, {}).pop(ev["id"], None)
         return out
+
+    # --- outbox / delivery ----------------------------------------------------------------------
+    def delivery(self, event_id: str) -> str:
+        """"sent" (a relay accepted it), "pending" (queued, will be resent) or "failed" (rejected by the
+        relays that answered, expired, or pushed out of a full outbox). Unknown ids report "sent": only
+        events this pool failed to deliver are ever tracked as anything else."""
+        st = self._delivery.get(event_id)
+        if st is None and self._store is not None:
+            st = self._store.event_outbox_status(event_id)
+        return st or "sent"
+
+    def _set_delivery(self, eid: str, status: str) -> None:
+        self._delivery[eid] = status
+        if len(self._delivery) > 2000:
+            for k in [k for k, v in self._delivery.items() if v != "pending"][:500]:
+                self._delivery.pop(k, None)
+        if self._store is not None:
+            try:
+                self._store.event_outbox_set(eid, status)
+            except Exception:
+                log.exception("xenia: outbox write failed")
+
+    def _settle(self, ev: dict, out: dict[str, tuple[bool, str]]) -> None:
+        eid = ev["id"]
+        if any(ok for ok, _ in out.values()):
+            if eid in self._outbox or eid in self._delivery:
+                self._outbox.pop(eid, None)
+                self._set_delivery(eid, "sent")
+            return
+        # nobody accepted it. A real rejection from a relay is final; silence or a dead socket is retried.
+        answered = [msg for _, msg in out.values() if not msg.startswith(SYNTH)]
+        if answered:
+            self._outbox.pop(eid, None)
+            self._delivery[eid] = "failed"
+            if self._store is not None:
+                self._store.event_outbox_put(ev, "failed")
+            return
+        if eid not in self._outbox:
+            self._outbox[eid] = (ev, _now())
+            if self._store is not None:
+                try:
+                    self._store.event_outbox_put(ev, "pending")
+                except Exception:
+                    log.exception("xenia: outbox write failed")
+            while len(self._outbox) > self._outbox_max:   # full: the oldest gives way
+                old = next(iter(self._outbox))
+                self._outbox.pop(old)
+                self._set_delivery(old, "failed")
+        self._delivery[eid] = "pending"
+
+    def _spawn_flush(self, url: str, ws) -> None:
+        if not self._outbox:
+            return
+        t = asyncio.ensure_future(self._flush(url, ws))
+        self._flush_tasks.add(t)
+        t.add_done_callback(self._flush_tasks.discard)
+
+    async def _flush(self, url: str, ws) -> None:
+        """Resend every unacknowledged event to a relay that just connected."""
+        now = _now()
+        for eid, (ev, queued) in list(self._outbox.items()):
+            if now - queued > self._outbox_ttl:
+                self._outbox.pop(eid, None)
+                self._set_delivery(eid, "failed")
+                continue
+            if self._ws.get(url) is not ws:
+                return
+            out = await self._send_all(ev, 4.0, only={url: ws})
+            if eid in self._outbox:
+                self._settle(ev, out)
 
     async def query(self, filters: list[dict], *, timeout: float = 4.0) -> list[dict]:
         """One-shot fetch: subscribe, collect until every open relay sent EOSE (or timeout), close."""
@@ -239,7 +392,7 @@ class RelayPool:
             got[ev["id"]] = ev
 
         # one-shot queries must not be deduped against live traffic
-        sub = Subscription(sub_id, filters, collect, dedupe=False)
+        sub = Subscription(sub_id, filters, collect, dedupe=False, seen_ids=set())
         self._subs[sub_id] = sub
         targets = list(self._ws.items())
         for url, ws in targets:
