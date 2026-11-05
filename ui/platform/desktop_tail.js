@@ -179,10 +179,37 @@ export default {
     // the backend pushes after every change; polling stays as the fallback
     ctx.onEvent('plugin.xenia.changed', () => store.refresh())
 
-    const open = () => host.navigate('/xenia')
+    // Xenia beside your chats: a tab in the sidebar strip (next to Sessions and Bots), and a Xenia tab
+    // next to your chats for whatever you pick there. Desktops without openWorkspace open the page.
+    const openPage = () => host.navigate('/xenia')
+    let tabOpen = false
+    const tabTitle = () => {
+      const v = nav().get()
+      const snap = store.get().snap
+      const r = v === 'room' && snap && (snap.rooms || []).find(x => x.id === store.room())
+      return r ? '# ' + r.name : v === 'lobby' ? 'Xenia Lobby' : v === 'hermes' ? 'Your Hermes' : 'Xenia'
+    }
+    const open = () => {
+      if (typeof host.openWorkspace !== 'function') { openPage(); return }
+      try {
+        host.openWorkspace('xenia', { title: tabTitle(), minWidth: '26rem', onClose: () => { tabOpen = false },
+          render: () => jsx(App, { store, embedded: true }) })
+        tabOpen = true
+      } catch (_) { openPage() }
+    }
+    // a view picked inside the tab (the Lobby button, say) renames it
+    ctx.onDispose(nav().subscribe(() => { if (tabOpen) open() }))
+    // the sidebar tab picks a view: switching views re-titles an open tab through the line above, so open
+    // here only when the tab is closed or the view stays the same (another room)
+    const show = v => {
+      const before = nav().get()
+      if (v) nav().set(v)
+      if (!tabOpen || !v || before === v) open()
+    }
     const startGame = mode => async () => {
       const room = store.room()
       if (!room) { host.notify({ kind: 'info', message: 'Open a Xenia room first, then start ' + gameName(mode) + ' there.' }); open(); return }
+      nav().set('room')
       open()
       try { await store.post('/game/start', { room, mode }, gameName(mode) + ' is starting') } catch (_) { /* toasted */ }
     }
@@ -190,6 +217,10 @@ export default {
     ctx.registerMany([
       { id: 'page', area: sdk.ROUTES_AREA, data: { path: '/xenia' }, render: () => jsx(App, { store }) },
       { id: 'nav', area: sdk.SIDEBAR_NAV_AREA, data: { path: '/xenia', label: 'Xenia', codicon: 'home' } },
+      // docks into the Sessions zone as a tab (Sessions | Bots | Xenia), shown or hidden like Bots, never closed
+      { id: 'tab', area: sdk.PANES_AREA || 'panes', title: 'Xenia', render: () => jsx(SideTab, { store, onOpen: show }),
+        data: { placement: 'left', width: '260px', collapsible: true, hideOnly: true, tabTitleText: () => 'Xenia',
+          dock: { pane: 'sessions', pos: 'center' } } },
       { id: 'chip', area: sdk.STATUSBAR_AREAS.right, order: 140, render: () => jsx(StatusChip, { store, onOpen: open }) },
       { id: 'open', area: sdk.PALETTE_AREA, data: { id: 'xenia.open', label: 'Open Xenia', keywords: ['xenia', 'rooms', 'lobby', 'agents'], run: open } },
       { id: 'tales', area: sdk.PALETTE_AREA, data: { id: 'xenia.tales', label: 'Xenia: Start Tall Tales in current room', keywords: ['xenia', 'game', 'tall tales'], run: startGame('tales') } },

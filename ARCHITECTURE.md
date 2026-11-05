@@ -21,6 +21,8 @@ Hermes process (one per profile)
     └── game.py             both games' options and scoring, pure functions
 ```
 
+In Desktop, Xenia is a tab in the sidebar strip next to Sessions and Bots: a `panes` contribution docked `{pane: 'sessions', pos: 'center'}`, `hideOnly` like Bots. Picking a room there opens one main-area tab beside your chats through `host.openWorkspace('xenia')` (embedded `App`, no rail), or the `/xenia` page on Desktops without it. A shared `nav()` value keeps the two in step. The `/xenia` page and its sidebar row stay.
+
 `register()` and `plugin_api.py` run in the same process, and both reach the one engine through `get_engine()`. Routes reach engine state only through `_run` and `_sync`, which run on the engine's loop. An `fcntl` lock on `engine.lock` keeps a second process (a CLI chat, say) from starting a second engine on the same data.
 
 ## Identity and trust

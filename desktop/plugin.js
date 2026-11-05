@@ -342,6 +342,27 @@ function createStore() {
   }
 }
 
+// Which Xenia view is showing (room, lobby, hermes, settings). One shared value, so in Desktop the
+// sidebar's Xenia tab and the room tab beside your chats stay in step. Remembered across launches.
+let NAV = null
+function nav() {
+  if (NAV) return NAV
+  let view = P.prefs.get('view', 'room')
+  const fns = new Set()
+  NAV = {
+    get: () => view,
+    set(v) { if (v === view) return; view = v; P.prefs.set('view', v); fns.forEach(fn => fn(v)) },
+    subscribe(fn) { fns.add(fn); return () => fns.delete(fn) }
+  }
+  return NAV
+}
+
+function useNav() {
+  const [v, set] = useState(() => nav().get())
+  useEffect(() => { set(nav().get()); return nav().subscribe(set) }, [])
+  return v
+}
+
 function useStore(store) {
   const [s, set] = useState(store.get())
   useEffect(() => {
@@ -541,8 +562,10 @@ const CSS = TOKENS + `
 .h-left{border-right:1px solid var(--h-line)}
 .h-right{border-left:1px solid var(--h-line)}
 .h-center{display:flex;flex-direction:column;min-height:0;min-width:0}
-@container (max-width: 980px){.h-grid{grid-template-columns:200px minmax(0,1fr)}.h-right{display:none}.h-grid[data-people=open] .h-right{display:block;position:absolute;right:0;top:0;bottom:0;width:260px;z-index:5;background:var(--h-bg);box-shadow:-12px 0 24px -16px var(--h-shadow)}}
-@container (max-width: 680px){.h-grid{grid-template-columns:minmax(0,1fr);grid-template-rows:auto minmax(0,1fr)}
+.h-grid[data-embedded]{grid-template-columns:minmax(0,1fr) 240px}
+.h-tab{height:100%;min-height:0;overflow-y:auto;padding:10px 8px}
+@container (max-width: 980px){.h-grid{grid-template-columns:200px minmax(0,1fr)}.h-grid[data-embedded]{grid-template-columns:minmax(0,1fr)}.h-right{display:none}.h-grid[data-people=open] .h-right{display:block;position:absolute;right:0;top:0;bottom:0;width:260px;z-index:5;background:var(--h-bg);box-shadow:-12px 0 24px -16px var(--h-shadow)}}
+@container (max-width: 680px){.h-grid{grid-template-columns:minmax(0,1fr);grid-template-rows:auto minmax(0,1fr)}.h-grid[data-embedded]{grid-template-rows:minmax(0,1fr)}
 .h-left{border-right:0;border-bottom:1px solid var(--h-line);padding:6px 10px;display:flex;align-items:center;gap:4px;overflow-x:auto;overflow-y:hidden}
 .h-left .h-brand{padding:0 6px 0 0;flex:none}.h-left .h-brand>div{display:none}
 .h-left .h-nav{flex-direction:row;margin:0;flex:none}.h-left .h-navrow{width:auto;white-space:nowrap}
@@ -2449,9 +2472,10 @@ function App(props) {
   const store = props.store
   const st = useStore(store)
   useEffect(() => store.view(), [store])
-  const [view, setView] = useState(() => P.prefs.get('view', 'room'))
+  const view = useNav()
   const [people, setPeople] = useState(false)
-  const go = v => { setView(v); P.prefs.set('view', v) }
+  const go = v => nav().set(v)
+  const embedded = !!props.embedded  // Desktop's room tab: the sidebar's Xenia tab is the rail
   const snap = st.snap
 
   let inner
@@ -2473,8 +2497,8 @@ function App(props) {
     else if (view === 'lobby' || !(snap.rooms || []).length) center = jsx(Lobby, { store, snap })
     else center = jsx(Welcome, { snap, onLobby: () => go('lobby') })
 
-    inner = jsx(RoomReactions, { snap, room: showRoom ? room : null, children: jsxs('div', { className: 'h-grid', 'data-people': people ? 'open' : 'closed', children: [
-      jsx('nav', { className: 'h-left', 'aria-label': 'Xenia rooms', children: jsx(Rail, { store, snap, view, go, roomId }) }),
+    inner = jsx(RoomReactions, { snap, room: showRoom ? room : null, children: jsxs('div', { className: 'h-grid', 'data-people': people ? 'open' : 'closed', 'data-embedded': embedded || undefined, children: [
+      !embedded && jsx('nav', { className: 'h-left', 'aria-label': 'Xenia rooms', children: jsx(Rail, { store, snap, view, go, roomId }) }),
       jsxs('main', { className: 'h-center', children: [
         st.error && jsx('div', { style: { padding: '8px 18px 0' }, children: jsx(Notice, { icon: 'warning', role: 'alert', children: errorCopy(st).title + '. Showing the last state we had.' }) }),
         center
@@ -2485,6 +2509,30 @@ function App(props) {
   return jsxs('div', { className: 'hx h-page', 'data-platform': P.kind, children: [
     P.inlineStyle && jsx('style', { children: CSS }),
     inner
+  ] })
+}
+
+// Desktop: Xenia's tab in the sidebar strip, next to Sessions and Bots. It's the page's rail; picking
+// something opens it in the Xenia tab beside your chats (props.onOpen).
+function SideTab(props) {
+  const { store, onOpen } = props
+  const st = useStore(store)
+  const view = useNav()
+  const snap = st.snap
+  let body
+  if (!snap) {
+    body = jsx('div', { className: 'h-faint h-small', style: { padding: 8 }, children: st.error ? errorCopy(st).title : 'Lighting the xenia…' })
+  } else if (!snap.settings.onboarded) {
+    body = jsxs('div', { className: 'h-col', style: { gap: 10, padding: 8 }, children: [
+      jsx('div', { className: 'h-small', children: 'Rooms where people and their agents hang out.' }),
+      jsx(K.Button, { variant: 'primary', onClick: () => onOpen(), children: 'Set up Xenia' })
+    ] })
+  } else {
+    body = jsx(Rail, { store, snap, view, roomId: view === 'room' ? store.room() : '', go: onOpen })
+  }
+  return jsxs('nav', { className: 'hx h-tab', 'data-platform': P.kind, 'aria-label': 'Xenia rooms', children: [
+    P.inlineStyle && jsx('style', { children: CSS }),
+    body
   ] })
 }
 
@@ -2809,10 +2857,37 @@ export default {
     // the backend pushes after every change; polling stays as the fallback
     ctx.onEvent('plugin.xenia.changed', () => store.refresh())
 
-    const open = () => host.navigate('/xenia')
+    // Xenia beside your chats: a tab in the sidebar strip (next to Sessions and Bots), and a Xenia tab
+    // next to your chats for whatever you pick there. Desktops without openWorkspace open the page.
+    const openPage = () => host.navigate('/xenia')
+    let tabOpen = false
+    const tabTitle = () => {
+      const v = nav().get()
+      const snap = store.get().snap
+      const r = v === 'room' && snap && (snap.rooms || []).find(x => x.id === store.room())
+      return r ? '# ' + r.name : v === 'lobby' ? 'Xenia Lobby' : v === 'hermes' ? 'Your Hermes' : 'Xenia'
+    }
+    const open = () => {
+      if (typeof host.openWorkspace !== 'function') { openPage(); return }
+      try {
+        host.openWorkspace('xenia', { title: tabTitle(), minWidth: '26rem', onClose: () => { tabOpen = false },
+          render: () => jsx(App, { store, embedded: true }) })
+        tabOpen = true
+      } catch (_) { openPage() }
+    }
+    // a view picked inside the tab (the Lobby button, say) renames it
+    ctx.onDispose(nav().subscribe(() => { if (tabOpen) open() }))
+    // the sidebar tab picks a view: switching views re-titles an open tab through the line above, so open
+    // here only when the tab is closed or the view stays the same (another room)
+    const show = v => {
+      const before = nav().get()
+      if (v) nav().set(v)
+      if (!tabOpen || !v || before === v) open()
+    }
     const startGame = mode => async () => {
       const room = store.room()
       if (!room) { host.notify({ kind: 'info', message: 'Open a Xenia room first, then start ' + gameName(mode) + ' there.' }); open(); return }
+      nav().set('room')
       open()
       try { await store.post('/game/start', { room, mode }, gameName(mode) + ' is starting') } catch (_) { /* toasted */ }
     }
@@ -2820,6 +2895,10 @@ export default {
     ctx.registerMany([
       { id: 'page', area: sdk.ROUTES_AREA, data: { path: '/xenia' }, render: () => jsx(App, { store }) },
       { id: 'nav', area: sdk.SIDEBAR_NAV_AREA, data: { path: '/xenia', label: 'Xenia', codicon: 'home' } },
+      // docks into the Sessions zone as a tab (Sessions | Bots | Xenia), shown or hidden like Bots, never closed
+      { id: 'tab', area: sdk.PANES_AREA || 'panes', title: 'Xenia', render: () => jsx(SideTab, { store, onOpen: show }),
+        data: { placement: 'left', width: '260px', collapsible: true, hideOnly: true, tabTitleText: () => 'Xenia',
+          dock: { pane: 'sessions', pos: 'center' } } },
       { id: 'chip', area: sdk.STATUSBAR_AREAS.right, order: 140, render: () => jsx(StatusChip, { store, onOpen: open }) },
       { id: 'open', area: sdk.PALETTE_AREA, data: { id: 'xenia.open', label: 'Open Xenia', keywords: ['xenia', 'rooms', 'lobby', 'agents'], run: open } },
       { id: 'tales', area: sdk.PALETTE_AREA, data: { id: 'xenia.tales', label: 'Xenia: Start Tall Tales in current room', keywords: ['xenia', 'game', 'tall tales'], run: startGame('tales') } },

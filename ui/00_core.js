@@ -307,6 +307,27 @@ function createStore() {
   }
 }
 
+// Which Xenia view is showing (room, lobby, hermes, settings). One shared value, so in Desktop the
+// sidebar's Xenia tab and the room tab beside your chats stay in step. Remembered across launches.
+let NAV = null
+function nav() {
+  if (NAV) return NAV
+  let view = P.prefs.get('view', 'room')
+  const fns = new Set()
+  NAV = {
+    get: () => view,
+    set(v) { if (v === view) return; view = v; P.prefs.set('view', v); fns.forEach(fn => fn(v)) },
+    subscribe(fn) { fns.add(fn); return () => fns.delete(fn) }
+  }
+  return NAV
+}
+
+function useNav() {
+  const [v, set] = useState(() => nav().get())
+  useEffect(() => { set(nav().get()); return nav().subscribe(set) }, [])
+  return v
+}
+
 function useStore(store) {
   const [s, set] = useState(store.get())
   useEffect(() => {

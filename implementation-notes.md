@@ -236,3 +236,10 @@ An automated review attacked agent A's guards. All five findings were real; each
 - **State handoff:** the engine sets the build state only when the agent is idle or the state is still the one it set. It never overwrites a reply in progress or a budget stop, and it reverts only its own state.
 - **Live, a real build in Sam's Hermes:** Maya's seat showed Bo go working at 0 steps, then step 1 (one `write_file`), then back to idle once the file landed. It also showed "Bo is building “Voronoi After Dark” · step 1" with typing dots. The waiting-on-approval path is covered by tests but hasn't been seen live, because this build never asked for approval.
 - **Surprise:** `xeniasam` lacked `gateway.standalone: true`, so its chat failed with `profile_parked`: another profile runs its own gateway, and that blocks the shared multiplexer. I added the line to the test profile only.
+
+## Xenia as a Desktop sidebar tab (2026-11-05)
+
+- **Justin asked** whether Xenia could be a tab like Sessions and Bots. I first said no, because Desktop's workspace mode is a closed `'sessions' | 'bots'` type. That was wrong about the tab strip: the SESSIONS | BOTS strip is just panes, and Bots gets its tab by docking a `panes` contribution into the sessions zone. Any plugin can do the same. Bot Mode's other behaviour (the workspace scope) stays core-only.
+- **Two surfaces:** the sidebar tab is the page's rail (rooms, Lobby, Your Hermes). What you pick there opens in one Xenia tab beside your chats via `host.openWorkspace`, titled for what it shows ("# shader club", "Xenia Lobby"). The tab re-titles when you move within it.
+- **Not `enforce`:** Bots re-homes its tab at every boot. Xenia docks once, and after that the person's placement wins.
+- **Checked:** the installed Desktop build has `openWorkspace` and the same dock shape (`dock:{pane:'sessions',pos:'center'}` in its Bots registration). `tests/test_desktop_tab.py` loads the real built `desktop/plugin.js` under node with a stub SDK and clicks Lobby, then a room. The dashboard still switches views and keeps the view across a reload. Not yet seen in the running Desktop app: that's for the Desktop pass.

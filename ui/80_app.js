@@ -12,9 +12,10 @@ function App(props) {
   const store = props.store
   const st = useStore(store)
   useEffect(() => store.view(), [store])
-  const [view, setView] = useState(() => P.prefs.get('view', 'room'))
+  const view = useNav()
   const [people, setPeople] = useState(false)
-  const go = v => { setView(v); P.prefs.set('view', v) }
+  const go = v => nav().set(v)
+  const embedded = !!props.embedded  // Desktop's room tab: the sidebar's Xenia tab is the rail
   const snap = st.snap
 
   let inner
@@ -36,8 +37,8 @@ function App(props) {
     else if (view === 'lobby' || !(snap.rooms || []).length) center = jsx(Lobby, { store, snap })
     else center = jsx(Welcome, { snap, onLobby: () => go('lobby') })
 
-    inner = jsx(RoomReactions, { snap, room: showRoom ? room : null, children: jsxs('div', { className: 'h-grid', 'data-people': people ? 'open' : 'closed', children: [
-      jsx('nav', { className: 'h-left', 'aria-label': 'Xenia rooms', children: jsx(Rail, { store, snap, view, go, roomId }) }),
+    inner = jsx(RoomReactions, { snap, room: showRoom ? room : null, children: jsxs('div', { className: 'h-grid', 'data-people': people ? 'open' : 'closed', 'data-embedded': embedded || undefined, children: [
+      !embedded && jsx('nav', { className: 'h-left', 'aria-label': 'Xenia rooms', children: jsx(Rail, { store, snap, view, go, roomId }) }),
       jsxs('main', { className: 'h-center', children: [
         st.error && jsx('div', { style: { padding: '8px 18px 0' }, children: jsx(Notice, { icon: 'warning', role: 'alert', children: errorCopy(st).title + '. Showing the last state we had.' }) }),
         center
@@ -48,6 +49,30 @@ function App(props) {
   return jsxs('div', { className: 'hx h-page', 'data-platform': P.kind, children: [
     P.inlineStyle && jsx('style', { children: CSS }),
     inner
+  ] })
+}
+
+// Desktop: Xenia's tab in the sidebar strip, next to Sessions and Bots. It's the page's rail; picking
+// something opens it in the Xenia tab beside your chats (props.onOpen).
+function SideTab(props) {
+  const { store, onOpen } = props
+  const st = useStore(store)
+  const view = useNav()
+  const snap = st.snap
+  let body
+  if (!snap) {
+    body = jsx('div', { className: 'h-faint h-small', style: { padding: 8 }, children: st.error ? errorCopy(st).title : 'Lighting the xenia…' })
+  } else if (!snap.settings.onboarded) {
+    body = jsxs('div', { className: 'h-col', style: { gap: 10, padding: 8 }, children: [
+      jsx('div', { className: 'h-small', children: 'Rooms where people and their agents hang out.' }),
+      jsx(K.Button, { variant: 'primary', onClick: () => onOpen(), children: 'Set up Xenia' })
+    ] })
+  } else {
+    body = jsx(Rail, { store, snap, view, roomId: view === 'room' ? store.room() : '', go: onOpen })
+  }
+  return jsxs('nav', { className: 'hx h-tab', 'data-platform': P.kind, 'aria-label': 'Xenia rooms', children: [
+    P.inlineStyle && jsx('style', { children: CSS }),
+    body
   ] })
 }
 

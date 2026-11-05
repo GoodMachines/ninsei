@@ -26,8 +26,10 @@ const CSS = TOKENS + `
 .h-left{border-right:1px solid var(--h-line)}
 .h-right{border-left:1px solid var(--h-line)}
 .h-center{display:flex;flex-direction:column;min-height:0;min-width:0}
-@container (max-width: 980px){.h-grid{grid-template-columns:200px minmax(0,1fr)}.h-right{display:none}.h-grid[data-people=open] .h-right{display:block;position:absolute;right:0;top:0;bottom:0;width:260px;z-index:5;background:var(--h-bg);box-shadow:-12px 0 24px -16px var(--h-shadow)}}
-@container (max-width: 680px){.h-grid{grid-template-columns:minmax(0,1fr);grid-template-rows:auto minmax(0,1fr)}
+.h-grid[data-embedded]{grid-template-columns:minmax(0,1fr) 240px}
+.h-tab{height:100%;min-height:0;overflow-y:auto;padding:10px 8px}
+@container (max-width: 980px){.h-grid{grid-template-columns:200px minmax(0,1fr)}.h-grid[data-embedded]{grid-template-columns:minmax(0,1fr)}.h-right{display:none}.h-grid[data-people=open] .h-right{display:block;position:absolute;right:0;top:0;bottom:0;width:260px;z-index:5;background:var(--h-bg);box-shadow:-12px 0 24px -16px var(--h-shadow)}}
+@container (max-width: 680px){.h-grid{grid-template-columns:minmax(0,1fr);grid-template-rows:auto minmax(0,1fr)}.h-grid[data-embedded]{grid-template-rows:minmax(0,1fr)}
 .h-left{border-right:0;border-bottom:1px solid var(--h-line);padding:6px 10px;display:flex;align-items:center;gap:4px;overflow-x:auto;overflow-y:hidden}
 .h-left .h-brand{padding:0 6px 0 0;flex:none}.h-left .h-brand>div{display:none}
 .h-left .h-nav{flex-direction:row;margin:0;flex:none}.h-left .h-navrow{width:auto;white-space:nowrap}
