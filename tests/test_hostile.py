@@ -620,3 +620,17 @@ async def test_an_impostor_gets_no_reply(bare):
                                 "mentions": [e._identity()["agent_pk"]]}), "relay")
     await settle(e, 0.3)
     assert llm.calls.count("xenia.reply") == 1
+
+
+async def test_people_column_flags_a_second_holder_of_a_name(bare):
+    """The people column showed an impostor as a second plain "Maya". It now carries the same flag as its messages."""
+    e, _ = bare()  # I'm Maya
+    await e._on_event(own_person_event(e, {"t": "join"}), "relay")
+    s = Key("mallory")
+    await e._on_event(s.person({"t": "join", "name": "Maya"}), "relay")
+    h = Key("honest")
+    await e._on_event(h.person({"t": "join", "name": "Sam"}), "relay")
+    people = {p["pk"]: p for p in e.members(ROOM)}
+    assert people[s.ppk]["impostor"] is True
+    assert people[h.ppk]["impostor"] is False
+    assert people[e._identity()["person_pk"]]["impostor"] is False

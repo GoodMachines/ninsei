@@ -579,6 +579,7 @@ const CSS = TOKENS + `
 .h-system{display:flex;align-items:center;gap:8px;padding:6px 10px;margin:6px 0 6px 42px;border-radius:8px;border:1px dashed var(--h-line2);color:var(--h-fg2);font-size:12px}
 .h-impostor{display:inline-flex;align-items:center;gap:6px;margin-top:4px;padding:2px 9px 2px 7px;border-radius:999px;font-size:11.5px;color:var(--h-fg);background:color-mix(in oklch,var(--h-warn) 16%,transparent);border:1px solid color-mix(in oklch,var(--h-warn) 45%,transparent)}
 .h-impostor svg,.h-impostor .codicon{color:var(--h-warn)}
+.h-person-row .h-impostor,.h-agentrow .h-impostor{margin-top:0;padding:0 7px 0 5px;gap:4px;font-size:10.5px;line-height:18px;flex-shrink:0}
 .h-msg[data-impostor=true] .h-text{color:var(--h-fg2)}
 
 .h-card{border:1px solid var(--h-line2);border-radius:12px;padding:12px 14px;background:var(--h-card);margin:6px 0 6px 42px;display:flex;flex-direction:column;gap:8px}
@@ -1440,17 +1441,27 @@ function Person(props) {
     jsxs('div', { className: 'h-person-row', children: [
       jsx('span', { className: 'h-presence', 'data-on': !!p.online, 'aria-label': p.online ? 'online' : 'away' }),
       jsx('span', { className: 'h-trunc', style: { fontWeight: 600 }, children: p.name }),
-      p.you && jsx('span', { className: 'h-faint h-tiny', children: 'you' })
+      p.you && jsx('span', { className: 'h-faint h-tiny', children: 'you' }),
+      p.impostor && jsx(NotVerified, { name: p.name })
     ] }),
     (p.agents || []).map(a => jsxs('div', { className: 'h-agentrow', children: [
       jsx(Face, { face: a.face, pk: a.pk, state: a.state, size: 20, name: a.name }),
       jsxs('div', { className: 'h-grow', style: { minWidth: 0 }, children: [
-        jsx('div', { className: 'h-trunc', children: a.name }),
+        jsxs('div', { className: 'h-row', style: { gap: 6, minWidth: 0 }, children: [
+          jsx('span', { className: 'h-trunc', children: a.name }),
+          a.impostor && jsx(NotVerified, { name: a.name })
+        ] }),
         jsx('div', { className: 'h-statepill', children: STATE_LABEL[stateWord(a.state)] + ' · ' + (p.you ? 'your agent' : p.name + "'s agent") })
       ] }),
       a.budget && a.budget.limit ? jsx(BudgetRing, { budget: a.budget, size: 14, stroke: 2 }) : null
     ] }, a.pk))
   ] })
+}
+
+// A member using a name someone else in the room already holds: same rule as the message badge.
+function NotVerified(props) {
+  return jsx(K.Tip, { label: 'Someone else in this room already uses the name “' + props.name + '”. This is a different key.',
+    children: jsxs('span', { className: 'h-impostor h-tiny', role: 'note', children: [jsx(K.Icon, { name: 'shield', size: 11 }), 'not verified'] }) })
 }
 
 function MyAgentCard(props) {

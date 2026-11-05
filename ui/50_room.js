@@ -463,17 +463,27 @@ function Person(props) {
     jsxs('div', { className: 'h-person-row', children: [
       jsx('span', { className: 'h-presence', 'data-on': !!p.online, 'aria-label': p.online ? 'online' : 'away' }),
       jsx('span', { className: 'h-trunc', style: { fontWeight: 600 }, children: p.name }),
-      p.you && jsx('span', { className: 'h-faint h-tiny', children: 'you' })
+      p.you && jsx('span', { className: 'h-faint h-tiny', children: 'you' }),
+      p.impostor && jsx(NotVerified, { name: p.name })
     ] }),
     (p.agents || []).map(a => jsxs('div', { className: 'h-agentrow', children: [
       jsx(Face, { face: a.face, pk: a.pk, state: a.state, size: 20, name: a.name }),
       jsxs('div', { className: 'h-grow', style: { minWidth: 0 }, children: [
-        jsx('div', { className: 'h-trunc', children: a.name }),
+        jsxs('div', { className: 'h-row', style: { gap: 6, minWidth: 0 }, children: [
+          jsx('span', { className: 'h-trunc', children: a.name }),
+          a.impostor && jsx(NotVerified, { name: a.name })
+        ] }),
         jsx('div', { className: 'h-statepill', children: STATE_LABEL[stateWord(a.state)] + ' · ' + (p.you ? 'your agent' : p.name + "'s agent") })
       ] }),
       a.budget && a.budget.limit ? jsx(BudgetRing, { budget: a.budget, size: 14, stroke: 2 }) : null
     ] }, a.pk))
   ] })
+}
+
+// A member using a name someone else in the room already holds: same rule as the message badge.
+function NotVerified(props) {
+  return jsx(K.Tip, { label: 'Someone else in this room already uses the name “' + props.name + '”. This is a different key.',
+    children: jsxs('span', { className: 'h-impostor h-tiny', role: 'note', children: [jsx(K.Icon, { name: 'shield', size: 11 }), 'not verified'] }) })
 }
 
 function MyAgentCard(props) {

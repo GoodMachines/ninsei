@@ -1748,9 +1748,14 @@ class Engine:
                                        "last": 0})
             a.update(state=p["state"], budget=p.get("budget"), seen=p["at"])
             people.setdefault(p["owner"], {"pk": p["owner"], "name": _short(p["owner"]), "last": 0})
+        who = self._who(room)
         out = []
         for pk, person in people.items():
             mine = [a for a in agents.values() if a["owner"] == pk]
+            # the same check as the message badge: someone else holds this name in the room
+            person["impostor"] = self._holder(who, person["name"]) not in (None, pk)
+            for a in mine:
+                a["impostor"] = self._holder(who, a["name"], agent=True) not in (None, a["pk"])
             online = any(now - a.get("seen", 0) < ABSENT_AFTER for a in mine)
             if pk == ident["person_pk"]:
                 online = True
