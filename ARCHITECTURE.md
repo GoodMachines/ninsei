@@ -18,7 +18,7 @@ Hermes process (one per profile)
     ├── store.py            SQLite (WAL): settings, events, rooms, budget ledger, draft outbox
     ├── brain.py            every model call; no tools, no private data
     ├── topics.py           finds what a room keeps talking about
-    └── game.py             Tall Tales scoring, pure functions
+    └── game.py             both games' options and scoring, pure functions
 ```
 
 `register()` and `plugin_api.py` run in the same process, and both reach the one engine through `get_engine()`. Routes reach engine state only through `_run` and `_sync`, which run on the engine's loop. An `fcntl` lock on `engine.lock` keeps a second process (a CLI chat, say) from starting a second engine on the same data.
@@ -71,9 +71,12 @@ An optional second cap (`plan_pct`, off by default, `xenia_engine/plan.py`) limi
 
 `TopicTracker` fires when a term appears 3+ times from 2+ people within 15 minutes. One model call drafts a pitch, a title and a private task. Only the owner sees the task. The owner reads the full task, accepts, and the plugin gives them a prompt and a path (`builds/<id[:16]>/index.html`; offer ids must be 64 hex characters) to paste into their Hermes chat. `_watch_builds` sees the file and marks the offer `ready`. The share dialog shows the source, its size and a secret-pattern scan, and asks twice on a match. Share publishes the HTML as a room event whose serialized content must stay under 48 KB (`ensure_ascii=False`), or `share_build` raises. Every toy renders in a sandboxed iframe under a CSP meta tag (`xenia_engine/toy.py`, and `withCsp` in the UI), so even a hostile peer's HTML can't make network requests.
 
-## Tall Tales
+## Games
 
-The host asks the model for questions with true answers and keeps the seed secret, because option order derives from it. Phases: fakes 45 s, votes 30 s, reveal 9 s, three rounds. Only people vote, and nobody can vote for their own team's fake. Scoring: 2 for the truth, 1 to a fake's team per person fooled.
+Both games share one engine path: `tales_*` events, the host's secret seed, the phase clock, and every hostile-room guard (earliest live game wins, silent hosts expire, per-host fake limits). `tales_start` carries `mode`.
+
+- **Tall Tales** (`tales`): the host asks the model for questions with true answers. Phases: fakes 45 s, votes 30 s, reveal 9 s, three rounds. Only people vote, never for their own team's fake. 2 for the truth, 1 to a fake's team per person fooled.
+- **Who's the Agent?** (`agent`): curated prompts from `game.PROMPTS`, so no model call to start. Everyone answers, including the host's own agent (`_answer_as_host`), and agents use `brain.human_answer` to pass as people. People flag the answers they think an agent wrote. Each call on another team's answer scores 1 point: to the voter if it's right, to the answer's team if it's wrong. Equal answers are not merged. Pitfall: the view skips the host's events as player moves, except the host agent's answers in this mode.
 
 ## Pitfalls that have bitten
 

@@ -75,6 +75,9 @@ const CSS = TOKENS + `
 .h-system{display:flex;align-items:center;gap:8px;padding:6px 10px;margin:6px 0 6px 42px;border-radius:8px;border:1px dashed var(--h-line2);color:var(--h-fg2);font-size:12px}
 .h-impostor{display:inline-flex;align-items:center;gap:6px;margin-top:4px;padding:2px 9px 2px 7px;border-radius:999px;font-size:11.5px;color:var(--h-fg);background:color-mix(in oklch,var(--h-warn) 16%,transparent);border:1px solid color-mix(in oklch,var(--h-warn) 45%,transparent)}
 .h-impostor svg,.h-impostor .codicon{color:var(--h-warn)}
+.h-whotag{flex:none;font-size:11px;line-height:18px;padding:0 8px;border-radius:999px;color:var(--h-fg3);border:1px solid var(--h-line)}
+.h-whotag[data-on=true]{color:var(--h-fg);background:color-mix(in oklch,var(--h-accent) 22%,transparent);border-color:color-mix(in oklch,var(--h-accent) 55%,transparent)}
+.h-opt[data-agent=true]{border-color:color-mix(in oklch,var(--h-accent) 45%,transparent)}
 .h-person-row .h-impostor,.h-agentrow .h-impostor{margin-top:0;padding:0 7px 0 5px;gap:4px;font-size:10.5px;line-height:18px;flex-shrink:0}
 .h-msg[data-impostor=true] .h-text{color:var(--h-fg2)}
 

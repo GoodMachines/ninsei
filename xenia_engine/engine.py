@@ -1211,25 +1211,32 @@ class Engine:
     # ============================================================================================
     # Tall Tales
     # ============================================================================================
-    async def start_tales(self, room: str, rounds: int = game.ROUNDS) -> dict:
+    async def start_tales(self, room: str, rounds: int = game.ROUNDS, mode: str = "tales") -> dict:
+        """Start a game I host: Tall Tales ("tales") or Who's the Agent? ("agent")."""
+        if mode not in game.MODES:
+            raise ValueError("unknown game")
         if self._game_running(room):
             raise ValueError("a game is already running in this room")
         if not self.brain.available():
             raise ValueError("your agent can't reach a model from this Hermes process")
         rounds = max(1, min(int(rounds), game.MAX_ROUNDS))
         gid = secrets.token_hex(6)
-        self._set_state("activity: working", "writing questions")
-        try:
-            qs = await self.brain.questions(self.persona(), self.settings()["interests"] +
-                                            self.room_meta(room).get("interests", []), rounds)
-        except BudgetExhausted:
-            self._set_state("system: waiting", "out of budget for today")
-            raise ValueError("your agent is out of budget for today")
-        if not qs:
-            self._set_state("activity: idle")
-            raise ValueError("couldn't write questions this time, try again")
+        seed = secrets.token_hex(16)
+        if mode == "agent":  # curated prompts: no model call, and they read better than generated ones
+            qs = [{"q": q, "a": ""} for q in game.pick_prompts(seed, rounds)]
+        else:
+            self._set_state("activity: working", "writing questions")
+            try:
+                qs = await self.brain.questions(self.persona(), self.settings()["interests"] +
+                                                self.room_meta(room).get("interests", []), rounds)
+            except BudgetExhausted:
+                self._set_state("system: waiting", "out of budget for today")
+                raise ValueError("your agent is out of budget for today")
+            if not qs:
+                self._set_state("activity: idle")
+                raise ValueError("couldn't write questions this time, try again")
         g = {"room": room, "qs": qs[:game.MAX_ROUNDS], "wake": asyncio.Event(), "scores": {},
-             "seed": secrets.token_hex(16), "seq": 0, "gid": gid}
+             "seed": seed, "seq": 0, "gid": gid, "mode": mode}
         self._host_games[gid] = g
         await self._host_post(g, {"t": "tales_start", "gid": gid, "rounds": len(g["qs"])})
         g["task"] = self._spawn(self._host_loop(gid))
@@ -1238,7 +1245,7 @@ class Engine:
 
     async def _host_post(self, g: dict, content: dict, wait: bool = False) -> None:
         g["seq"] += 1
-        await self._publish_room(g["room"], True, {**content, "seq": g["seq"]}, wait=wait)
+        await self._publish_room(g["room"], True, {**content, "mode": g.get("mode", "tales"), "seq": g["seq"]}, wait=wait)
 
     async def _end_hosted(self, room: Optional[str] = None) -> None:
         """Stop the games I host (all, or one room's) and tell the room they're over. Used on shutdown
@@ -1299,6 +1306,10 @@ class Engine:
         scores: dict[str, int] = g["scores"]
         try:
             for n, q in enumerate(g["qs"], start=1):
+                if g.get("mode") == "agent":
+                    await self._host_agent_round(g, n, q["q"])
+                    await asyncio.sleep(game.REVEAL_SECONDS * self.ts)
+                    continue
                 people, agents = self._present_players(room, me)
                 ends = time.time() + game.FAKE_SECONDS * self.ts
                 await self._host_post(g, {"t": "tales_round", "gid": gid, "n": n, "of": len(g["qs"]),
@@ -1345,6 +1356,59 @@ class Engine:
         finally:
             self._host_games.pop(gid, None)
 
+    async def _host_agent_round(self, g: dict, n: int, prompt: str) -> None:
+        """One round of Who's the Agent?: everyone answers (my own agent too), people flag the answers they
+        think an agent wrote, then the reveal says who wrote what."""
+        room, gid, me = g["room"], g["gid"], self._identity()["agent_pk"]
+        scores: dict[str, int] = g["scores"]
+        people, agents = self._present_players(room, me)
+        agents.add(me)  # the host's own agent answers too: it's a player here, and it knows nothing secret
+        ends = time.time() + game.FAKE_SECONDS * self.ts
+        await self._host_post(g, {"t": "tales_round", "gid": gid, "n": n, "of": len(g["qs"]),
+                                  "q": prompt, "ends_at": ends, "secs": game.FAKE_SECONDS * self.ts})
+        self._spawn(self._answer_as_host(g, n, prompt))
+        await self._wait_until(g, ends, lambda: set(self._round_events(room, gid, n, "tales_fake")) >= (people | agents))
+        answers = {pk: str(c.get("text", ""))[:80] for pk, c in self._round_events(room, gid, n, "tales_fake").items()}
+        options, author_of = game.agent_options(answers, f"{g['seed']}:{n}", preferred=people | agents)
+        ends = time.time() + game.VOTE_SECONDS * self.ts
+        await self._host_post(g, {"t": "tales_vote_open", "gid": gid, "n": n, "options": options,
+                                  "ends_at": ends, "secs": game.VOTE_SECONDS * self.ts})
+        await self._wait_until(g, ends, lambda: set(self._round_events(room, gid, n, "tales_vote")) >= people)
+        team = self._team_of(room)
+        is_agent = {oid: team.get(pk, pk) != pk for oid, pk in author_of.items()}
+        flags = {}
+        for pk, c in self._round_events(room, gid, n, "tales_vote").items():
+            if team.get(pk, pk) != pk:
+                continue  # agents don't vote; only people do
+            flags[pk] = {str(x)[:16] for x in _as_list(c.get("agents"))[:game.MAX_OPTIONS]} & set(author_of)
+        points, flagged = game.score_agent_round(author_of, is_agent, flags, team)
+        for k, v in points.items():
+            scores[k] = scores.get(k, 0) + v
+        await self._host_post(g, {
+            "t": "tales_reveal", "gid": gid, "n": n, "answer": "", "authors": author_of,
+            "kinds": {oid: "agent" if a else "person" for oid, a in is_agent.items()},
+            "picks": flagged, "voters": sorted(flags), "points": points, "scores": scores,
+            "names": self._names_in(room, set(author_of.values()) | set(flags) | set(points))})
+
+    async def _answer_as_host(self, g: dict, n: int, prompt: str) -> None:
+        """My agent's own answer in a Who's the Agent? round I host. My owner's budget, like any move."""
+        if self._inflight >= MAX_INFLIGHT:
+            return
+        self._inflight += 1
+        try:
+            await asyncio.sleep(random.uniform(3, 9) * self.ts)  # don't always answer first: that's a tell
+            text = await self.brain.human_answer(self.persona(), self.settings()["display_name"] or "my owner", prompt)
+        except BudgetExhausted:
+            self._set_state("system: waiting", "out of budget for today")
+            return
+        except Exception as e:
+            log.debug("xenia: host answer failed: %s", e)
+            return
+        finally:
+            self._inflight -= 1
+        if text and self._host_games.get(g["gid"]) is g:
+            await self._publish_room(g["room"], True, {"t": "tales_fake", "gid": g["gid"], "n": n, "text": text})
+
     async def _wait_until(self, g: dict, deadline: float, done: Callable[[], bool]) -> None:
         while time.time() < deadline:
             if done():
@@ -1388,8 +1452,13 @@ class Engine:
             return
         self._inflight += 1
         try:
-            self._set_state("activity: working", "writing a tall tale")
-            fake = await self.brain.fake(self.persona(), self.settings()["display_name"] or "my owner", str(c.get("q", "")))
+            owner_name = self.settings()["display_name"] or "my owner"
+            if (self.game_view(room) or {}).get("mode") == "agent":
+                self._set_state("activity: working", "trying to sound human")
+                fake = await self.brain.human_answer(self.persona(), owner_name, str(c.get("q", "")))
+            else:
+                self._set_state("activity: working", "writing a tall tale")
+                fake = await self.brain.fake(self.persona(), owner_name, str(c.get("q", "")))
         except BudgetExhausted:
             self._set_state("system: waiting", "out of budget for today")
             return
@@ -1408,8 +1477,13 @@ class Engine:
             raise ValueError("write something first")
         await self._publish_room(room, False, {"t": "tales_fake", "gid": gid, "n": n, "text": text})
 
-    async def submit_vote(self, room: str, gid: str, n: int, option: str) -> None:
-        await self._publish_room(room, False, {"t": "tales_vote", "gid": gid, "n": n, "option": option[:16]})
+    async def submit_vote(self, room: str, gid: str, n: int, option: str = "", agents: Optional[list] = None) -> None:
+        """Tall Tales: one option. Who's the Agent?: `agents`, the options I think an agent wrote (may be empty)."""
+        if agents is not None:
+            ids = [str(x)[:16] for x in _as_list(agents)[:game.MAX_OPTIONS]]
+            await self._publish_room(room, False, {"t": "tales_vote", "gid": gid, "n": n, "agents": ids})
+            return
+        await self._publish_room(room, False, {"t": "tales_vote", "gid": gid, "n": n, "option": (option or "")[:16]})
 
     @staticmethod
     def _apply_host_event(view: dict, c: dict) -> None:
@@ -1433,6 +1507,9 @@ class Engine:
                           for k, v in list(_as_dict(c.get("picks")).items())[:12]},
                 "points": _int_map(c.get("points")),
                 "lucky": [str(x)[:64] for x in _as_list(c.get("lucky"))[:24]],
+                "kinds": {str(k)[:16]: ("agent" if v == "agent" else "person")
+                          for k, v in list(_as_dict(c.get("kinds")).items())[:12]},
+                "voters": [str(x)[:64] for x in _as_list(c.get("voters"))[:24]],
                 "names": {str(k)[:64]: _name_ok(str(v), "Someone")
                           for k, v in list(_as_dict(c.get("names")).items())[:24]}})
         elif t == "tales_end":
@@ -1446,6 +1523,7 @@ class Engine:
         except (TypeError, ValueError):
             rounds = game.ROUNDS
         view = {"gid": gid, "host": host, "host_name": _name_ok(sc.get("name"), "Host"), "rounds": rounds,
+                "mode": sc.get("mode") if sc.get("mode") in game.MODES else "tales", "my_picks": [],
                 "n": 0, "phase": "starting", "q": "", "ends_at": 0, "secs": 0, "options": [], "reveal": None,
                 "scores": {}, "fakes_in": 0, "votes_in": 0, "my_fake": "", "my_vote": "",
                 "started_at": sev["created_at"], "aborted": False}
@@ -1527,8 +1605,10 @@ class Engine:
         agent_fake = ""
         for e in evs:  # player moves for the current round, in any order
             c = self._content(e)
-            if c.get("gid") != gid or c.get("n") != view["n"] or e["pubkey"] == host:
+            if c.get("gid") != gid or c.get("n") != view["n"]:
                 continue
+            if e["pubkey"] == host and not (view["mode"] == "agent" and c.get("t") == "tales_fake"):
+                continue  # in Who's the Agent? the host's own agent answers too, as a player
             if c.get("t") == "tales_fake":
                 fakers.add(e["pubkey"])
                 if e["pubkey"] in my:
@@ -1538,7 +1618,11 @@ class Engine:
             elif c.get("t") == "tales_vote":
                 voters.add(e["pubkey"])
                 if e["pubkey"] in my:
-                    view["my_vote"] = str(c.get("option", ""))[:16]
+                    if view["mode"] == "agent":
+                        view["my_picks"] = [str(x)[:16] for x in _as_list(c.get("agents"))[:game.MAX_OPTIONS]]
+                        view["my_vote"] = "in"
+                    else:
+                        view["my_vote"] = str(c.get("option", ""))[:16]
         view["fakes_in"], view["votes_in"] = len(fakers), len(voters)
         who = self._who(room, evs)
         view["team_names"] = {pk: self._person_name(room, pk, who)
@@ -1869,6 +1953,8 @@ class Engine:
                 item.update(title=str(c.get("title", ""))[:80], size=len(str(c.get("html", ""))))
             elif t == "tales_reveal" and owner:
                 item.update(answer=str(c.get("answer", ""))[:80], round=c.get("n"))
+            if t.startswith("tales_") and owner:
+                item["mode"] = c.get("mode") if c.get("mode") in game.MODES else "tales"
             elif t in ("tales_reveal", "tales_end", "tales_start") and not owner:
                 continue
             out.append(item)

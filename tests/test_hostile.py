@@ -634,3 +634,20 @@ async def test_people_column_flags_a_second_holder_of_a_name(bare):
     assert people[s.ppk]["impostor"] is True
     assert people[h.ppk]["impostor"] is False
     assert people[e._identity()["person_pk"]]["impostor"] is False
+
+
+def test_whos_the_agent_scoring_and_option_cap():
+    from xenia_engine import game
+    team = {"maya": "maya", "ada": "maya", "sam": "sam", "bo": "sam"}
+    opts, author = game.agent_options({"maya": "pizza", "ada": "pizza", "sam": "x", "bo": "y"}, "seed")
+    assert len(opts) == 4  # equal answers aren't merged: who wrote each is the point
+    oid = {v: k for k, v in author.items()}
+    is_agent = {k: v in ("ada", "bo") for k, v in author.items()}
+    # own team's answers never count, even if flagged
+    pts, flagged = game.score_agent_round(author, is_agent, {"maya": {oid["ada"], oid["bo"]}}, team)
+    assert pts == {"maya": 2} and flagged == {oid["bo"]: ["maya"]}
+    # a flood is capped; present players' answers go first, whatever order they arrived in
+    answers = {f"flood{i:02d}": f"spam {i}" for i in range(30)} | {"sam": "real answer"}
+    opts, author = game.agent_options(answers, "seed2", preferred={"sam"})
+    assert len(opts) == game.MAX_OPTIONS and "sam" in author.values()
+    assert len(game.pick_prompts("s", 99)) == len(set(game.pick_prompts("s", 99)))

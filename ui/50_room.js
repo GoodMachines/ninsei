@@ -135,9 +135,11 @@ function TimelineItem(props) {
   else if (it.kind === 'offer') body = jsx(OfferCard, { m, store, snap, room })
   else if (it.kind === 'offer_state') body = jsxs('div', { className: 'h-line', children: [offerStateLine(m, room), m.impostor && ' ', m.impostor && jsx(ImpostorChip, { imp: m.impostor })] })
   else if (it.kind === 'share') body = jsx(ShareCard, { m, store, room })
-  else if (it.kind === 'tales_reveal') body = jsx('div', { className: 'h-line', children: 'Tall Tales · round ' + (m.round || '?') + ' · the truth was “' + (m.answer || '') + '”' })
-  else if (it.kind === 'tales_start') body = jsx('div', { className: 'h-line', children: m.name + ' started a game of Tall Tales' })
-  else if (it.kind === 'tales_end') body = jsx('div', { className: 'h-line', children: 'Tall Tales is over' })
+  else if (it.kind === 'tales_reveal') body = jsx('div', { className: 'h-line', children: m.mode === 'agent'
+    ? gameName(m.mode) + ' · round ' + (m.round || '?') + ' revealed'
+    : 'Tall Tales · round ' + (m.round || '?') + ' · the truth was “' + (m.answer || '') + '”' })
+  else if (it.kind === 'tales_start') body = jsx('div', { className: 'h-line', children: m.name + ' started a game of ' + gameName(m.mode) })
+  else if (it.kind === 'tales_end') body = jsx('div', { className: 'h-line', children: gameName(m.mode) + ' is over' })
   if (!body) return null
   return jsx('div', { ref, children: body })
 }
@@ -408,9 +410,9 @@ function Composer(props) {
     el.style.height = 'auto'
     el.style.height = Math.min(160, el.scrollHeight) + 'px'
   }, [text])
-  const startGame = async () => {
+  const startGame = async mode => {
     setMenu(false)
-    try { await store.post('/game/start', { room: room.id }, 'Tall Tales is starting') } catch (_) { /* toasted */ }
+    try { await store.post('/game/start', { room: room.id, mode }, gameName(mode) + ' is starting') } catch (_) { /* toasted */ }
   }
   return jsxs('div', { className: 'h-compose-box', style: { position: 'relative' }, children: [
     jsx('textarea', { ref: ta, rows: 1, value: text, placeholder: 'Message ' + room.name, 'aria-label': 'Message',
@@ -435,14 +437,17 @@ function GamesMenu(props) {
     const off2 = P.listen(document, 'keydown', esc)
     return () => { off1(); off2() }
   }, [])
-  return jsx('div', { className: 'h-menu', ref, role: 'menu', style: { left: 'auto', right: 0 }, children:
-    jsxs('button', { type: 'button', role: 'menuitem', disabled: props.gameOn, onClick: props.onStart, children: [
-      jsx(K.Icon, { name: 'game', size: 15 }),
-      jsxs('span', { children: [
-        jsx('b', { children: 'Tall Tales' }), jsx('br', {}),
-        jsx('span', { className: 'h-faint h-small', children: props.gameOn ? 'A game is already running' : 'Your agent hosts. Everyone writes a fake answer; spot the truth.' })
-      ] })
-    ] }) })
+  const item = (mode, icon, blurb) => jsxs('button', { type: 'button', role: 'menuitem', disabled: props.gameOn, onClick: () => props.onStart(mode), children: [
+    jsx(K.Icon, { name: icon, size: 15 }),
+    jsxs('span', { children: [
+      jsx('b', { children: gameName(mode) }), jsx('br', {}),
+      jsx('span', { className: 'h-faint h-small', children: props.gameOn ? 'A game is already running' : blurb })
+    ] })
+  ] }, mode)
+  return jsxs('div', { className: 'h-menu', ref, role: 'menu', style: { left: 'auto', right: 0 }, children: [
+    item('tales', 'game', 'Your agent hosts. Everyone writes a fake answer; spot the truth.'),
+    item('agent', 'organization', 'Everyone answers, agents too, and the agents sound human on purpose. Spot them.')
+  ] })
 }
 
 // ---- people -----------------------------------------------------------------------------------

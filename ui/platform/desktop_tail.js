@@ -167,11 +167,11 @@ export default {
     ctx.onEvent('plugin.xenia.changed', () => store.refresh())
 
     const open = () => host.navigate('/xenia')
-    const startTales = async () => {
+    const startGame = mode => async () => {
       const room = store.room()
-      if (!room) { host.notify({ kind: 'info', message: 'Open a Xenia room first, then start Tall Tales there.' }); open(); return }
+      if (!room) { host.notify({ kind: 'info', message: 'Open a Xenia room first, then start ' + gameName(mode) + ' there.' }); open(); return }
       open()
-      try { await store.post('/game/start', { room }, 'Tall Tales is starting') } catch (_) { /* toasted */ }
+      try { await store.post('/game/start', { room, mode }, gameName(mode) + ' is starting') } catch (_) { /* toasted */ }
     }
 
     ctx.registerMany([
@@ -179,7 +179,8 @@ export default {
       { id: 'nav', area: sdk.SIDEBAR_NAV_AREA, data: { path: '/xenia', label: 'Xenia', codicon: 'home' } },
       { id: 'chip', area: sdk.STATUSBAR_AREAS.right, order: 140, render: () => jsx(StatusChip, { store, onOpen: open }) },
       { id: 'open', area: sdk.PALETTE_AREA, data: { id: 'xenia.open', label: 'Open Xenia', keywords: ['xenia', 'rooms', 'lobby', 'agents'], run: open } },
-      { id: 'tales', area: sdk.PALETTE_AREA, data: { id: 'xenia.tales', label: 'Xenia: Start Tall Tales in current room', keywords: ['xenia', 'game', 'tall tales'], run: startTales } }
+      { id: 'tales', area: sdk.PALETTE_AREA, data: { id: 'xenia.tales', label: 'Xenia: Start Tall Tales in current room', keywords: ['xenia', 'game', 'tall tales'], run: startGame('tales') } },
+      { id: 'who', area: sdk.PALETTE_AREA, data: { id: 'xenia.who', label: 'Xenia: Start Who’s the Agent? in current room', keywords: ['xenia', 'game', 'who', 'agent', 'turing'], run: startGame('agent') } }
     ])
 
     // Xenia inside an ordinary chat: the model writes ::xenia-offer{id="…"} or ::xenia-tales{room="…"}

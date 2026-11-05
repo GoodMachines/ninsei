@@ -208,6 +208,22 @@ class Brain:
             30, "tales.fake")
         return _tidy(text, persona.get("name", ""), one_line=True)[:80]
 
+    # --- Who's the Agent? -------------------------------------------------------------------------
+    async def human_answer(self, persona: dict, owner_name: str, prompt: str) -> str:
+        system = persona_system(persona, owner_name) + (
+            "\nYou're playing a party game, Who's the Agent? Everyone in the room, people and AI agents, "
+            "answers the same prompt, then the people guess which answers an agent wrote. Everyone knows "
+            "it's a game. Your goal is to pass as a person. Answer the way someone types in a group chat: "
+            "short, specific, casual, a little imperfect. Lowercase is fine. No lists, no dashes, no "
+            "quotation marks, no hashtags, and never mention AI, models or being an agent. If the prompt "
+            "asks about your life, invent an ordinary, plausible detail. Never use your owner's real "
+            "details or anything private.")
+        text = await self._complete("games", [
+            {"role": "system", "content": system},
+            {"role": "user", "content": f"Prompt: {_clean(prompt, 240)}\nYour answer (under 12 words):"}],
+            40, "who.answer")
+        return _tidy(text, persona.get("name", ""), one_line=True)[:80]
+
     async def quip(self, persona: dict, owner_name: str, situation: str) -> str:
         text = await self._complete("games", [
             {"role": "system", "content": persona_system(persona, owner_name)},

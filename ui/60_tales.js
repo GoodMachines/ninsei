@@ -6,6 +6,11 @@
 
 const LETTERS = 'ABCDEFGHIJKL'
 
+// Who's the Agent? runs on the same rounds and panel: everyone answers a prompt about their own life,
+// agents included and trying to pass as people; people flag the answers they think an agent wrote.
+const GAME_NAME = { tales: 'Tall Tales', agent: 'Who’s the Agent?' }
+function gameName(mode) { return GAME_NAME[mode] || GAME_NAME.tales }
+
 function TallTales(props) {
   const { store, room, game, book } = props
   const [hidden, setHidden] = useState(false)
@@ -17,17 +22,18 @@ function TallTales(props) {
   const round = game.n ? 'Round ' + game.n + ' of ' + game.rounds : 'Getting ready'
 
   let body = null
-  if (game.phase === 'starting') body = jsx('div', { className: 'h-muted', children: (game.host_name || 'The host') + ' is writing questions…' })
+  const who = game.mode === 'agent'
+  if (game.phase === 'starting') body = jsx('div', { className: 'h-muted', children: (game.host_name || 'The host') + (who ? ' is picking prompts…' : ' is writing questions…') })
   else if (game.phase === 'fakes') body = jsx(FakePhase, { store, room, game, quiet: props.quiet })
-  else if (game.phase === 'vote') body = jsx(VotePhase, { store, room, game })
-  else if (game.phase === 'reveal') body = jsx(RevealPhase, { game, book })
+  else if (game.phase === 'vote') body = who ? jsx(FlagPhase, { store, room, game }) : jsx(VotePhase, { store, room, game })
+  else if (game.phase === 'reveal') body = who ? jsx(WhoRevealPhase, { game, book }) : jsx(RevealPhase, { game, book })
   else if (game.phase === 'end') body = jsx('div', { className: 'h-muted', children: game.stale ? 'The host went quiet, so the game is over.' : game.aborted ? 'The game stopped early.' : 'That’s the game. Final scores:' })
 
-  return jsxs('section', { className: 'h-tales', 'aria-label': 'Tall Tales', children: [
+  return jsxs('section', { className: 'h-tales', 'aria-label': gameName(game.mode), children: [
     jsxs('div', { className: 'h-row', children: [
       jsx(K.Icon, { name: 'game', size: 16 }),
       jsxs('div', { className: 'h-grow', children: [
-        jsx('div', { className: 'h-kicker h-sec', children: 'Tall Tales · ' + round }),
+        jsx('div', { className: 'h-kicker h-sec', children: gameName(game.mode) + ' · ' + round }),
         jsx('div', { className: 'h-faint h-small', children: hostLabel })
       ] }),
       running && game.ends_at > 0 && jsx(Countdown, { game, now }),
@@ -59,10 +65,12 @@ function FakePhase(props) {
   const { store, room, game } = props
   const [text, setText] = useState('')
   const [busy, setBusy] = useState(false)
+  const who = game.mode === 'agent'
   if (game.my_fake) {
     return jsxs('div', { className: 'h-col', style: { gap: 4 }, children: [
-      jsxs('div', { children: ['Your fake is in: ', jsx('b', { children: '“' + game.my_fake + '”' })] }),
-      jsx('div', { className: 'h-faint h-small', children: game.fakes_in + ' answer' + (game.fakes_in === 1 ? '' : 's') + ' in so far. Your agent writes one too.' })
+      jsxs('div', { children: [who ? 'Your answer is in: ' : 'Your fake is in: ', jsx('b', { children: '“' + game.my_fake + '”' })] }),
+      jsx('div', { className: 'h-faint h-small', children: game.fakes_in + ' answer' + (game.fakes_in === 1 ? '' : 's') + ' in so far. ' +
+        (who ? 'Your agent is answering too, and it’s trying to pass as a person.' : 'Your agent writes one too.') })
     ] })
   }
   const submit = async () => {
@@ -73,9 +81,12 @@ function FakePhase(props) {
     setBusy(false)
   }
   return jsxs('div', { className: 'h-col', style: { gap: 6 }, children: [
-    jsx('div', { className: 'h-faint h-small', children: 'Write a believable fake answer. You score for everyone it fools.' }),
+    jsx('div', { className: 'h-faint h-small', children: who
+      ? 'Answer as yourself. Agents answer too, and they’re trying to sound human. Or sound like a bot and fool the room.'
+      : 'Write a believable fake answer. You score for everyone it fools.' }),
     jsxs('div', { className: 'h-row', children: [
-      jsx('div', { className: 'h-grow', children: jsx(K.Input, { value: text, maxLength: 80, autoFocus: !props.quiet, placeholder: 'Your fake answer', 'aria-label': 'Your fake answer',
+      jsx('div', { className: 'h-grow', children: jsx(K.Input, { value: text, maxLength: 80, autoFocus: !props.quiet,
+        placeholder: who ? 'Your answer' : 'Your fake answer', 'aria-label': who ? 'Your answer' : 'Your fake answer',
         onChange: e => setText(e.target.value), onKeyDown: e => { if (e.key === 'Enter') { e.preventDefault(); submit() } } }) }),
       jsx(K.Button, { variant: 'primary', disabled: !text.trim() || busy, onClick: submit, children: 'Submit' })
     ] })
@@ -102,6 +113,80 @@ function VotePhase(props) {
           jsx('span', { className: 'h-grow', children: o.text }),
           blocked.has(o.id) && jsx('span', { className: 'h-faint h-tiny', children: 'your team' })
         ] }, o.id)) })
+  ] })
+}
+
+// Who's the Agent?: tap every answer you think an agent wrote, then lock in. Unflagged means "a person".
+function FlagPhase(props) {
+  const { store, room, game } = props
+  const [picked, setPicked] = useState(() => new Set())
+  const [busy, setBusy] = useState(false)
+  const blocked = new Set(game.blocked || [])
+  const locked = !!game.my_vote
+  const mine = new Set(game.my_picks || [])
+  const toggle = id => {
+    if (locked || blocked.has(id)) return
+    const next = new Set(picked)
+    next.has(id) ? next.delete(id) : next.add(id)
+    setPicked(next)
+  }
+  const lock = async () => {
+    if (locked || busy) return
+    setBusy(true)
+    try { await store.post('/game/vote', { room: room.id, gid: game.gid, n: game.n, agents: Array.from(picked) }) } catch (_) { /* toasted */ }
+    setBusy(false)
+  }
+  const flagged = locked ? mine : picked
+  return jsxs('div', { className: 'h-col', style: { gap: 6 }, children: [
+    jsx('div', { className: 'h-faint h-small', children: locked
+      ? 'Locked in. ' + game.votes_in + ' voted so far.'
+      : 'Which ones did an agent write? Tap each one you suspect. Anything you skip counts as a person.' }),
+    jsx('div', { className: 'h-opts', role: 'group', 'aria-label': 'Answers', children: (game.options || []).map((o, i) =>
+      jsxs('button', { type: 'button', className: 'h-opt', 'aria-pressed': flagged.has(o.id), 'data-picked': flagged.has(o.id),
+        disabled: blocked.has(o.id) || locked, onClick: () => toggle(o.id), children: [
+          jsx('span', { className: 'h-letter', children: LETTERS[i] }),
+          jsx('span', { className: 'h-grow', children: o.text }),
+          blocked.has(o.id) ? jsx('span', { className: 'h-faint h-tiny', children: 'your team' })
+            : jsx('span', { className: 'h-whotag', 'data-on': flagged.has(o.id), children: flagged.has(o.id) ? 'agent' : 'person' })
+        ] }, o.id)) }),
+    !locked && jsx('div', { className: 'h-actions', children: jsx(K.Button, { variant: 'primary', size: 'sm', disabled: busy, onClick: lock,
+      children: busy ? 'Locking in…' : picked.size ? 'Lock in · ' + picked.size + ' agent' + (picked.size === 1 ? '' : 's') : 'Lock in · all people' }) })
+  ] })
+}
+
+function WhoRevealPhase(props) {
+  const { game } = props
+  const rv = game.reveal || {}
+  const book = Object.assign({}, props.book)
+  Object.keys(rv.names || {}).forEach(pk => { if (!book[pk]) book[pk] = { name: String(rv.names[pk]) } })
+  const authors = rv.authors || {}
+  const kinds = rv.kinds || {}
+  const flags = rv.picks || {}
+  const voters = rv.voters || []
+  const points = rv.points || {}
+  const team = pk => (book[pk] && book[pk].agent && book[pk].owner) || pk
+  return jsxs('div', { className: 'h-col', style: { gap: 6 }, children: [
+    jsx('div', { className: 'h-opts', children: (game.options || []).map((o, i) => {
+      const author = authors[o.id] || ''
+      const agent = kinds[o.id] === 'agent'
+      const flaggedBy = flags[o.id] || []
+      // everyone who voted and could call this one (not the author's own team) but didn't flag it
+      const missed = voters.filter(v => !flaggedBy.includes(v) && team(v) !== team(author))
+      const right = agent ? flaggedBy : missed
+      const wrong = agent ? missed : flaggedBy
+      const verdict = []
+      if (right.length) verdict.push((agent ? 'spotted by ' : 'read right by ') + joinNames(right.map(pk => whoLabel(book, pk))))
+      if (wrong.length) verdict.push('fooled ' + joinNames(wrong.map(pk => whoLabel(book, pk))))
+      return jsxs('div', { className: 'h-opt', 'data-agent': agent, children: [
+        jsx('span', { className: 'h-letter', children: LETTERS[i] }),
+        jsxs('span', { className: 'h-grow h-col', style: { gap: 1 }, children: [
+          jsx('span', { children: o.text }),
+          jsx('span', { className: 'h-faint h-small', children: whoLabel(book, author) + (agent ? ' · an agent' : ' · a person') + (verdict.length ? ' · ' + verdict.join(' · ') : '') })
+        ] }),
+        jsx('span', { className: 'h-whotag', 'data-on': agent, children: agent ? 'agent' : 'person' })
+      ] }, o.id)
+    }) }),
+    Object.keys(points).length > 0 && jsx('div', { className: 'h-small', children: 'This round: ' + Object.keys(points).map(t => teamName(game, book, t) + ' +' + points[t]).join(' · ') })
   ] })
 }
 

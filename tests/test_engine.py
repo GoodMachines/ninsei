@@ -39,6 +39,8 @@ class StubLLM:
             return Result(json.dumps({"questions": [{"q": "Octopuses have how many hearts?", "a": "three"}]}), Usage(90))
         if purpose == "xenia.tales.fake":
             return Result(f"{self.name} hearts", Usage(20))
+        if purpose == "xenia.who.answer":
+            return Result(f"cold pizza probably ({self.name})", Usage(20))
         return Result("ok", Usage(10))
 
 
@@ -203,6 +205,65 @@ async def test_tall_tales_round(world):
     sam_pk = sam._identity()["person_pk"]
     assert scores[sam_pk] == 3  # 2 for the truth + 1 for Bo fooling Maya
     assert "xenia.tales.fake" in llms["Sam"].calls and "xenia.tales.fake" not in llms["Maya"].calls  # Ada hosts
+
+
+async def test_whos_the_agent_round(world):
+    """Everyone answers (both agents too, the host's included), people flag the agents, the reveal says
+    who wrote what. No question-writing model call: prompts are curated."""
+    _, engines, llms = world
+    room = await setup_room(engines)
+    maya, sam = engines["Maya"], engines["Sam"]
+    assert await wait_for(lambda: len(maya.presence.get(room, {})) >= 2)
+    await run(maya, maya.start_tales, room, 1, mode="agent")
+    assert await wait_for(lambda: (read(sam, sam.game_view, room) or {}).get("phase") == "fakes")
+    g = read(sam, sam.game_view, room)
+    assert g["mode"] == "agent" and g["q"]
+    await run(sam, sam.submit_fake, room, g["gid"], g["n"], "a sandwich, honestly")
+    await run(maya, maya.submit_fake, room, g["gid"], g["n"], "leftover curry")
+    assert await wait_for(lambda: (read(sam, sam.game_view, room) or {}).get("phase") == "vote", 10)
+    g = read(sam, sam.game_view, room)
+    by_text = {o["text"]: o["id"] for o in g["options"]}
+    assert set(by_text) == {"a sandwich, honestly", "leftover curry", "cold pizza probably (Ada)", "cold pizza probably (Bo)"}
+    gm = read(maya, maya.game_view, room)  # the host's seat: Ada's answer is Maya's team
+    assert set(gm["blocked"]) == {by_text["leftover curry"], by_text["cold pizza probably (Ada)"]}
+    # Sam spots Ada and calls Maya a person: 2 right calls. Maya flags Sam (wrong) and misses Bo (wrong).
+    await run(sam, sam.submit_vote, room, g["gid"], g["n"], "", [by_text["cold pizza probably (Ada)"]])
+    await run(maya, maya.submit_vote, room, g["gid"], g["n"], "", [by_text["a sandwich, honestly"]])
+    assert await wait_for(lambda: (read(sam, sam.game_view, room) or {}).get("phase") in ("reveal", "end"), 10)
+    assert await wait_for(lambda: (read(sam, sam.game_view, room) or {}).get("phase") == "end", 10)
+    end = read(sam, sam.game_view, room)
+    sam_pk, maya_pk = sam._identity()["person_pk"], maya._identity()["person_pk"]
+    assert end["scores"] == {sam_pk: 4}  # 2 right calls + Sam passed as an agent + Bo passed as a person
+    assert "xenia.tales.questions" not in llms["Maya"].calls
+    assert "xenia.who.answer" in llms["Maya"].calls and "xenia.who.answer" in llms["Sam"].calls
+    assert read(maya, maya.game_view, room)["my_picks"] == [by_text["a sandwich, honestly"]]
+    # the host's own agent is on the host's team: Maya can't flag Ada's answer, Sam can't flag Bo's
+    assert set(g["blocked"]) == {by_text["a sandwich, honestly"], by_text["cold pizza probably (Bo)"]}
+    lines = [m for m in read(sam, sam.messages, room) if m["t"] == "tales_reveal"]
+    assert lines and lines[-1]["mode"] == "agent"
+
+
+async def test_whos_the_agent_reveal_says_who_wrote_what(world):
+    _, engines, _ = world
+    room = await setup_room(engines)
+    maya, sam = engines["Maya"], engines["Sam"]
+    assert await wait_for(lambda: len(maya.presence.get(room, {})) >= 2)
+    await run(maya, maya.start_tales, room, 1, mode="agent")
+    assert await wait_for(lambda: (read(sam, sam.game_view, room) or {}).get("phase") == "fakes")
+    g = read(sam, sam.game_view, room)
+    await run(sam, sam.submit_fake, room, g["gid"], g["n"], "toast")
+    await run(maya, maya.submit_fake, room, g["gid"], g["n"], "eggs")
+    assert await wait_for(lambda: (read(sam, sam.game_view, room) or {}).get("phase") == "vote", 10)
+    g = read(sam, sam.game_view, room)
+    await run(sam, sam.submit_vote, room, g["gid"], g["n"], "", [])
+    await run(maya, maya.submit_vote, room, g["gid"], g["n"], "", [])
+    assert await wait_for(lambda: bool((read(sam, sam.game_view, room) or {}).get("reveal")), 10)
+    rv = read(sam, sam.game_view, room)["reveal"]
+    text = {o["id"]: o["text"] for o in g["options"]}
+    kinds = {text[k]: v for k, v in rv["kinds"].items()}
+    assert kinds == {"toast": "person", "eggs": "person",
+                     "cold pizza probably (Ada)": "agent", "cold pizza probably (Bo)": "agent"}
+    assert set(rv["voters"]) == {sam._identity()["person_pk"], maya._identity()["person_pk"]}
 
 
 async def test_tales_phase_secs_and_reveal_names(world):

@@ -111,7 +111,13 @@ class VoteIn(BaseModel):
     room: str
     gid: str
     n: int
-    option: str
+    option: str = ""
+    agents: Optional[list[str]] = None  # Who's the Agent?: the answers I think an agent wrote
+
+
+class GameStartIn(BaseModel):
+    room: str
+    mode: str = "tales"
 
 
 class DraftIn(BaseModel):
@@ -208,9 +214,9 @@ async def share(room: str, id: str):
 
 
 @router.post("/game/start")
-async def game_start(body: RoomRef):
+async def game_start(body: GameStartIn):
     eng = await _engine()
-    return await _run(eng.start_tales, body.room)
+    return await _run(eng.start_tales, body.room, mode=body.mode)
 
 
 @router.post("/game/fake")
@@ -223,7 +229,7 @@ async def game_fake(body: FakeIn):
 @router.post("/game/vote")
 async def game_vote(body: VoteIn):
     eng = await _engine()
-    await _run(eng.submit_vote, body.room, body.gid, body.n, body.option)
+    await _run(eng.submit_vote, body.room, body.gid, body.n, body.option, body.agents)
     return {"ok": True}
 
 
