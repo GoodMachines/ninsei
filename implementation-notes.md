@@ -265,3 +265,11 @@ An automated review attacked agent A's guards. All five findings were real; each
 - **Cleanup:** the Desktop-spawned test gateway (`xeniamaya`) stopped after the check. Screenshots with Justin's own chats deleted unsent.
 - **Not seen yet:** the pet bubble lines, the waiting-on-approval build state, the in-chat cards.
 
+
+## Handoff before the macOS restart, 2026-11-05 (main session, `--resume bf7751bc-3047-4d72-b46f-b5a497bbda14`)
+
+- **Done:** rename to Ninsei (b373fa7), docs and Desktop check (6962bf9). 203 passed, 1 skipped. The six-point report went to Justin. Polaris/Projects.md synced; backup in the old session scratchpad, which the restart may clear.
+- **Stopped:** both test dashboards (`ninsei-dash-maya`, `ninsei-dash-sam`). No test gateway running. Nothing needs to survive the reboot.
+- **Open asks to Justin:** status/priority for agent-hub-helper; whether hermes-ugc-studio is the same project as another project; whether to restart another profile's gateway to test the Plugins-page `profile_mismatch` guess; the go for creating `GoodMachines/ninsei`, pushing, the catalog PR, the X post and the form.
+- **Next, with Justin:** Desktop pass on the pet bubble lines, the waiting-on-approval build state and the in-chat cards; decisions on `trusted_inbound=True` and the plan cap's private imports; record the under-90 s video. Restart dashboards with `hermes -p xeniamaya dashboard --isolated --port 9311 --no-open --skip-build` under `lg run` (Sam: `xeniasam`, :9312).
+- **Cleanup left:** scratch screenshots and scripts in the old scratchpad; the test profiles at the very end.
