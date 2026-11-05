@@ -21,7 +21,7 @@ function TallTales(props) {
   else if (game.phase === 'fakes') body = jsx(FakePhase, { store, room, game, quiet: props.quiet })
   else if (game.phase === 'vote') body = jsx(VotePhase, { store, room, game })
   else if (game.phase === 'reveal') body = jsx(RevealPhase, { game, book })
-  else if (game.phase === 'end') body = jsx('div', { className: 'h-muted', children: game.aborted ? 'The game stopped early.' : 'That’s the game. Final scores:' })
+  else if (game.phase === 'end') body = jsx('div', { className: 'h-muted', children: game.stale ? 'The host went quiet, so the game is over.' : game.aborted ? 'The game stopped early.' : 'That’s the game. Final scores:' })
 
   return jsxs('section', { className: 'h-tales', 'aria-label': 'Tall Tales', children: [
     jsxs('div', { className: 'h-row', children: [
@@ -31,7 +31,8 @@ function TallTales(props) {
         jsx('div', { className: 'h-faint h-small', children: hostLabel })
       ] }),
       running && game.ends_at > 0 && jsx(Countdown, { game, now }),
-      !running && jsx(K.Button, { variant: 'ghost', size: 'sm', onClick: () => setHidden(true), children: 'Close' })
+      // Always closable: a host that vanished mid-game must never pin a panel over the room.
+      jsx(K.Button, { variant: 'ghost', size: 'sm', onClick: () => setHidden(true), children: running ? 'Hide' : 'Close' })
     ] }),
     game.q && game.phase !== 'end' && jsx('div', { className: 'h-tales-q', children: game.q }),
     body,

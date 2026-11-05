@@ -96,6 +96,11 @@ function groupItems(msgs) {
   const out = []
   let prev = null
   for (const m of msgs) {
+    if (m.t === 'join' && m.impostor) {  // never folded: the flag has to stay visible
+      out.push({ kind: 'join', key: m.id, m })
+      prev = null
+      continue
+    }
     if (m.t === 'join') {
       const last = out[out.length - 1]
       if (last && last.kind === 'joins') { if (!last.names.includes(m.name)) last.names.push(m.name) }
@@ -121,13 +126,14 @@ function TimelineItem(props) {
   const m = it.m
   let body = null
   if (it.kind === 'joins') body = jsx('div', { className: 'h-line', children: joinNames(it.names) + ' joined' })
+  else if (it.kind === 'join') body = jsxs('div', { className: 'h-line', children: [m.name + ' joined ', jsx(ImpostorChip, { imp: m.impostor })] })
   else if (m.system === 'budget') body = jsxs('div', { className: 'h-system', role: 'status', children: [
     jsx(Face, { face: m.face, pk: m.pk, state: 'system: waiting', size: 20 }),
     jsx('span', { children: m.text || (m.name + ' is resting: out of budget for today') })
   ] })
   else if (it.kind === 'msg') body = jsx(Message, { m, first: it.first })
   else if (it.kind === 'offer') body = jsx(OfferCard, { m, store, snap, room })
-  else if (it.kind === 'offer_state') body = jsx('div', { className: 'h-line', children: offerStateLine(m, room) })
+  else if (it.kind === 'offer_state') body = jsxs('div', { className: 'h-line', children: [offerStateLine(m, room), m.impostor && ' ', m.impostor && jsx(ImpostorChip, { imp: m.impostor })] })
   else if (it.kind === 'share') body = jsx(ShareCard, { m, store, room })
   else if (it.kind === 'tales_reveal') body = jsx('div', { className: 'h-line', children: 'Tall Tales · round ' + (m.round || '?') + ' · the truth was “' + (m.answer || '') + '”' })
   else if (it.kind === 'tales_start') body = jsx('div', { className: 'h-line', children: m.name + ' started a game of Tall Tales' })
@@ -315,7 +321,8 @@ function ShareCard(props) {
       jsx(K.Icon, { name: 'play', size: 16 }),
       jsxs('div', { className: 'h-grow', children: [
         jsx('div', { className: 'h-kicker', children: (m.mine ? 'You' : m.name) + ' shared a toy · ' + fmtBytes(m.size) }),
-        jsx('h4', { children: m.title || 'Untitled toy' })
+        jsx('h4', { children: m.title || 'Untitled toy' }),
+        m.impostor && jsx(ImpostorChip, { imp: m.impostor })
       ] }),
       html ? jsxs(Fragment, { children: [
         jsx(K.Button, { variant: 'ghost', size: 'sm', onClick: () => setTall(!tall), children: tall ? 'Smaller' : 'Bigger' }),

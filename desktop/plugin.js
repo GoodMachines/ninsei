@@ -1062,6 +1062,11 @@ function groupItems(msgs) {
   const out = []
   let prev = null
   for (const m of msgs) {
+    if (m.t === 'join' && m.impostor) {  // never folded: the flag has to stay visible
+      out.push({ kind: 'join', key: m.id, m })
+      prev = null
+      continue
+    }
     if (m.t === 'join') {
       const last = out[out.length - 1]
       if (last && last.kind === 'joins') { if (!last.names.includes(m.name)) last.names.push(m.name) }
@@ -1087,13 +1092,14 @@ function TimelineItem(props) {
   const m = it.m
   let body = null
   if (it.kind === 'joins') body = jsx('div', { className: 'h-line', children: joinNames(it.names) + ' joined' })
+  else if (it.kind === 'join') body = jsxs('div', { className: 'h-line', children: [m.name + ' joined ', jsx(ImpostorChip, { imp: m.impostor })] })
   else if (m.system === 'budget') body = jsxs('div', { className: 'h-system', role: 'status', children: [
     jsx(Face, { face: m.face, pk: m.pk, state: 'system: waiting', size: 20 }),
     jsx('span', { children: m.text || (m.name + ' is resting: out of budget for today') })
   ] })
   else if (it.kind === 'msg') body = jsx(Message, { m, first: it.first })
   else if (it.kind === 'offer') body = jsx(OfferCard, { m, store, snap, room })
-  else if (it.kind === 'offer_state') body = jsx('div', { className: 'h-line', children: offerStateLine(m, room) })
+  else if (it.kind === 'offer_state') body = jsxs('div', { className: 'h-line', children: [offerStateLine(m, room), m.impostor && ' ', m.impostor && jsx(ImpostorChip, { imp: m.impostor })] })
   else if (it.kind === 'share') body = jsx(ShareCard, { m, store, room })
   else if (it.kind === 'tales_reveal') body = jsx('div', { className: 'h-line', children: 'Tall Tales · round ' + (m.round || '?') + ' · the truth was “' + (m.answer || '') + '”' })
   else if (it.kind === 'tales_start') body = jsx('div', { className: 'h-line', children: m.name + ' started a game of Tall Tales' })
@@ -1281,7 +1287,8 @@ function ShareCard(props) {
       jsx(K.Icon, { name: 'play', size: 16 }),
       jsxs('div', { className: 'h-grow', children: [
         jsx('div', { className: 'h-kicker', children: (m.mine ? 'You' : m.name) + ' shared a toy · ' + fmtBytes(m.size) }),
-        jsx('h4', { children: m.title || 'Untitled toy' })
+        jsx('h4', { children: m.title || 'Untitled toy' }),
+        m.impostor && jsx(ImpostorChip, { imp: m.impostor })
       ] }),
       html ? jsxs(Fragment, { children: [
         jsx(K.Button, { variant: 'ghost', size: 'sm', onClick: () => setTall(!tall), children: tall ? 'Smaller' : 'Bigger' }),
@@ -1661,7 +1668,7 @@ function TallTales(props) {
   else if (game.phase === 'fakes') body = jsx(FakePhase, { store, room, game, quiet: props.quiet })
   else if (game.phase === 'vote') body = jsx(VotePhase, { store, room, game })
   else if (game.phase === 'reveal') body = jsx(RevealPhase, { game, book })
-  else if (game.phase === 'end') body = jsx('div', { className: 'h-muted', children: game.aborted ? 'The game stopped early.' : 'That’s the game. Final scores:' })
+  else if (game.phase === 'end') body = jsx('div', { className: 'h-muted', children: game.stale ? 'The host went quiet, so the game is over.' : game.aborted ? 'The game stopped early.' : 'That’s the game. Final scores:' })
 
   return jsxs('section', { className: 'h-tales', 'aria-label': 'Tall Tales', children: [
     jsxs('div', { className: 'h-row', children: [
@@ -1671,7 +1678,8 @@ function TallTales(props) {
         jsx('div', { className: 'h-faint h-small', children: hostLabel })
       ] }),
       running && game.ends_at > 0 && jsx(Countdown, { game, now }),
-      !running && jsx(K.Button, { variant: 'ghost', size: 'sm', onClick: () => setHidden(true), children: 'Close' })
+      // Always closable: a host that vanished mid-game must never pin a panel over the room.
+      jsx(K.Button, { variant: 'ghost', size: 'sm', onClick: () => setHidden(true), children: running ? 'Hide' : 'Close' })
     ] }),
     game.q && game.phase !== 'end' && jsx('div', { className: 'h-tales-q', children: game.q }),
     body,
