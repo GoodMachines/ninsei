@@ -83,7 +83,20 @@ async def test_failed_verification_is_remembered(monkeypatch):
     calls = count_checks(monkeypatch)
     for _ in range(5):
         await feed(pool, "s", bad)
-    assert calls["n"] == 1 and bad["id"] in pool._bad
+    assert calls["n"] == 1 and (bad["id"], bad["sig"]) in pool._bad
+
+
+async def test_junk_sig_copy_cannot_censor_the_real_event():
+    """A hostile relay replays a real event's content with a junk signature first. The genuine
+    copy (same id, valid sig) from an honest relay must still be accepted."""
+    ev = nostr.build_event(nostr.new_secret(), 1, "real")
+    junk = dict(ev, sig="00" * 64)
+    pool = offline_pool()
+    got = []
+    pool._subs["s"] = Subscription("s", [{}], lambda e, u: got.append(e))
+    await feed(pool, "s", junk)
+    await feed(pool, "s", ev)
+    assert [e["sig"] for e in got] == [ev["sig"]]
 
 
 async def test_bad_id_memory_is_bounded(monkeypatch):

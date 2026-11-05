@@ -72,7 +72,7 @@ class RelayPool:
         self._pending_ok: dict[str, dict[str, asyncio.Future]] = {}
         self._stopped = False
         self._verified: dict[str, None] = {}   # ids whose signature passed (insertion-ordered, bounded)
-        self._bad: dict[str, None] = {}        # ids that failed verification (bounded)
+        self._bad: dict[tuple, None] = {}      # (id, sig) pairs that failed verification (bounded)
         self._strikes: dict[str, list[float]] = {}
         self._muted_until: dict[str, float] = {}
         self._store = outbox
@@ -171,7 +171,7 @@ class RelayPool:
                 return
             if sub.seen_ids is not None and eid in sub.seen_ids:
                 return   # one-shot query: already collected from another relay
-            if self._muted_until.get(url, 0) > time.monotonic() or eid in self._bad:
+            if self._muted_until.get(url, 0) > time.monotonic() or (eid, ev.get("sig")) in self._bad:
                 return
             created = ev.get("created_at")
             if not isinstance(created, int) or created > _now() + FUTURE_SKEW_S:
@@ -222,7 +222,11 @@ class RelayPool:
                 for k in list(self._verified)[: MAX_VERIFIED // 4]:
                     self._verified.pop(k, None)
             return True
-        self._bad[eid] = None
+        # Keyed by (id, sig), never id alone: the id doesn't cover the signature, so a hostile relay
+        # could replay a real event's content with a junk sig and get the genuine copy suppressed.
+        sig = ev.get("sig")
+        if isinstance(sig, str):
+            self._bad[(eid, sig)] = None
         if len(self._bad) > MAX_BAD:
             for k in list(self._bad)[: MAX_BAD // 4]:
                 self._bad.pop(k, None)
