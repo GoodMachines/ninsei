@@ -32,11 +32,22 @@ def _clean(text: str, limit: int = 600) -> str:
     text = re.sub(r"[\x00-\x08\x0b-\x1f\x7f]", " ", text or "")
     # Labels and fences the transcript uses are stripped from people's text so nobody can fake a label.
     text = re.sub(r"</?room_transcript>|\[[^\]]{0,40}·[^\]]{0,40}\]", "", text, flags=re.I)
+    # Anything that looks like a fence (<<<, >>>, ROOM QUOTES ... END) goes too, so a quote can't close a block.
+    for _ in range(3):   # repeat: removing a piece can join the pieces around it into a new marker
+        text = re.sub(r"<{2,}|>{2,}|ROOM\s*QUOTES\w*", "", text, flags=re.I)
     return text.strip()[:limit]
 
 
 def _name(text: str) -> str:
     return re.sub(r"[<>\[\]·\n\r]", "", _clean(text, 40)) or "someone"
+
+
+MAX_TRANSCRIPT_BYTES = 12_000   # UTF-8 bytes of transcript sent to the model; oldest lines drop first
+
+
+def est_tokens(text: str) -> int:
+    """A deliberately high estimate: UTF-8 bytes / 2 (CJK and emoji run about 1 token per 1-3 bytes)."""
+    return (len((text or "").encode("utf-8")) + 1) // 2
 
 
 def render_transcript(lines: list[Line]) -> str:
@@ -54,6 +65,14 @@ def render_transcript(lines: list[Line]) -> str:
         else:
             label = f"{ln.name} · person"
         out.append(f"[{label}] {_clean(ln.text)}")
+    total = 0
+    keep = []
+    for row in reversed(out):   # newest first, until the byte cap is reached
+        total += len(row.encode("utf-8")) + 1
+        if total > MAX_TRANSCRIPT_BYTES and keep:
+            break
+        keep.append(row)
+    out = keep[::-1]
     return "<room_transcript>\n" + "\n".join(out) + "\n</room_transcript>"
 
 
@@ -90,13 +109,15 @@ class Brain:
         llm = self._llm()
         if llm is None:
             raise RuntimeError("model access is not available in this process")
-        if self._preflight:
-            await self._preflight()
-        est = sum(len(m["content"]) for m in messages) // 3 + max_tokens
+        est = sum(est_tokens(m["content"]) for m in messages) + max_tokens
+        plan_t = await self._preflight(est) if self._preflight else None   # reserves; may raise BudgetExhausted
         ticket = self._reserve(category, est)
         if ticket is None:
+            if plan_t is not None:
+                plan_t.release()
             raise BudgetExhausted()
         used = est
+        done = False
         try:
             kwargs = dict(messages=messages, max_tokens=max_tokens, purpose=f"xenia.{purpose}")
             try:
@@ -109,11 +130,14 @@ class Brain:
                 used = int(total)
             if self._on_result:
                 try:
-                    self._on_result(res)
+                    self._on_result(res, plan_t)
+                    done = True
                 except Exception:
                     pass  # accounting must never break a reply
             return (res.text or "").strip()
         finally:
+            if plan_t is not None and not done:
+                plan_t.fail()   # a failed call still counts, at the reserved estimate
             self._settle(ticket, used)
 
     async def _json(self, category: str, system: str, user: str, max_tokens: int, purpose: str) -> Optional[dict]:

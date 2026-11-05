@@ -74,6 +74,20 @@ def hermes_call_cost(res: Any) -> tuple[float, str]:
     return tokens * FALLBACK_USD_PER_MTOK / 1_000_000, "fallback"
 
 
+class PlanTicket:
+    """One reserved call. Close it with the result, or `fail()` it; either way the reservation is released."""
+
+    def __init__(self, cap: "PlanCap", usd: float):
+        self.cap, self.usd, self.open = cap, usd, True
+
+    def fail(self) -> None:
+        self.cap._close(self, None)
+
+    def release(self) -> None:
+        """The call never ran: give the reservation back without charging."""
+        self.cap._close(self, None, charge=False)
+
+
 class PlanCap:
     def __init__(self, store: Store, pct_getter: Callable[[], int], *,
                  source: Optional[Callable[[], Optional[float]]] = None,
@@ -83,22 +97,30 @@ class PlanCap:
         self._source = source or hermes_remaining_usd
         self._cost = cost or hermes_call_cost
         self._lock = threading.Lock()        # snapshot fetch (may block on the network, run in a thread)
-        self._spend_lock = threading.Lock()  # spend total (never blocks, safe on the event loop)
+        self._spend_lock = threading.Lock()  # spend total and reservations (never blocks)
         self._retry_at = 0.0
         self._checked = False
         self._basis = ""
+        self._pending = 0.0                  # dollars reserved by calls in flight
+        self._last_cost = 0.0                # the dearest call seen, a floor for the next reservation
+        self._refreshing = False
 
     # --- reads that never touch the network ---------------------------------------------------------
     def snapshot(self) -> Optional[dict]:
         snap = self.store.get("plan_snapshot")
         return snap if snap and snap.get("day") == today() else None
 
+    def known_snapshot(self) -> Optional[dict]:
+        """Today's snapshot, else the last one we saw (yesterday's) while a fresh read is on its way."""
+        snap = self.store.get("plan_snapshot")
+        return snap if snap and isinstance(snap.get("remaining_usd"), (int, float)) else None
+
     def used_usd(self) -> float:
         row = self.store.get("plan_spent") or {}
         return float(row.get("usd", 0.0)) if row.get("day") == today() else 0.0
 
     def cap_usd(self) -> Optional[float]:
-        pct, snap = int(self._pct()), self.snapshot()
+        pct, snap = int(self._pct()), self.known_snapshot()
         return round(snap["remaining_usd"] * pct / 100, 6) if pct and snap else None
 
     def exhausted(self) -> bool:
@@ -106,7 +128,7 @@ class PlanCap:
         return cap is not None and self.used_usd() >= cap
 
     def view(self) -> dict:
-        pct, snap = int(self._pct()), self.snapshot()
+        pct, snap = int(self._pct()), self.known_snapshot()
         cap = self.cap_usd()
         return {"plan_pct": pct, "available": snap is not None, "checked": self._checked or snap is not None,
                 "plan_cap_usd": round(cap, 4) if cap is not None else None,
@@ -136,23 +158,65 @@ class PlanCap:
         if int(self._pct()):
             await asyncio.to_thread(self.ensure_snapshot)
 
-    async def preflight(self) -> None:
-        """Called before every room model call. Does nothing when off or unavailable."""
-        if not int(self._pct()):
+    def _refresh_in_background(self) -> None:
+        """Start a plan read on its own thread. A model call never waits for it."""
+        if self._refreshing or time.monotonic() < self._retry_at:
             return
-        await asyncio.to_thread(self.ensure_snapshot)
-        if self.exhausted():
-            raise BudgetExhausted()
+        self._refreshing = True
 
-    def record(self, res: Any) -> None:
-        """Add one finished call's dollars to today's total (only while the cap is on and readable)."""
-        if not int(self._pct()) or self.snapshot() is None:
-            return
-        try:
-            usd, basis = self._cost(res)
-        except Exception as e:
-            log.debug("xenia: cost failed: %s", e)
-            return
+        def run():
+            try:
+                self.ensure_snapshot()
+            finally:
+                self._refreshing = False
+        threading.Thread(target=run, name="xenia-plan-refresh", daemon=True).start()
+
+    def _reserve_usd(self, est_tokens: int) -> float:
+        return max(est_tokens * FALLBACK_USD_PER_MTOK / 1_000_000, self._last_cost)
+
+    async def preflight(self, est_tokens: int = 0) -> Optional[PlanTicket]:
+        """Called before every room model call. Reserves the call's likely cost so concurrent calls can't
+        all pass the same check. Does nothing when off or unreadable, and never waits for the plan read."""
+        if not int(self._pct()):
+            return None
+        if self.snapshot() is None:
+            self._refresh_in_background()
+        cap = self.cap_usd()
+        if cap is None:
+            return None
+        usd = self._reserve_usd(est_tokens)
         with self._spend_lock:
-            self.store.set("plan_spent", {"day": today(), "usd": self.used_usd() + max(0.0, usd)})
-            self._basis = basis
+            if self.used_usd() + self._pending + usd > cap:
+                raise BudgetExhausted()
+            self._pending += usd
+        return PlanTicket(self, usd)
+
+    def _counting(self) -> bool:
+        """Spend is tracked while the cap is on and the plan is readable, or not yet known to be unreadable."""
+        return bool(int(self._pct())) and (self.known_snapshot() is not None or not self._checked)
+
+    def _close(self, ticket: Optional[PlanTicket], res: Any, charge: bool = True) -> None:
+        usd, basis = 0.0, ""
+        if ticket is not None and not ticket.open:
+            return
+        if res is not None:
+            try:
+                usd, basis = self._cost(res)
+            except Exception as e:
+                log.debug("xenia: cost failed: %s", e)
+                usd = ticket.usd if ticket else 0.0   # unknown cost: charge what was reserved
+        elif ticket is not None and charge:
+            usd = ticket.usd                          # a failed call may still have been billed
+        with self._spend_lock:
+            if ticket is not None:
+                ticket.open = False
+                self._pending = max(0.0, self._pending - ticket.usd)
+            if usd > 0 and self._counting():
+                self.store.set("plan_spent", {"day": today(), "usd": self.used_usd() + max(0.0, usd)})
+                self._last_cost = max(self._last_cost, usd) if res is not None else self._last_cost
+            if basis:
+                self._basis = basis
+
+    def record(self, res: Any, ticket: Optional[PlanTicket] = None) -> None:
+        """Add one finished call's dollars to today's total and release its reservation."""
+        self._close(ticket, res)

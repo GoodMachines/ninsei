@@ -175,7 +175,8 @@ async def test_offer_build_share_loop(world, tmp_path):
     await run(owner_engine, owner_engine.share_build, offer["id"], "Pixel sorter")
     assert await wait_for(lambda: any(m["t"] == "share" for m in other.messages(room)))
     share = [m for m in other.messages(room) if m["t"] == "share"][0]
-    assert other.share_html(room, share["id"]).startswith("<html>")
+    shared = other.share_html(room, share["id"])
+    assert shared.startswith('<meta http-equiv="Content-Security-Policy"') and shared.endswith("<html><body>toy</body></html>")
 
 
 async def test_tall_tales_round(world):

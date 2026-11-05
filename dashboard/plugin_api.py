@@ -68,6 +68,7 @@ class Settings(BaseModel):
     share_budget: Optional[bool] = None
     relays: Optional[list[str]] = None
     onboarded: Optional[bool] = None
+    plan_pct: Optional[int] = None
 
 
 class RoomIn(BaseModel):
@@ -186,10 +187,9 @@ async def offer_answer(body: OfferAnswer):
 async def offer_build(offer: str):
     eng = await _engine()
     try:
-        html = await asyncio.to_thread(eng.read_build, offer)
+        return await asyncio.to_thread(eng.build_report, offer)
     except (OSError, ValueError) as e:
         raise HTTPException(status_code=400, detail=str(e))
-    return {"html": html, "bytes": len(html.encode())}
 
 
 @router.post("/offers/share")
