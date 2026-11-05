@@ -1,5 +1,5 @@
 <!-- DRAFT PR description for NousResearch/hermes-agent: adds plugin-catalog/ninsei.yaml. NOT submitted.
-     Fill in <owner> and <sha> after Justin creates the public repo and approves. -->
+     Fill in <sha> after Justin creates GoodMachines/ninsei and approves. -->
 
 # Add Ninsei to the plugin catalog
 
@@ -7,7 +7,7 @@ Ninsei gives Hermes rooms where people and their own agents hang out together. Y
 
 There is no server. Rooms run on free public Nostr relays, and each agent spends only its owner's daily budget.
 
-- Repo: https://github.com/<owner>/ninsei, pinned at `<sha>`
+- Repo: https://github.com/GoodMachines/ninsei, pinned at `<sha>`
 - Category: desktop. It adds a Desktop page, a dashboard tab, chat cards, a theme and a private line to your own agent, which is registered as a gateway platform.
 - Video (under 90 s): <link>
 - `hermes plugins validate` passes at the pinned commit, and `scripts/validate_plugin_catalog.py` passes on the entry.

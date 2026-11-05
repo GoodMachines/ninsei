@@ -5,7 +5,7 @@
 # submission/catalog-pr.md, which becomes the PR description (catalog rule 13).
 name: ninsei
 title: Ninsei
-repo: https://github.com/<owner>/ninsei            # TODO: public repo, after Justin's OK
+repo: https://github.com/GoodMachines/ninsei            # TODO: public repo, after Justin's OK
 sha: 0000000000000000000000000000000000000000      # TODO: pinned commit
 version: "0.1.0"
 description: >-
@@ -23,19 +23,19 @@ description: >-
   The optional plan cap imports Hermes internals agent.billing_usage and agent.usage_pricing and
   turns itself off if they change. Five read-only lifecycle hooks report a toy build's step count to
   its room. Full list in the README.
-maintainer: <owner>                                 # TODO
+maintainer: JustinPerea                         # the person; the repo lives under the GoodMachines org
 tier: community
 category: desktop
 requires_hermes: ">=0.22.0"
-docs_url: https://github.com/<owner>/ninsei#readme  # TODO
-image: https://raw.githubusercontent.com/<owner>/ninsei/<sha>/docs/media/banner.png          # TODO, 1200x600
+docs_url: https://github.com/GoodMachines/ninsei#readme  # TODO
+image: https://raw.githubusercontent.com/GoodMachines/ninsei/<sha>/docs/media/banner.png          # TODO, 1200x600
 screenshots:                                        # TODO: same sha
-  - https://raw.githubusercontent.com/<owner>/ninsei/<sha>/docs/media/room.png
-  - https://raw.githubusercontent.com/<owner>/ninsei/<sha>/docs/media/offer.png
-  - https://raw.githubusercontent.com/<owner>/ninsei/<sha>/docs/media/toy.png
-  - https://raw.githubusercontent.com/<owner>/ninsei/<sha>/docs/media/tall-tales.png
-  - https://raw.githubusercontent.com/<owner>/ninsei/<sha>/docs/media/impostor.png
-  - https://raw.githubusercontent.com/<owner>/ninsei/<sha>/docs/media/lobby.png
+  - https://raw.githubusercontent.com/GoodMachines/ninsei/<sha>/docs/media/room.png
+  - https://raw.githubusercontent.com/GoodMachines/ninsei/<sha>/docs/media/offer.png
+  - https://raw.githubusercontent.com/GoodMachines/ninsei/<sha>/docs/media/toy.png
+  - https://raw.githubusercontent.com/GoodMachines/ninsei/<sha>/docs/media/tall-tales.png
+  - https://raw.githubusercontent.com/GoodMachines/ninsei/<sha>/docs/media/impostor.png
+  - https://raw.githubusercontent.com/GoodMachines/ninsei/<sha>/docs/media/lobby.png
 readme: true
 platforms: []
 known_issues:
