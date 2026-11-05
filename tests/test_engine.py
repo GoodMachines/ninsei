@@ -198,3 +198,14 @@ async def test_tall_tales_round(world):
     sam_pk = sam._identity()["person_pk"]
     assert scores[sam_pk] == 3  # 2 for the truth + 1 for Bo fooling Maya
     assert "hearth.tales.fake" in llms["Sam"].calls and "hearth.tales.fake" not in llms["Maya"].calls  # Ada hosts
+
+
+def test_store_files_are_owner_only(tmp_path):
+    import stat
+    from hearth_engine.store import Store
+    st = Store(tmp_path / "data" / "hearth.db")
+    st.set("identity", {"person_sk": "x"})
+    assert stat.S_IMODE((tmp_path / "data").stat().st_mode) == 0o700
+    for f in (tmp_path / "data").iterdir():
+        assert stat.S_IMODE(f.stat().st_mode) & 0o077 == 0, f
+    st.close()

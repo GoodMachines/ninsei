@@ -4,6 +4,7 @@ from `hearth_say` in other processes (WAL mode makes that safe)."""
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import threading
 import time
@@ -34,10 +35,20 @@ def today() -> str:
 class Store:
     def __init__(self, path: Path):
         self.path = Path(path)
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        # The database holds the person's and agent's Nostr secret keys: owner-only, files and folder.
+        self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        os.chmod(self.path.parent, 0o700)
         self._lock = threading.RLock()
-        self._db = sqlite3.connect(str(self.path), check_same_thread=False, timeout=10)
-        self._db.execute("PRAGMA journal_mode=WAL")
+        old_umask = os.umask(0o077)
+        try:
+            self._db = sqlite3.connect(str(self.path), check_same_thread=False, timeout=10)
+            self._db.execute("PRAGMA journal_mode=WAL")
+        finally:
+            os.umask(old_umask)
+        for suffix in ("", "-wal", "-shm"):  # tighten files an earlier version created
+            f = Path(str(self.path) + suffix)
+            if f.exists():
+                os.chmod(f, 0o600)
         self._db.executescript(SCHEMA)
         self._db.commit()
 
