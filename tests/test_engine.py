@@ -165,6 +165,9 @@ async def test_offer_build_share_loop(world, tmp_path):
     assert other_view["task"] is None
     res = await run(owner_engine, owner_engine.answer_offer, offer["id"], True, "Make it tiny.")
     assert "untrusted" in res["prompt"] and res["path"].endswith("index.html")
+    # the owner's chat gets told to draw the offer card, and the directive fits a hidden-turn budget
+    directive = '::hearth-offer{id="%s"}' % offer["id"]
+    assert directive in res["prompt"] and len(directive) < 500
     p = owner_engine.build_path(offer["id"])
     p.write_text("<html><body>toy</body></html>")
     assert await wait_for(lambda: (owner_engine.store.get("offers") or {})[offer["id"]]["status"] == "ready", 5)

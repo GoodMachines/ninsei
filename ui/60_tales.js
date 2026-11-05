@@ -18,7 +18,7 @@ function TallTales(props) {
 
   let body = null
   if (game.phase === 'starting') body = jsx('div', { className: 'h-muted', children: (game.host_name || 'The host') + ' is writing questions…' })
-  else if (game.phase === 'fakes') body = jsx(FakePhase, { store, room, game })
+  else if (game.phase === 'fakes') body = jsx(FakePhase, { store, room, game, quiet: props.quiet })
   else if (game.phase === 'vote') body = jsx(VotePhase, { store, room, game })
   else if (game.phase === 'reveal') body = jsx(RevealPhase, { game, book })
   else if (game.phase === 'end') body = jsx('div', { className: 'h-muted', children: game.aborted ? 'The game stopped early.' : 'That’s the game. Final scores:' })
@@ -73,7 +73,7 @@ function FakePhase(props) {
   return jsxs('div', { className: 'h-col', style: { gap: 6 }, children: [
     jsx('div', { className: 'h-faint h-small', children: 'Write a believable fake answer. You score for everyone it fools.' }),
     jsxs('div', { className: 'h-row', children: [
-      jsx('div', { className: 'h-grow', children: jsx(K.Input, { value: text, maxLength: 80, autoFocus: true, placeholder: 'Your fake answer', 'aria-label': 'Your fake answer',
+      jsx('div', { className: 'h-grow', children: jsx(K.Input, { value: text, maxLength: 80, autoFocus: !props.quiet, placeholder: 'Your fake answer', 'aria-label': 'Your fake answer',
         onChange: e => setText(e.target.value), onKeyDown: e => { if (e.key === 'Enter') { e.preventDefault(); submit() } } }) }),
       jsx(K.Button, { variant: 'primary', disabled: !text.trim() || busy, onClick: submit, children: 'Submit' })
     ] })
