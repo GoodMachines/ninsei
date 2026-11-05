@@ -1,4 +1,4 @@
-"""Desktop: Xenia's tab in the sidebar strip (next to Sessions and Bots) and the Xenia tab beside your chats.
+"""Desktop: Ninsei's tab in the sidebar strip (next to Sessions and Bots) and the Ninsei tab beside your chats.
 
 Loads the real built desktop/plugin.js under node with a stub SDK and React (hooks as plain values,
 jsx as plain objects), registers it, then clicks through the sidebar tab the way a person would."""
@@ -73,11 +73,11 @@ def test_sidebar_tab_docks_beside_sessions_and_opens_rooms_beside_chats(tmp_path
     out = subprocess.run([NODE, str(harness), plugin.as_uri()], capture_output=True, text=True, timeout=30)
     assert out.returncode == 0, out.stderr[-2000:]
     got = json.loads(out.stdout.strip().splitlines()[-1])
-    assert got["tab"]["area"] == "panes" and got["tab"]["title"] == "Xenia"
+    assert got["tab"]["area"] == "panes" and got["tab"]["title"] == "Ninsei"
     data = got["tab"]["data"]
     assert data["dock"] == {"pane": "sessions", "pos": "center"} and data["placement"] == "left" and data["hideOnly"] is True
-    assert data["tabTitleText"] == "Xenia"
-    # Lobby, then a room: each opens (or re-fronts) the one Xenia tab beside your chats, named for what it shows
-    assert got["opened"] == [{"id": "xenia", "title": "Xenia Lobby", "embedded": True, "app": "App"},
-                             {"id": "xenia", "title": "# shader club", "embedded": True, "app": "App"}]
+    assert data["tabTitleText"] == "Ninsei"
+    # Lobby, then a room: each opens (or re-fronts) the one Ninsei tab beside your chats, named for what it shows
+    assert got["opened"] == [{"id": "ninsei", "title": "Ninsei Lobby", "embedded": True, "app": "App"},
+                             {"id": "ninsei", "title": "# shader club", "embedded": True, "app": "App"}]
     assert got["navs"] == [] and got["view"] == "room" and got["room"] == "r1"

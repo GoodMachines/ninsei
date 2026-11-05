@@ -307,8 +307,8 @@ function createStore() {
   }
 }
 
-// Which Xenia view is showing (room, lobby, hermes, settings). One shared value, so in Desktop the
-// sidebar's Xenia tab and the room tab beside your chats stay in step. Remembered across launches.
+// Which Ninsei view is showing (room, lobby, hermes, settings). One shared value, so in Desktop the
+// sidebar's Ninsei tab and the room tab beside your chats stay in step. Remembered across launches.
 let NAV = null
 function nav() {
   if (NAV) return NAV

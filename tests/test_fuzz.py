@@ -4,8 +4,8 @@ import asyncio
 import json
 import random
 
-from xenia_engine import nostr
-from xenia_engine.engine import KIND_LIVE, KIND_ROOM
+from ninsei_engine import nostr
+from ninsei_engine.engine import KIND_LIVE, KIND_ROOM
 from test_engine import read, run, setup_room, world  # noqa: F401  (fixture re-export)
 
 TYPES = ["msg", "join", "offer", "offer_state", "share", "tales_start", "tales_round", "tales_vote_open",
@@ -68,7 +68,7 @@ async def test_hostile_game_and_claim_floods(world):
     owner's open question still gets an answer."""
     import hashlib
     import time as _t
-    from xenia_engine.engine import FAKES_PER_HOST, MAX_CLAIM_TRIGGERS, MAX_CLAIMS_PER_TRIGGER, MAX_PLAYED
+    from ninsei_engine.engine import FAKES_PER_HOST, MAX_CLAIM_TRIGGERS, MAX_CLAIMS_PER_TRIGGER, MAX_PLAYED
     from test_engine import wait_for
     _, engines, llms = world
     room = await setup_room(engines)
@@ -91,7 +91,7 @@ async def test_hostile_game_and_claim_floods(world):
               "kind": KIND_LIVE, "tags": tags, "content": json.dumps(c), "sig": ""}
         await run(maya, maya._on_event, ev, "relay")
     await asyncio.sleep(1.0)
-    assert llms["Maya"].calls.count("xenia.tales.fake") <= FAKES_PER_HOST
+    assert llms["Maya"].calls.count("ninsei.tales.fake") <= FAKES_PER_HOST
     assert len(maya.claims) <= MAX_CLAIM_TRIGGERS
     assert all(len(v) <= MAX_CLAIMS_PER_TRIGGER for v in maya.claims.values())
     assert len(maya._played) <= MAX_PLAYED
@@ -102,4 +102,4 @@ async def test_hostile_game_and_claim_floods(world):
     # the flood's game counts as live (agents then answer only when addressed), and Maya still can talk
     # to her own agent through it
     await run(maya, maya.post, room, "Ada, know a good palette tool?")
-    assert await wait_for(lambda: llms["Maya"].calls.count("xenia.reply") == 1, 5)
+    assert await wait_for(lambda: llms["Maya"].calls.count("ninsei.reply") == 1, 5)

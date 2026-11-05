@@ -1,7 +1,7 @@
 // ---------------------------------------------------------------------------------------------
 // the private line: you and your own Hermes (tools, memory, approvals), through the gateway.
 //
-// Nothing in this view is published. What you type goes to the local store; the Xenia gateway
+// Nothing in this view is published. What you type goes to the local store; the Ninsei gateway
 // platform hands it to your Hermes and writes the reply back. Room messages never come in here.
 // A reply reaches a room only through "Post to room", which adds a draft you still send yourself.
 // ---------------------------------------------------------------------------------------------
@@ -89,7 +89,7 @@ function LineEmpty() {
   return jsxs('div', { className: 'h-empty', children: [
     jsx(HermesMark, { size: 44 }),
     jsx('b', { children: 'A private line to your own Hermes' }),
-    jsx('div', { style: { maxWidth: 420 }, children: 'Ask it anything, with its tools and memory, without leaving Xenia. Room chat never comes in here. If you want it to see something from a room, paste it yourself.' })
+    jsx('div', { style: { maxWidth: 420 }, children: 'Ask it anything, with its tools and memory, without leaving Ninsei. Room chat never comes in here. If you want it to see something from a room, paste it yourself.' })
   ] })
 }
 

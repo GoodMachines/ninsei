@@ -8,10 +8,10 @@ from pathlib import Path
 
 import pytest
 
-from xenia_engine import nostr, toy
-from xenia_engine.brain import MAX_TRANSCRIPT_BYTES, BudgetExhausted, Line, _clean, est_tokens, render_transcript
-from xenia_engine.engine import Engine, SHARE_SERIALIZED_LIMIT
-from xenia_engine.plan import PlanCap
+from ninsei_engine import nostr, toy
+from ninsei_engine.brain import MAX_TRANSCRIPT_BYTES, BudgetExhausted, Line, _clean, est_tokens, render_transcript
+from ninsei_engine.engine import Engine, SHARE_SERIALIZED_LIMIT
+from ninsei_engine.plan import PlanCap
 
 ROOT = Path(__file__).resolve().parent.parent
 OID = "ab" * 32
@@ -60,7 +60,7 @@ def test_settings_model_accepts_every_field_the_engine_saves():
     tree = ast.parse((ROOT / "dashboard" / "plugin_api.py").read_text())
     fields = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "Settings")
     names = {st.target.id for st in fields.body if isinstance(st, ast.AnnAssign)}
-    src = (ROOT / "xenia_engine" / "engine.py").read_text()
+    src = (ROOT / "ninsei_engine" / "engine.py").read_text()
     allowed = set(re.findall(r'"(\w+)"', re.search(r"allowed = \{(.*?)\}", src, re.S).group(1)))
     assert "plan_pct" in names
     assert allowed <= names, f"the route would drop: {allowed - names}"
@@ -73,7 +73,7 @@ def test_settings_route_keeps_plan_pct(tmp_path):
     import importlib.util
     import sys
     sys.path.insert(0, str(ROOT))
-    spec = importlib.util.spec_from_file_location("xenia_plugin_api_t", ROOT / "dashboard" / "plugin_api.py")
+    spec = importlib.util.spec_from_file_location("ninsei_plugin_api_t", ROOT / "dashboard" / "plugin_api.py")
     api = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(api)
     e = Engine(tmp_path / "e", lambda: None, relays=[], lock=False)
@@ -245,7 +245,7 @@ def test_transcript_is_hard_capped_and_keeps_the_newest():
 # ---- finding 12: plan cap reserves, counts failures, never waits ----------------------------------------
 
 def _cap(tmp_path, source=None, cost=1.0):
-    from xenia_engine.store import Store
+    from ninsei_engine.store import Store
     st = Store(tmp_path / "s.db")
     return PlanCap(st, lambda: 10, source=source or (lambda: 100.0), cost=lambda r: (cost, "reported")), st
 
@@ -328,9 +328,9 @@ async def test_answer_offer_rejects_bad_ids(engine):
 async def test_lobby_tags_are_capped(engine):
     sk = nostr.new_secret()
     nonce = "n1"
-    from xenia_engine.engine import KIND_META, room_id_for
+    from ninsei_engine.engine import KIND_META, room_id_for
     rid = room_id_for(nostr.pubkey(sk), nonce)
-    tags = [["d", f"xenia/room/{rid}"], ["t", "xenia"]] + [["t", "z" * 500] for _ in range(40)]
+    tags = [["d", f"ninsei/room/{rid}"], ["t", "ninsei"]] + [["t", "z" * 500] for _ in range(40)]
     ev = nostr.build_event(sk, KIND_META, json.dumps({"nonce": nonce, "name": "R"}), tags, pow_bits=12)
 
     async def fake_query(*a, **k):
@@ -404,13 +404,13 @@ def test_private_line_notice_does_not_install_a_service():
 
 def test_disclosures_are_in_readme_and_catalog_entry():
     readme = (ROOT / "README.md").read_text()
-    entry = (ROOT / "submission" / "xenia.yaml").read_text()
+    entry = (ROOT / "submission" / "ninsei.yaml").read_text()
     pr = (ROOT / "submission" / "catalog-pr.md").read_text()  # catalog rule 13: the PR description + README
     for needle in ("agent.billing_usage", "agent.usage_pricing", "trusted_inbound", "window.hermes.send",
-                   "xenia_room_engine", "your user account", "turns on the `xenia` platform", "Plan cap"):
+                   "ninsei_room_engine", "your user account", "turns on the `ninsei` platform", "Plan cap"):
         assert needle in readme, needle
     for needle in ("agent.billing_usage", "agent.usage_pricing", "trusted_inbound=True", "window.hermes.send",
-                   "xenia_room_engine", "same user", "turns itself on", "IP address"):
+                   "ninsei_room_engine", "same user", "turns itself on", "IP address"):
         assert needle in pr, needle
     # the entry itself stays short but still names the risky parts and points at the full list
     for needle in ("agent.billing_usage", "agent.usage_pricing", "trusted_inbound=True", "Full list in the README",

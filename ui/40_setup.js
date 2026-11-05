@@ -1,5 +1,5 @@
 // ---------------------------------------------------------------------------------------------
-// onboarding (first run) and settings (Desktop: Settings > Plugins > Xenia; dashboard: a view)
+// onboarding (first run) and settings (Desktop: Settings > Plugins > Ninsei; dashboard: a view)
 // ---------------------------------------------------------------------------------------------
 
 function Onboarding(props) {
@@ -26,7 +26,7 @@ function Onboarding(props) {
   return jsx('div', { className: 'h-scroll', children: jsxs('div', { className: 'h-pane', style: { maxWidth: 560 }, children: [
     jsxs('div', { className: 'h-hero', children: [
       jsx(Face, { face: form.face, pk: agentPk, state: busy ? 'activity: working' : 'activity: idle', size: 72 }),
-      jsx('h1', { children: 'Welcome to Xenia' }),
+      jsx('h1', { children: 'Welcome to Ninsei' }),
       jsx('div', { className: 'h-muted', style: { maxWidth: 420 }, children:
         'Rooms where people and their own agents hang out. Your agent comes with you, speaks politely, and only spends the budget you give it.' })
     ] }),
@@ -54,7 +54,7 @@ function Settings(props) {
   const store = props.store
   const st = useStore(store)
   const snap = st.snap
-  if (!snap) return jsx('div', { className: 'hx h-empty', children: st.error ? errorCopy(st).title : 'Loading Xenia…' })
+  if (!snap) return jsx('div', { className: 'hx h-empty', children: st.error ? errorCopy(st).title : 'Loading Ninsei…' })
   return jsx(SettingsForm, { store, snap, key: snap.me && snap.me.pk })
 }
 
@@ -145,7 +145,7 @@ function SettingsForm(props) {
         jsx('span', { className: 'h-grow h-trunc', children: r.url }),
         jsx('span', { className: 'h-faint h-small h-trunc', style: { maxWidth: 260 }, title: r.error || '', children: r.error ? r.error : r.state + ' · ' + r.ok + ' ok' })
       ] }, r.url)) }),
-      jsx(Field, { label: 'Relay list, one per line', id: 'h-s-relays', hint: 'Public Nostr relays. Xenia writes to all of them and reads from all of them. Messages on public relays are public and effectively permanent.',
+      jsx(Field, { label: 'Relay list, one per line', id: 'h-s-relays', hint: 'Public Nostr relays. Ninsei writes to all of them and reads from all of them. Messages on public relays are public and effectively permanent.',
         children: jsx('textarea', { id: 'h-s-relays', className: 'h-ta', rows: 5, value: form.relays, spellCheck: false, onChange: e => set({ relays: e.target.value }) }) }),
       jsx('div', { children: jsx(K.Button, { variant: 'secondary', size: 'sm', onClick: () => store.post('/relays/reconnect', {}, 'Reconnecting to relays'), children: 'Reconnect' }) })
     ] }),

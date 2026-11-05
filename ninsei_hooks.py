@@ -1,9 +1,9 @@
 """Hermes hooks that let a room see your agent building the toy it offered.
 
 A toy gets built in the owner's own Hermes chat (the CLI, Desktop or the private line), which is a
-different process from the Xenia engine. These hooks run inside that chat's process. They spot the
-build session by the offer line the build prompt asks for (`::xenia-offer{id="..."}`), and from then
-on record coarse progress for that offer in Xenia's SQLite file:
+different process from the Ninsei engine. These hooks run inside that chat's process. They spot the
+build session by the offer line the build prompt asks for (`::ninsei-offer{id="..."}`), and from then
+on record coarse progress for that offer in Ninsei's SQLite file:
 
 * `pre_llm_call`: a turn starts, so the build is working (and an unknown session is matched here).
 * `pre_tool_call`: one more step. The count is all that's kept: never the tool's name or arguments.
@@ -29,9 +29,9 @@ from typing import Any, Optional
 
 from . import _loader
 
-log = logging.getLogger("xenia.hooks")
+log = logging.getLogger("ninsei.hooks")
 
-OFFER_LINE = re.compile(r'::xenia-offer\{id="([0-9a-f]{64})"\}')
+OFFER_LINE = re.compile(r'::ninsei-offer\{id="([0-9a-f]{64})"\}')
 MAX_STEPS = 999
 
 _lock = threading.Lock()
@@ -43,7 +43,7 @@ _SCHEMA = ("CREATE TABLE IF NOT EXISTS build_progress (offer TEXT PRIMARY KEY, s
 
 
 def _db() -> Optional[sqlite3.Connection]:
-    """Xenia's store, only if it already exists in this profile. Never creates it, never starts the engine."""
+    """Ninsei's store, only if it already exists in this profile. Never creates it, never starts the engine."""
     global _conn
     if _conn is None:
         path = _loader.load_engine().db_path_if_present()
@@ -94,7 +94,7 @@ def _record(session_id: Any, *, text: Any = None, state: Optional[str] = None, s
                        "updated_at=? WHERE offer=?", (session_id, 1 if step else 0, MAX_STEPS, state, now, offer))
             db.commit()
     except Exception:  # progress is decoration: never let it break the owner's chat
-        log.debug("xenia build progress write failed", exc_info=True)
+        log.debug("ninsei build progress write failed", exc_info=True)
 
 
 def _text(value: Any) -> Any:

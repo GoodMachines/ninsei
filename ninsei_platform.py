@@ -1,19 +1,19 @@
-"""Xenia as a Hermes gateway platform: the private line between you and your own Hermes.
+"""Ninsei as a Hermes gateway platform: the private line between you and your own Hermes.
 
-The Xenia page has a private thread, "Your Hermes". What you type there reaches your full Hermes agent
+The Ninsei page has a private thread, "Your Hermes". What you type there reaches your full Hermes agent
 (tools, memory, approvals) through the gateway, exactly like a message to your Telegram bot would, and its
 replies come back into the same thread. The thread is never published to relays.
 
 The trust split, which is the point of this file:
 
-* Inbound is only what the owner typed in the local Xenia UI. The UI's route writes an 'owner' row to the
+* Inbound is only what the owner typed in the local Ninsei UI. The UI's route writes an 'owner' row to the
   local store (`private_line` table, owner-only file); this adapter takes queued 'owner' rows and nothing
   else. Room messages, other people and other agents never enter this table, so they can't reach the
   tool-enabled agent, not even quoted. Room context gets in only if the owner pastes it.
 * Outbound is only the private thread. `send()` writes a 'hermes' row. Nothing here can publish: this module
   never imports the engine, the relay client or the signer, and never calls get_engine(). To say something
   in a room, the owner presses "Post to room" in the UI, which queues a draft they send themselves.
-* Process boundary: the Xenia engine (relays, room brain) runs in the dashboard or Desktop backend and holds
+* Process boundary: the Ninsei engine (relays, room brain) runs in the dashboard or Desktop backend and holds
   `engine.lock`; this adapter runs in the gateway process and meets it only through the SQLite store (WAL).
 
 This module imports gateway classes at the top, so it's loaded lazily, from the adapter factory in
@@ -33,11 +33,11 @@ from gateway.platforms.event import MessageEvent, MessageType
 
 from . import _loader
 
-log = logging.getLogger("xenia.platform")
+log = logging.getLogger("ninsei.platform")
 
-PLATFORM_NAME = "xenia"
-CHAT_ID = "private"          # one global thread: reads as "Xenia · private line" in the session list
-CHAT_NAME = "Xenia · private line"
+PLATFORM_NAME = "ninsei"
+CHAT_ID = "private"          # one global thread: reads as "Ninsei · private line" in the session list
+CHAT_NAME = "Ninsei · private line"
 OWNER_ID = "owner"           # the only sender this platform has
 POLL_SECONDS = 1.0           # a local, indexed SQLite read; cheap enough to keep the line feeling live
 HEARTBEAT_SECONDS = 10.0
@@ -50,11 +50,11 @@ def open_store():
     Store = import_module(pkg.__name__ + ".store").Store
     path = pkg.db_path_if_present()
     if path is None:
-        path = pkg.data_dir() / "xenia.db"
+        path = pkg.data_dir() / "ninsei.db"
     return Store(path)
 
 
-class XeniaAdapter(BasePlatformAdapter):
+class NinseiAdapter(BasePlatformAdapter):
     """Private line adapter: local store in, local store out."""
 
     serial_receive_loop = True  # the poll loop hands messages over one at a time, in order
@@ -71,7 +71,7 @@ class XeniaAdapter(BasePlatformAdapter):
         try:
             self._store = await asyncio.to_thread(self._store_factory)
         except Exception as e:
-            log.error("[xenia] could not open the Xenia store: %s", e)
+            log.error("[ninsei] could not open the Ninsei store: %s", e)
             return False
         self._mark_connected()
         await asyncio.to_thread(self._store.line_heartbeat)
@@ -81,7 +81,7 @@ class XeniaAdapter(BasePlatformAdapter):
             self._wire_plugin_handlers(None)
         except Exception:
             pass
-        log.info("[xenia] private line connected")
+        log.info("[ninsei] private line connected")
         return True
 
     async def disconnect(self) -> None:
@@ -104,7 +104,7 @@ class XeniaAdapter(BasePlatformAdapter):
             except asyncio.CancelledError:
                 return
             except Exception as e:  # a locked or briefly unreadable db: try again next tick
-                log.debug("[xenia] poll failed: %s", e)
+                log.debug("[ninsei] poll failed: %s", e)
             await asyncio.sleep(POLL_SECONDS)
 
     async def poll_once(self) -> int:
@@ -121,7 +121,7 @@ class XeniaAdapter(BasePlatformAdapter):
             try:
                 await self.handle_message(event)
             except Exception as e:
-                log.warning("[xenia] gateway refused a private-line message: %s", e)
+                log.warning("[ninsei] gateway refused a private-line message: %s", e)
                 await asyncio.to_thread(store.line_set_status, m["id"], "failed")
         return len(msgs)
 
@@ -144,14 +144,14 @@ class XeniaAdapter(BasePlatformAdapter):
             text=text,
             message_type=MessageType.COMMAND if text.startswith("/") else MessageType.TEXT,
             user_id=OWNER_ID, user_name=owner_name, source=source, message_id=m["id"],
-            raw_message={"xenia_line_id": m["id"]},
+            raw_message={"ninsei_line_id": m["id"]},
             timestamp=datetime.fromtimestamp(float(m["created_at"]), tz=timezone.utc))
 
     # -- outbound: the private thread only ---------------------------------------------------------
     async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None,
                    metadata: Optional[dict[str, Any]] = None) -> SendResult:
         if self._store is None:
-            return SendResult(success=False, error="Xenia private line is not connected")
+            return SendResult(success=False, error="Ninsei private line is not connected")
         if not str(content or "").strip():
             return SendResult(success=True, message_id=None)
         try:
@@ -162,7 +162,7 @@ class XeniaAdapter(BasePlatformAdapter):
 
     async def edit_message(self, chat_id: str, message_id: str, content: str, *, finalize: bool = False) -> SendResult:
         if self._store is None:
-            return SendResult(success=False, error="Xenia private line is not connected")
+            return SendResult(success=False, error="Ninsei private line is not connected")
         ok = await asyncio.to_thread(self._store.line_edit_reply, message_id, content)
         return SendResult(success=ok, message_id=message_id if ok else None, error=None if ok else "unknown message")
 
@@ -180,7 +180,7 @@ class XeniaAdapter(BasePlatformAdapter):
 
 async def standalone_send(pconfig, chat_id, message, *, thread_id=None, media_files=None, force_document=False,
                           store_factory=open_store) -> dict:
-    """Cron results (`deliver=xenia`) from a process without the live gateway: same private thread."""
+    """Cron results (`deliver=ninsei`) from a process without the live gateway: same private thread."""
     try:
         store = await asyncio.to_thread(store_factory)
         try:
@@ -188,5 +188,5 @@ async def standalone_send(pconfig, chat_id, message, *, thread_id=None, media_fi
         finally:
             await asyncio.to_thread(store.close)
     except Exception as e:
-        return {"error": f"Xenia private line: {e}"}
+        return {"error": f"Ninsei private line: {e}"}
     return {"success": True, "platform": PLATFORM_NAME, "chat_id": CHAT_ID, "message_id": row["id"]}

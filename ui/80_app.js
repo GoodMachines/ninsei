@@ -3,9 +3,9 @@
 // ---------------------------------------------------------------------------------------------
 
 function errorCopy(st) {
-  if (st.status === 409) return { title: 'Xenia is open in another Hermes process', body: st.error + ' Close the other one (a second `hermes dashboard` or Desktop gateway on this profile), then retry.' }
-  if (st.status === 404) return { title: "Xenia's backend isn't loaded", body: 'Enable the xenia plugin for this profile (plugins.enabled in config.yaml) and restart Hermes so its routes mount.' }
-  return { title: 'Xenia could not load', body: st.error || 'The backend did not answer.' }
+  if (st.status === 409) return { title: 'Ninsei is open in another Hermes process', body: st.error + ' Close the other one (a second `hermes dashboard` or Desktop gateway on this profile), then retry.' }
+  if (st.status === 404) return { title: "Ninsei's backend isn't loaded", body: 'Enable the ninsei plugin for this profile (plugins.enabled in config.yaml) and restart Hermes so its routes mount.' }
+  return { title: 'Ninsei could not load', body: st.error || 'The backend did not answer.' }
 }
 
 function App(props) {
@@ -15,14 +15,14 @@ function App(props) {
   const view = useNav()
   const [people, setPeople] = useState(false)
   const go = v => nav().set(v)
-  const embedded = !!props.embedded  // Desktop's room tab: the sidebar's Xenia tab is the rail
+  const embedded = !!props.embedded  // Desktop's room tab: the sidebar's Ninsei tab is the rail
   const snap = st.snap
 
   let inner
   if (!snap) {
     inner = st.error
       ? jsx(ErrorPanel, { st, store })
-      : jsx('div', { className: 'h-empty', children: [jsx(Face, { pk: 'a1b2c3', state: 'activity: working', size: 48 }, 'f'), jsx('div', { children: 'Lighting the xenia…' }, 't')] })
+      : jsx('div', { className: 'h-empty', children: [jsx(Face, { pk: 'a1b2c3', state: 'activity: working', size: 48 }, 'f'), jsx('div', { children: 'Lighting the ninsei…' }, 't')] })
   } else if (!snap.settings.onboarded) {
     inner = jsx(Onboarding, { store, snap })
   } else {
@@ -38,7 +38,7 @@ function App(props) {
     else center = jsx(Welcome, { snap, onLobby: () => go('lobby') })
 
     inner = jsx(RoomReactions, { snap, room: showRoom ? room : null, children: jsxs('div', { className: 'h-grid', 'data-people': people ? 'open' : 'closed', 'data-embedded': embedded || undefined, children: [
-      !embedded && jsx('nav', { className: 'h-left', 'aria-label': 'Xenia rooms', children: jsx(Rail, { store, snap, view, go, roomId }) }),
+      !embedded && jsx('nav', { className: 'h-left', 'aria-label': 'Ninsei rooms', children: jsx(Rail, { store, snap, view, go, roomId }) }),
       jsxs('main', { className: 'h-center', children: [
         st.error && jsx('div', { style: { padding: '8px 18px 0' }, children: jsx(Notice, { icon: 'warning', role: 'alert', children: errorCopy(st).title + '. Showing the last state we had.' }) }),
         center
@@ -52,8 +52,8 @@ function App(props) {
   ] })
 }
 
-// Desktop: Xenia's tab in the sidebar strip, next to Sessions and Bots. It's the page's rail; picking
-// something opens it in the Xenia tab beside your chats (props.onOpen).
+// Desktop: Ninsei's tab in the sidebar strip, next to Sessions and Bots. It's the page's rail; picking
+// something opens it in the Ninsei tab beside your chats (props.onOpen).
 function SideTab(props) {
   const { store, onOpen } = props
   const st = useStore(store)
@@ -61,16 +61,16 @@ function SideTab(props) {
   const snap = st.snap
   let body
   if (!snap) {
-    body = jsx('div', { className: 'h-faint h-small', style: { padding: 8 }, children: st.error ? errorCopy(st).title : 'Lighting the xenia…' })
+    body = jsx('div', { className: 'h-faint h-small', style: { padding: 8 }, children: st.error ? errorCopy(st).title : 'Lighting the ninsei…' })
   } else if (!snap.settings.onboarded) {
     body = jsxs('div', { className: 'h-col', style: { gap: 10, padding: 8 }, children: [
       jsx('div', { className: 'h-small', children: 'Rooms where people and their agents hang out.' }),
-      jsx(K.Button, { variant: 'primary', onClick: () => onOpen(), children: 'Set up Xenia' })
+      jsx(K.Button, { variant: 'primary', onClick: () => onOpen(), children: 'Set up Ninsei' })
     ] })
   } else {
     body = jsx(Rail, { store, snap, view, roomId: view === 'room' ? store.room() : '', go: onOpen })
   }
-  return jsxs('nav', { className: 'hx h-tab', 'data-platform': P.kind, 'aria-label': 'Xenia rooms', children: [
+  return jsxs('nav', { className: 'hx h-tab', 'data-platform': P.kind, 'aria-label': 'Ninsei rooms', children: [
     P.inlineStyle && jsx('style', { children: CSS }),
     body
   ] })
@@ -110,7 +110,7 @@ function Rail(props) {
     jsxs('div', { className: 'h-brand', children: [
       jsx(Face, { face: a.face, pk: a.pk, state: a.state, size: 24, name: a.name }),
       jsxs('div', { className: 'h-grow', style: { minWidth: 0 }, children: [
-        jsx('b', { children: 'Xenia' }),
+        jsx('b', { children: 'Ninsei' }),
         jsx('div', { className: 'h-faint h-tiny h-trunc', children: (snap.me.name || 'You') + ' & ' + (a.name || 'agent') + ' · ' + STATE_LABEL[stateWord(a.state)] })
       ] }),
       jsx(BudgetRing, { budget: snap.budget, size: 16, stroke: 2.2 })
@@ -184,12 +184,12 @@ function JoinDialog(props) {
     setBusy(true)
     try { const meta = await props.store.post('/rooms/join', { room: code.trim() }); props.onDone(meta.id) } catch (_) { setBusy(false) }
   }
-  return jsx(Modal, { open: true, onClose: props.onClose, title: 'Join by code', description: 'Paste a code like xenia:203f22bcfd1b4b2f.',
+  return jsx(Modal, { open: true, onClose: props.onClose, title: 'Join by code', description: 'Paste a code like ninsei:203f22bcfd1b4b2f.',
     footer: [
       jsx(K.Button, { variant: 'ghost', onClick: props.onClose, children: 'Cancel' }, 'c'),
       jsx(K.Button, { variant: 'primary', disabled: busy || !code.trim(), onClick: join, children: busy ? 'Joining…' : 'Join' }, 'j')
     ],
-    children: jsx(K.Input, { value: code, autoFocus: true, placeholder: 'xenia:…', 'aria-label': 'Room code', onChange: e => setCode(e.target.value),
+    children: jsx(K.Input, { value: code, autoFocus: true, placeholder: 'ninsei:…', 'aria-label': 'Room code', onChange: e => setCode(e.target.value),
       onKeyDown: e => { if (e.key === 'Enter') join() } }) })
 }
 
@@ -199,15 +199,15 @@ function StatusChip(props) {
   const st = useStore(props.store)
   const snap = st.snap
   if (!snap || !snap.settings || !snap.settings.onboarded) {
-    return jsx(K.Tip, { label: st.error ? 'Xenia: ' + errorCopy(st).title : 'Open Xenia', children: jsxs('button', { type: 'button', className: 'hx h-statuschip', onClick: props.onOpen, children: [
-      jsx(K.Icon, { name: 'home', size: 12 }), 'Xenia'] }) })
+    return jsx(K.Tip, { label: st.error ? 'Ninsei: ' + errorCopy(st).title : 'Open Ninsei', children: jsxs('button', { type: 'button', className: 'hx h-statuschip', onClick: props.onOpen, children: [
+      jsx(K.Icon, { name: 'home', size: 12 }), 'Ninsei'] }) })
   }
   const a = snap.me.agent
   const w = stateWord(a.state)
   const waiting = (snap.offers || []).some(o => o.status === 'open' || o.status === 'ready') || (snap.drafts || []).length > 0
   const label = (a.name || 'Your agent') + ' · ' + STATE_LABEL[w] + (a.note ? ' (' + a.note + ')' : '') + ' · ' +
     fmtTokens(snap.budget.used) + ' of ' + fmtTokens(snap.budget.limit) + ' tokens today' + (waiting ? ' · waiting on you' : '')
-  return jsx(K.Tip, { label, children: jsxs('button', { type: 'button', className: 'hx h-statuschip', 'aria-label': 'Open Xenia: ' + label, onClick: props.onOpen, children: [
+  return jsx(K.Tip, { label, children: jsxs('button', { type: 'button', className: 'hx h-statuschip', 'aria-label': 'Open Ninsei: ' + label, onClick: props.onOpen, children: [
     jsx(Face, { face: a.face, pk: a.pk, state: waiting ? 'system: waiting' : a.state, size: 15, name: a.name }),
     jsx('span', { children: STATE_LABEL[w] }),
     jsx(BudgetRing, { budget: snap.budget, size: 11, stroke: 1.8 })

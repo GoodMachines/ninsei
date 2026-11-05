@@ -10,8 +10,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from xenia_engine.engine import _build_claim
-from xenia_engine.store import Store
+from ninsei_engine.engine import _build_claim
+from ninsei_engine.store import Store
 
 from test_engine import read, run, setup_room, wait_for, world  # noqa: F401  (fixture)
 
@@ -22,17 +22,17 @@ OTHER = "b" * 64
 
 @pytest.fixture
 def hooks(tmp_path, monkeypatch):
-    name = "xenia_plugin_hooks_t"
+    name = "ninsei_plugin_hooks_t"
     spec = importlib.util.spec_from_file_location(name, ROOT / "__init__.py", submodule_search_locations=[str(ROOT)])
     pkg = importlib.util.module_from_spec(spec)
     monkeypatch.setitem(sys.modules, name, pkg)
     spec.loader.exec_module(pkg)
-    mod = importlib.import_module(name + ".xenia_hooks")
-    store = Store(tmp_path / "xenia.db")
+    mod = importlib.import_module(name + ".ninsei_hooks")
+    store = Store(tmp_path / "ninsei.db")
     store.set("offers", {OID: {"status": "building", "room": "r", "title": "Pixel Sorter"},
                          OTHER: {"status": "ready", "room": "r", "title": "Old"}})
     monkeypatch.setattr(mod, "_loader", SimpleNamespace(
-        load_engine=lambda: SimpleNamespace(db_path_if_present=lambda: tmp_path / "xenia.db")))
+        load_engine=lambda: SimpleNamespace(db_path_if_present=lambda: tmp_path / "ninsei.db")))
     monkeypatch.setattr(mod, "_conn", None)
     monkeypatch.setattr(mod, "_sessions", {})
     yield mod, store
@@ -42,7 +42,7 @@ def hooks(tmp_path, monkeypatch):
 
 def test_hooks_track_only_an_accepted_offer_and_keep_only_a_count(hooks, tmp_path):
     mod, store = hooks
-    line = '::xenia-offer{id="%s"}' % OID
+    line = '::ninsei-offer{id="%s"}' % OID
     assert mod.pre_llm_call(session_id="s0", user_message="unrelated chat") is None
     assert store.build_progress() == {}
     assert mod.pre_llm_call(session_id="s1", user_message="Build a toy...\n" + line) is None
@@ -56,11 +56,11 @@ def test_hooks_track_only_an_accepted_offer_and_keep_only_a_count(hooks, tmp_pat
     mod.post_llm_call(session_id="s1")
     assert store.build_progress()[OID] == {**store.build_progress()[OID], "state": "paused", "steps": 2}
     # nothing about the tools is kept anywhere in the file
-    db = sqlite3.connect(str(tmp_path / "xenia.db"))
+    db = sqlite3.connect(str(tmp_path / "ninsei.db"))
     rows = db.execute("SELECT * FROM build_progress").fetchall()
     assert all("write_file" not in str(r) and "secret" not in str(r) for r in rows)
     # an offer that isn't being built (or a line pasted in another chat) lights up nothing
-    mod.pre_llm_call(session_id="s2", user_message='::xenia-offer{id="%s"}' % OTHER)
+    mod.pre_llm_call(session_id="s2", user_message='::ninsei-offer{id="%s"}' % OTHER)
     mod.pre_tool_call(session_id="s0")
     assert set(store.build_progress()) == {OID}
     # once the offer is done, the session stops counting
@@ -75,7 +75,7 @@ def test_hooks_never_raise_without_a_store(hooks, monkeypatch):
     mod, _ = hooks
     monkeypatch.setattr(mod, "_loader", SimpleNamespace(load_engine=lambda: SimpleNamespace(db_path_if_present=lambda: None)))
     monkeypatch.setattr(mod, "_conn", None)
-    assert mod.pre_llm_call(session_id="s", user_message='::xenia-offer{id="%s"}' % OID) is None
+    assert mod.pre_llm_call(session_id="s", user_message='::ninsei-offer{id="%s"}' % OID) is None
     assert mod.pre_tool_call(session_id=None) is None
 
 
@@ -152,6 +152,6 @@ def test_every_registered_hook_is_declared_and_disclosed(hooks):
     pr = (ROOT / "submission" / "catalog-pr.md").read_text()
     names = set(mod.HOOKS)
     assert declared(ROOT / "plugin.yaml") == names
-    assert declared(ROOT / "submission" / "xenia.yaml") == names
+    assert declared(ROOT / "submission" / "ninsei.yaml") == names
     for name in names:
         assert f"`{name}`" in readme and f"`{name}`" in pr, name

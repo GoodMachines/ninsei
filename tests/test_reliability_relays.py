@@ -5,10 +5,10 @@ import time
 
 import pytest
 
-from xenia_engine import nostr, relays
-from xenia_engine.relays import RelayPool, Subscription
-from xenia_engine.store import Store
-from xenia_engine.topics import TopicTracker
+from ninsei_engine import nostr, relays
+from ninsei_engine.relays import RelayPool, Subscription
+from ninsei_engine.store import Store
+from ninsei_engine.topics import TopicTracker
 from local_relay import LocalRelay
 
 
@@ -186,7 +186,7 @@ def test_store_prunes_old_events_on_open_and_caps_rooms(tmp_path):
 
 
 def test_store_cap_runs_during_normal_adds(tmp_path, monkeypatch):
-    from xenia_engine import store as store_mod
+    from ninsei_engine import store as store_mod
     monkeypatch.setattr(store_mod, "EVENT_PRUNE_EVERY", 10)
     sk = nostr.new_secret()
     st = Store(tmp_path / "x.db")
@@ -213,7 +213,7 @@ def test_forget_room_deletes_its_events(tmp_path):
 
 
 def test_topic_tracker_hits_are_bounded(monkeypatch):
-    from xenia_engine import topics
+    from ninsei_engine import topics
     monkeypatch.setattr(topics, "MAX_TERMS", 100)
     t = TopicTracker()
     for i in range(400):

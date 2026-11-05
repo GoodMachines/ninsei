@@ -1,4 +1,4 @@
-"""Xenia backend routes, mounted at /api/plugins/xenia/ (Desktop reaches them via ctx.rest, the
+"""Ninsei backend routes, mounted at /api/plugins/ninsei/ (Desktop reaches them via ctx.rest, the
 dashboard tab via fetchJSON). Every route sits behind Hermes's own auth gate; every state change is a POST.
 """
 from __future__ import annotations
@@ -14,10 +14,10 @@ from pydantic import BaseModel
 
 
 def _pkg():
-    mod = sys.modules.get("xenia_room_engine")
+    mod = sys.modules.get("ninsei_room_engine")
     if mod is None:
         spec = importlib.util.spec_from_file_location(
-            "xenia_room_loader", Path(__file__).resolve().parent.parent / "_loader.py")
+            "ninsei_room_loader", Path(__file__).resolve().parent.parent / "_loader.py")
         loader = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(loader)
         mod = loader.load_engine()
@@ -256,7 +256,7 @@ async def relays_reconnect():
 
 # ---- the private line: you and your own Hermes ----------------------------------------------------
 # These routes never touch the engine or the relays. They read and write the private_line table, which
-# the gateway adapter (xenia_platform.py, in the gateway process) delivers to the owner's full Hermes.
+# the gateway adapter (ninsei_platform.py, in the gateway process) delivers to the owner's full Hermes.
 # The only way a reply reaches a room is /line/post, which queues a draft the owner still has to send.
 
 _line_store_box: list = []

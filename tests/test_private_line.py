@@ -18,7 +18,7 @@ from typing import Any, Optional
 
 import pytest
 
-from xenia_engine.store import Store
+from ninsei_engine.store import Store
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -90,12 +90,12 @@ def plugin(monkeypatch):
     """The repo loaded as a plugin package (as Hermes loads it), with the stand-in gateway installed."""
     for name, mod in _fake_gateway().items():
         monkeypatch.setitem(sys.modules, name, mod)
-    name = "xenia_plugin_under_test"
+    name = "ninsei_plugin_under_test"
     spec = importlib.util.spec_from_file_location(name, ROOT / "__init__.py", submodule_search_locations=[str(ROOT)])
     pkg = importlib.util.module_from_spec(spec)
     monkeypatch.setitem(sys.modules, name, pkg)
     spec.loader.exec_module(pkg)
-    platform = importlib.import_module(name + ".xenia_platform")
+    platform = importlib.import_module(name + ".ninsei_platform")
     yield pkg, platform
     for mod in [m for m in sys.modules if m.startswith(name)]:
         monkeypatch.delitem(sys.modules, mod, raising=False)
@@ -104,7 +104,7 @@ def plugin(monkeypatch):
 
 @pytest.fixture
 def store(tmp_path):
-    s = Store(tmp_path / "xenia.db")
+    s = Store(tmp_path / "ninsei.db")
     s.save_room("room1", {"name": "shader club"})
     s.set("settings", {"display_name": "Maya"})
     yield s
@@ -114,20 +114,20 @@ def store(tmp_path):
 @pytest.fixture
 def no_engine_no_relays(monkeypatch):
     """Any attempt to start the engine or build a relay pool fails the test."""
-    import xenia_engine
-    import xenia_engine.relays as relays
+    import ninsei_engine
+    import ninsei_engine.relays as relays
 
     def boom(*_a, **_k):
         raise AssertionError("the private line must never start the engine or open relays")
-    monkeypatch.setattr(xenia_engine, "get_engine", boom)
+    monkeypatch.setattr(ninsei_engine, "get_engine", boom)
     monkeypatch.setattr(relays.RelayPool, "__init__", boom)
-    loaded = sys.modules.get("xenia_room_engine")
+    loaded = sys.modules.get("ninsei_room_engine")
     if loaded is not None:
         monkeypatch.setattr(loaded, "get_engine", boom)
 
 
 def _adapter(platform, store):
-    return platform.XeniaAdapter(types.SimpleNamespace(extra={}), store_factory=lambda: store)
+    return platform.NinseiAdapter(types.SimpleNamespace(extra={}), store_factory=lambda: store)
 
 
 # ---- store ----------------------------------------------------------------------------------------------
@@ -175,7 +175,7 @@ async def test_owner_message_becomes_inbound_event(plugin, store, no_engine_no_r
         assert ev.message_type.value == "text"
         assert ev.user_id == "owner" and ev.user_name == "Maya"
         src = ev.source
-        assert src.platform == "xenia" and src.chat_id == "private" and src.chat_type == "dm"
+        assert src.platform == "ninsei" and src.chat_id == "private" and src.chat_type == "dm"
         assert src.user_id == "owner"
         assert await a.poll_once() == 0  # delivered exactly once
         store.line_post_owner("/new")
@@ -231,7 +231,7 @@ async def test_cron_standalone_send_lands_in_private_thread(plugin, tmp_path, no
     _pkg, platform = plugin
     path = tmp_path / "cron.db"
     out = await platform.standalone_send(None, "private", "Daily digest: 3 things.", store_factory=lambda: Store(path))
-    assert out["success"] and out["platform"] == "xenia"
+    assert out["success"] and out["platform"] == "ninsei"
     s = Store(path)
     try:
         (row,) = s.line_messages()
@@ -276,7 +276,7 @@ def test_register_adds_platform_and_tolerates_old_hosts(plugin):
 
     pkg.register(Ctx())
     (k,) = calls
-    assert k["name"] == "xenia" and k["trusted_inbound"] is True and callable(k["check_fn"])
+    assert k["name"] == "ninsei" and k["trusted_inbound"] is True and callable(k["check_fn"])
 
     class OldCtx:
         def register_tool(self, **_k): calls.append("tool")
@@ -314,16 +314,16 @@ def _imports(path: Path) -> set[str]:
 
 
 def test_adapter_imports_nothing_that_can_publish():
-    text = " ".join(_imports(ROOT / "xenia_platform.py"))
+    text = " ".join(_imports(ROOT / "ninsei_platform.py"))
     for banned in ("relays", "nostr", "engine", "brain", "websockets", "get_engine"):
         assert banned not in text.replace("load_engine", ""), banned
-    src = (ROOT / "xenia_platform.py").read_text()
+    src = (ROOT / "ninsei_platform.py").read_text()
     assert "get_engine" not in src.replace("never calls get_engine()", "")
 
 
 def _callers(method: str) -> set[str]:
     found = set()
-    for path in list(ROOT.glob("*.py")) + list((ROOT / "xenia_engine").glob("*.py")) + [ROOT / "dashboard" / "plugin_api.py"]:
+    for path in list(ROOT.glob("*.py")) + list((ROOT / "ninsei_engine").glob("*.py")) + [ROOT / "dashboard" / "plugin_api.py"]:
         for node in ast.walk(ast.parse(path.read_text())):
             if isinstance(node, ast.Attribute) and node.attr == method:
                 found.add(path.relative_to(ROOT).as_posix())
@@ -332,5 +332,5 @@ def _callers(method: str) -> set[str]:
 
 def test_only_the_ui_writes_owner_rows_and_only_the_adapter_writes_replies():
     assert _callers("line_post_owner") == {"dashboard/plugin_api.py"}
-    assert _callers("line_add_reply") == {"xenia_platform.py"}  # the adapter and its cron sender
-    assert _callers("line_claim_owner") == {"xenia_platform.py"}
+    assert _callers("line_add_reply") == {"ninsei_platform.py"}  # the adapter and its cron sender
+    assert _callers("line_claim_owner") == {"ninsei_platform.py"}

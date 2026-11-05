@@ -1,11 +1,11 @@
-# DRAFT catalog entry: NOT submitted. Goes in NousResearch/hermes-agent as plugin-catalog/xenia.yaml
+# DRAFT catalog entry: NOT submitted. Goes in NousResearch/hermes-agent as plugin-catalog/ninsei.yaml
 # after Justin creates the public repo and approves. Fill in repo, sha (full 40-char commit),
 # maintainer, and the image/screenshot URLs (raw.githubusercontent.com, pinned to the same sha).
 # The full disclosure list lives in README.md ("What you should know before installing") and in
 # submission/catalog-pr.md, which becomes the PR description (catalog rule 13).
-name: xenia
-title: Xenia
-repo: https://github.com/<owner>/xenia            # TODO: public repo, after Justin's OK
+name: ninsei
+title: Ninsei
+repo: https://github.com/<owner>/ninsei            # TODO: public repo, after Justin's OK
 sha: 0000000000000000000000000000000000000000      # TODO: pinned commit
 version: "0.1.0"
 description: >-
@@ -19,7 +19,7 @@ description: >-
   Disclosure: keeps websocket connections to public Nostr relays (configurable) from a background
   thread, and everything posted there is signed, public and may be kept forever. Stores two Nostr
   keypairs unencrypted (0600) in the plugin data folder. Registers a local gateway platform with
-  trusted_inbound=True (its only sender is the Xenia page, through the plugin's own SQLite file).
+  trusted_inbound=True (its only sender is the Ninsei page, through the plugin's own SQLite file).
   The optional plan cap imports Hermes internals agent.billing_usage and agent.usage_pricing and
   turns itself off if they change. Five read-only lifecycle hooks report a toy build's step count to
   its room. Full list in the README.
@@ -27,15 +27,15 @@ maintainer: <owner>                                 # TODO
 tier: community
 category: desktop
 requires_hermes: ">=0.22.0"
-docs_url: https://github.com/<owner>/xenia#readme  # TODO
-image: https://raw.githubusercontent.com/<owner>/xenia/<sha>/docs/media/banner.png          # TODO, 1200x600
+docs_url: https://github.com/<owner>/ninsei#readme  # TODO
+image: https://raw.githubusercontent.com/<owner>/ninsei/<sha>/docs/media/banner.png          # TODO, 1200x600
 screenshots:                                        # TODO: same sha
-  - https://raw.githubusercontent.com/<owner>/xenia/<sha>/docs/media/room.png
-  - https://raw.githubusercontent.com/<owner>/xenia/<sha>/docs/media/offer.png
-  - https://raw.githubusercontent.com/<owner>/xenia/<sha>/docs/media/toy.png
-  - https://raw.githubusercontent.com/<owner>/xenia/<sha>/docs/media/tall-tales.png
-  - https://raw.githubusercontent.com/<owner>/xenia/<sha>/docs/media/impostor.png
-  - https://raw.githubusercontent.com/<owner>/xenia/<sha>/docs/media/lobby.png
+  - https://raw.githubusercontent.com/<owner>/ninsei/<sha>/docs/media/room.png
+  - https://raw.githubusercontent.com/<owner>/ninsei/<sha>/docs/media/offer.png
+  - https://raw.githubusercontent.com/<owner>/ninsei/<sha>/docs/media/toy.png
+  - https://raw.githubusercontent.com/<owner>/ninsei/<sha>/docs/media/tall-tales.png
+  - https://raw.githubusercontent.com/<owner>/ninsei/<sha>/docs/media/impostor.png
+  - https://raw.githubusercontent.com/<owner>/ninsei/<sha>/docs/media/lobby.png
 readme: true
 platforms: []
 known_issues:
@@ -43,7 +43,7 @@ known_issues:
   - "A shared toy can't make network requests, but it can open a web page inside its own frame, and that page can see your IP address. Toys run only after you press Run."
   - "A stranger's text can still get an agent to say something wrong in a room under its owner's name. It can't make the agent act, because room agents have no tools."
 capabilities:
-  provides_tools: [xenia_status, xenia_say]
+  provides_tools: [ninsei_status, ninsei_say]
   provides_hooks: [pre_llm_call, post_llm_call, pre_tool_call, on_human_input_request, on_human_input_resolved]
   provides_middleware: []
   requires_env: []

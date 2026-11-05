@@ -1,6 +1,6 @@
 """Local state in one SQLite file under the plugin's data dir: settings, identity keys, room history,
 the budget ledger and the outbox. One connection, guarded by a lock, used from the engine thread and
-from `xenia_say` in other processes (WAL mode makes that safe)."""
+from `ninsei_say` in other processes (WAL mode makes that safe)."""
 from __future__ import annotations
 
 import json
@@ -35,8 +35,8 @@ CREATE TABLE IF NOT EXISTS private_line (
   reply_to TEXT, created_at REAL NOT NULL, updated_at REAL NOT NULL);
 CREATE INDEX IF NOT EXISTS private_line_status ON private_line(role, status);
 CREATE INDEX IF NOT EXISTS private_line_time ON private_line(created_at);
--- Build progress, written by Xenia's Hermes hooks in whatever process runs the owner's build chat
--- (xenia_hooks.py). Coarse on purpose: a step count and a state, never tool names or contents.
+-- Build progress, written by Ninsei's Hermes hooks in whatever process runs the owner's build chat
+-- (ninsei_hooks.py). Coarse on purpose: a step count and a state, never tool names or contents.
 CREATE TABLE IF NOT EXISTS build_progress (
   offer TEXT PRIMARY KEY, session TEXT NOT NULL, steps INTEGER NOT NULL DEFAULT 0,
   state TEXT NOT NULL, updated_at REAL NOT NULL);
@@ -243,14 +243,14 @@ class Store:
                              (time.time() - older_than,))
             self._db.commit()
 
-    # --- private line (you and your own Hermes; see xenia_platform.py) ---------------------------
+    # --- private line (you and your own Hermes; see ninsei_platform.py) ---------------------------
     _LINE_COLS = ("id", "role", "text", "status", "reply_to", "created_at", "updated_at")
 
     def _line_row(self, row) -> dict:
         return dict(zip(self._LINE_COLS, row))
 
     def line_post_owner(self, text: str) -> dict:
-        """The owner typed this in the local Xenia UI. Queued for the gateway adapter to deliver."""
+        """The owner typed this in the local Ninsei UI. Queued for the gateway adapter to deliver."""
         text = str(text or "").strip()[:LINE_OWNER_MAX]
         if not text:
             raise ValueError("empty message")

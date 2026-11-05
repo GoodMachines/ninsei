@@ -18,7 +18,7 @@ import websockets
 
 from . import nostr
 
-log = logging.getLogger("xenia.relays")
+log = logging.getLogger("ninsei.relays")
 
 EventHandler = Callable[[dict, str], Awaitable[None] | None]
 
@@ -30,7 +30,7 @@ BAD_WINDOW_S = 10.0
 BAD_MUTE_S = 30.0           # ... and we ignore that relay's events for this long
 OUTBOX_MAX = 200            # unacknowledged events kept for resend
 OUTBOX_TTL_S = 24 * 3600    # after this an undelivered event is "failed"
-SYNTH = "xenia:"            # prefix on locally made (not relay-sent) OK results
+SYNTH = "ninsei:"            # prefix on locally made (not relay-sent) OK results
 
 
 def _now() -> float:
@@ -88,7 +88,7 @@ class RelayPool:
                     self._outbox[ev["id"]] = (ev, ts)
                     self._delivery[ev["id"]] = "pending"
             except Exception:
-                log.exception("xenia: could not load the event outbox")
+                log.exception("ninsei: could not load the event outbox")
 
     # --- lifecycle ------------------------------------------------------------------------------
     def start(self) -> None:
@@ -188,7 +188,7 @@ class RelayPool:
                 if asyncio.iscoroutine(res):
                     await res
             except Exception:
-                log.exception("xenia: event handler failed")
+                log.exception("ninsei: event handler failed")
         elif typ == "OK" and len(msg) >= 3:
             fut = self._pending_ok.get(url, {}).pop(msg[1], None)
             st = self.status[url]
@@ -336,7 +336,7 @@ class RelayPool:
             try:
                 self._store.event_outbox_set(eid, status)
             except Exception:
-                log.exception("xenia: outbox write failed")
+                log.exception("ninsei: outbox write failed")
 
     def _settle(self, ev: dict, out: dict[str, tuple[bool, str]]) -> None:
         eid = ev["id"]
@@ -359,7 +359,7 @@ class RelayPool:
                 try:
                     self._store.event_outbox_put(ev, "pending")
                 except Exception:
-                    log.exception("xenia: outbox write failed")
+                    log.exception("ninsei: outbox write failed")
             while len(self._outbox) > self._outbox_max:   # full: the oldest gives way
                 old = next(iter(self._outbox))
                 self._outbox.pop(old)

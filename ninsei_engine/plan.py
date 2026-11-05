@@ -1,17 +1,17 @@
-"""The optional second cap: "Xenia may use at most N% of my Nous plan per day".
+"""The optional second cap: "Ninsei may use at most N% of my Nous plan per day".
 
 How it works. The first model call after local midnight snapshots the remaining plan dollars (stored
 in the kv table). The day's cap is snapshot x N%. Every Nous-billed call adds its dollar cost to a
 running total. When the total reaches the cap, `preflight` raises BudgetExhausted, the same exception
 the token budget raises, so the agent rests and posts the one canned notice.
 
-Where the numbers come from, all through Hermes (Xenia never touches auth.json, tokens or .env):
+Where the numbers come from, all through Hermes (Ninsei never touches auth.json, tokens or .env):
   * remaining plan dollars: `agent.billing_usage.build_usage_model()`, the same shared model behind the
     `billing.state` RPC's `usage` block, called in-process. It fails open (no login, no plan, a window
     plan, a transport error, an older Hermes without the module -> unavailable) and the cap does nothing.
   * cost of one call: `result.usage.cost_usd` if the host sets it, else Hermes's own price table
     (`agent.usage_pricing.estimate_usage_cost`), else a flat fallback rate so a call is never free.
-    Only calls Hermes routed to the `nous` provider count; Xenia calls billed elsewhere cost the plan nothing.
+    Only calls Hermes routed to the `nous` provider count; Ninsei calls billed elsewhere cost the plan nothing.
 
 The token budget is separate and always applies.
 """
@@ -27,7 +27,7 @@ from typing import Any, Callable, Optional
 from .brain import BudgetExhausted
 from .store import Store, today
 
-log = logging.getLogger("xenia")
+log = logging.getLogger("ninsei")
 
 FALLBACK_USD_PER_MTOK = 10.0   # used only when neither the host nor the price table knows the model
 NOUS_NAMES = ("nous", "nous-portal", "nousresearch")   # the provider profile name and its aliases
@@ -40,7 +40,7 @@ def hermes_remaining_usd() -> Optional[float]:
         from agent.billing_usage import build_usage_model
         m = build_usage_model(timeout=8.0)
     except Exception as e:  # older Hermes, not logged in, anything: fail open
-        log.debug("xenia: plan read unavailable: %s", e)
+        log.debug("ninsei: plan read unavailable: %s", e)
         return None
     if not getattr(m, "available", False):
         return None
@@ -69,7 +69,7 @@ def hermes_call_cost(res: Any) -> tuple[float, str]:
         if cost.amount_usd is not None:
             return float(cost.amount_usd if isinstance(cost.amount_usd, Decimal) else Decimal(str(cost.amount_usd))), "estimated"
     except Exception as e:
-        log.debug("xenia: price lookup failed: %s", e)
+        log.debug("ninsei: price lookup failed: %s", e)
     tokens = int(getattr(u, "total_tokens", 0) or 0)
     return tokens * FALLBACK_USD_PER_MTOK / 1_000_000, "fallback"
 
@@ -144,7 +144,7 @@ class PlanCap:
             try:
                 remaining = self._source()
             except Exception as e:
-                log.debug("xenia: plan source failed: %s", e)
+                log.debug("ninsei: plan source failed: %s", e)
                 remaining = None
             self._checked = True
             if remaining is None:
@@ -169,7 +169,7 @@ class PlanCap:
                 self.ensure_snapshot()
             finally:
                 self._refreshing = False
-        threading.Thread(target=run, name="xenia-plan-refresh", daemon=True).start()
+        threading.Thread(target=run, name="ninsei-plan-refresh", daemon=True).start()
 
     def _reserve_usd(self, est_tokens: int) -> float:
         return max(est_tokens * FALLBACK_USD_PER_MTOK / 1_000_000, self._last_cost)
@@ -203,7 +203,7 @@ class PlanCap:
             try:
                 usd, basis = self._cost(res)
             except Exception as e:
-                log.debug("xenia: cost failed: %s", e)
+                log.debug("ninsei: cost failed: %s", e)
                 usd = ticket.usd if ticket else 0.0   # unknown cost: charge what was reserved
         elif ticket is not None and charge:
             usd = ticket.usd                          # a failed call may still have been billed

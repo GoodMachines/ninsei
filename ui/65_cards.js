@@ -1,8 +1,8 @@
 // ---------------------------------------------------------------------------------------------
-// Chat cards (Desktop): `::xenia-offer{id="…"}` and `::xenia-tales{room="…"}` rendered inside a
+// Chat cards (Desktop): `::ninsei-offer{id="…"}` and `::ninsei-tales{room="…"}` rendered inside a
 // normal Hermes conversation. The model writes the attributes, so they are untrusted: each is
 // checked for shape, then looked up in what the backend returns, and a miss is a small quiet chip.
-// Text is only ever rendered as text. Buttons call the same backend routes as the Xenia page.
+// Text is only ever rendered as text. Buttons call the same backend routes as the Ninsei page.
 // ---------------------------------------------------------------------------------------------
 
 const OFFER_ID_RE = /^[0-9a-f]{64}$/
@@ -61,7 +61,7 @@ function cardPost(refresh) {
 }
 
 function CardChip(props) {
-  return jsxs('span', { className: 'hx h-chip h-cardchip', role: 'note', children: [jsx(K.Icon, { name: 'home', size: 12 }), props.children || 'Xenia: not found'] })
+  return jsxs('span', { className: 'hx h-chip h-cardchip', role: 'note', children: [jsx(K.Icon, { name: 'home', size: 12 }), props.children || 'Ninsei: not found'] })
 }
 
 // ---- offer ------------------------------------------------------------------------------------
@@ -98,8 +98,8 @@ function OfferDirective(props) {
   const valid = OFFER_ID_RE.test(id)
   const [res, refresh] = useOffer(id, valid && !props.streaming)
   if (!valid) return jsx(CardChip, {})
-  if (!res.ready) return jsx(CardChip, { children: 'Xenia…' })
-  if (res.status === 404) return jsx(CardChip, { children: 'Xenia: not available' })
+  if (!res.ready) return jsx(CardChip, { children: 'Ninsei…' })
+  if (res.status === 404) return jsx(CardChip, { children: 'Ninsei: not available' })
   if (!res.data) return jsx(CardChip, {})
   return jsx(OfferChatCard, { d: res.data, refresh })
 }
@@ -121,14 +121,14 @@ function OfferChatCard(props) {
     try { await fn() } catch (_) { /* toasted */ }
     setBusy('')
   }
-  // Accept never hands anything over unseen: it opens the same review as the Xenia page, with the
+  // Accept never hands anything over unseen: it opens the same review as the Ninsei page, with the
   // full task in an editable box. The hand-off (a fresh chat with the task in its composer) happens there.
   const decline = () => run('decline', async () => {
     await cs.post('/offers/answer', { offer: m.id, accept: false })
-    tellAgent('Xenia: I passed on offer ' + m.id.slice(0, 12) + '. No action needed.')
+    tellAgent('Ninsei: I passed on offer ' + m.id.slice(0, 12) + '. No action needed.')
   })
-  // Sharing goes through the same dialog as the Xenia page: preview, size, secret scan and source.
-  const shared = () => tellAgent('Xenia: I shared the build for offer ' + m.id.slice(0, 12) + ' with the room.')
+  // Sharing goes through the same dialog as the Ninsei page: preview, size, secret scan and source.
+  const shared = () => tellAgent('Ninsei: I shared the build for offer ' + m.id.slice(0, 12) + ' with the room.')
 
   let status = null
   let actions = null
@@ -151,7 +151,7 @@ function OfferChatCard(props) {
     jsxs('div', { className: 'h-row', children: [
       jsx(Face, { face: m.face, pk: m.pk, state: state === 'open' && m.yours ? 'system: waiting' : state === 'building' ? 'activity: working' : 'activity: idle', size: 28, name: m.name }),
       jsxs('div', { className: 'h-grow', style: { minWidth: 0 }, children: [
-        jsx('div', { className: 'h-kicker', children: 'Xenia · ' + room.name + ' · ' + state }),
+        jsx('div', { className: 'h-kicker', children: 'Ninsei · ' + room.name + ' · ' + state }),
         jsx('h4', { children: m.title })
       ] })
     ] }),
@@ -174,11 +174,11 @@ function TalesDirective(props) {
     if (!(snap.rooms || []).some(r => r.id === room) || !snap.room || snap.room.id !== room) return null
     return { room: snap.room, me: snap.me }
   }
-  // the same one-second rhythm as the Xenia page while a game runs
+  // the same one-second rhythm as the Ninsei page while a game runs
   const [res, refresh] = usePolled(load, room, 1000, valid && !props.streaming)
   if (!valid) return jsx(CardChip, {})
-  if (!res.ready) return jsx(CardChip, { children: 'Xenia…' })
-  if (res.status === 404) return jsx(CardChip, { children: 'Xenia: not available' })
+  if (!res.ready) return jsx(CardChip, { children: 'Ninsei…' })
+  if (res.status === 404) return jsx(CardChip, { children: 'Ninsei: not available' })
   if (!res.data) return jsx(CardChip, {})
   return jsx(TalesChatCard, { room: res.data.room, me: res.data.me, game: res.data.room.game, refresh })
 }
@@ -192,7 +192,7 @@ function TalesChatCard(props) {
     game
       ? jsx(TallTales, { store, room, game, book, quiet: true }, game.gid)
       : jsxs('div', { className: 'h-chatcard', children: [
-          jsx('div', { className: 'h-kicker', children: 'Xenia · ' + room.name }),
+          jsx('div', { className: 'h-kicker', children: 'Ninsei · ' + room.name }),
           jsx('div', { className: 'h-muted', children: 'No Tall Tales game is running in this room.' })
         ] }) })
 }

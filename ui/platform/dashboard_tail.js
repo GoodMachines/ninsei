@@ -23,7 +23,7 @@
       const init = o.method && o.method !== 'GET'
         ? { method: o.method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(o.body || {}) }
         : undefined
-      return SDK.fetchJSON('/api/plugins/xenia' + path, init)
+      return SDK.fetchJSON('/api/plugins/ninsei' + path, init)
     },
     toast: pushToast,
     copy(text) {
@@ -42,8 +42,8 @@
     setInterval(fn, ms) { const t = window.setInterval(fn, ms); return () => window.clearInterval(t) },
     listen(target, type, fn) { target.addEventListener(type, fn); return () => target.removeEventListener(type, fn) },
     prefs: {
-      get(k, d) { try { const v = window.localStorage.getItem('xenia.' + k); return v == null ? d : JSON.parse(v) } catch (_) { return d } },
-      set(k, v) { try { window.localStorage.setItem('xenia.' + k, JSON.stringify(v)) } catch (_) { /* private mode */ } }
+      get(k, d) { try { const v = window.localStorage.getItem('ninsei.' + k); return v == null ? d : JSON.parse(v) } catch (_) { return d } },
+      set(k, v) { try { window.localStorage.setItem('ninsei.' + k, JSON.stringify(v)) } catch (_) { /* private mode */ } }
     },
     // no composer to hand a prompt to from the browser: the caller shows it with a Copy button
     openBuild() { return Promise.resolve(false) },
@@ -174,7 +174,7 @@
   }
 
   let store = null
-  function XeniaTab() {
+  function NinseiTab() {
     if (!store) store = createStore()
     useEffect(() => { store.start(); return () => store.stop() }, [])
     const [ref, h] = useFitHeight()
@@ -185,5 +185,5 @@
     ] })
   }
 
-  window.__HERMES_PLUGINS__.register('xenia', XeniaTab)
+  window.__HERMES_PLUGINS__.register('ninsei', NinseiTab)
 })()

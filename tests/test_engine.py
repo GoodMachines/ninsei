@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 import pytest
 
-from xenia_engine.engine import Engine
+from ninsei_engine.engine import Engine
 from local_relay import LocalRelay
 
 
@@ -30,16 +30,16 @@ class StubLLM:
 
     def complete(self, messages, max_tokens=None, purpose=None, task=None, **_):
         self.calls.append(purpose)
-        if purpose == "xenia.reply":
+        if purpose == "ninsei.reply":
             return Result(f"{self.name} says hello", Usage(50))
-        if purpose == "xenia.offer":
+        if purpose == "ninsei.offer":
             return Result(json.dumps({"pitch": "Want me to build a pixel sorter?", "title": "Pixel sorter toy",
                                       "task": "A canvas that sorts pixels by brightness."}), Usage(80))
-        if purpose == "xenia.tales.questions":
+        if purpose == "ninsei.tales.questions":
             return Result(json.dumps({"questions": [{"q": "Octopuses have how many hearts?", "a": "three"}]}), Usage(90))
-        if purpose == "xenia.tales.fake":
+        if purpose == "ninsei.tales.fake":
             return Result(f"{self.name} hearts", Usage(20))
-        if purpose == "xenia.who.answer":
+        if purpose == "ninsei.who.answer":
             return Result(f"cold pizza probably ({self.name})", Usage(20))
         return Result("ok", Usage(10))
 
@@ -109,7 +109,7 @@ async def test_addressed_agent_replies_and_only_it(world):
     await run(sam, sam.post, room, "Ada, what do you think of dithering?")
     assert await wait_for(lambda: any(m["text"] == "Ada says hello" for m in read(sam, sam.messages, room)))
     await asyncio.sleep(0.6)
-    assert "xenia.reply" not in llms["Sam"].calls  # Bo wasn't addressed and chattiness is quiet
+    assert "ninsei.reply" not in llms["Sam"].calls  # Bo wasn't addressed and chattiness is quiet
 
 
 async def test_open_question_from_owner_one_agent_answers(world):
@@ -120,8 +120,8 @@ async def test_open_question_from_owner_one_agent_answers(world):
     assert await wait_for(lambda: any(m["role"] == "agent" and m["t"] == "msg" for m in read(maya, maya.messages, room)))
     await asyncio.sleep(0.5)
     # Only Maya's own agent treats an open question from its owner as a cue; Bo stays quiet.
-    assert llms["Maya"].calls.count("xenia.reply") == 1
-    assert llms["Sam"].calls.count("xenia.reply") == 0
+    assert llms["Maya"].calls.count("ninsei.reply") == 1
+    assert llms["Sam"].calls.count("ninsei.reply") == 0
 
 
 async def test_budget_blocks_calls_and_agent_rests(world):
@@ -131,7 +131,7 @@ async def test_budget_blocks_calls_and_agent_rests(world):
     maya.save_settings({"budget_daily": 10})
     await run(sam, sam.post, room, "Ada are you there?")
     assert await wait_for(lambda: any(m.get("system") == "budget" for m in read(sam, sam.messages, room)))
-    assert "xenia.reply" not in llms["Maya"].calls
+    assert "ninsei.reply" not in llms["Maya"].calls
     # The agent shows "speaking" while it posts the rest notice, then settles on waiting.
     assert await wait_for(lambda: maya.agent_state == "system: waiting"), maya.agent_state
 
@@ -169,7 +169,7 @@ async def test_offer_build_share_loop(world, tmp_path):
     res = await run(owner_engine, owner_engine.answer_offer, offer["id"], True, "Make it tiny.")
     assert "untrusted" in res["prompt"] and res["path"].endswith("index.html")
     # the owner's chat gets told to draw the offer card, and the directive fits a hidden-turn budget
-    directive = '::xenia-offer{id="%s"}' % offer["id"]
+    directive = '::ninsei-offer{id="%s"}' % offer["id"]
     assert directive in res["prompt"] and len(directive) < 500
     p = owner_engine.build_path(offer["id"])
     p.write_text("<html><body>toy</body></html>")
@@ -204,7 +204,7 @@ async def test_tall_tales_round(world):
     scores = read(sam, sam.game_view, room)["scores"]
     sam_pk = sam._identity()["person_pk"]
     assert scores[sam_pk] == 3  # 2 for the truth + 1 for Bo fooling Maya
-    assert "xenia.tales.fake" in llms["Sam"].calls and "xenia.tales.fake" not in llms["Maya"].calls  # Ada hosts
+    assert "ninsei.tales.fake" in llms["Sam"].calls and "ninsei.tales.fake" not in llms["Maya"].calls  # Ada hosts
 
 
 async def test_whos_the_agent_round(world):
@@ -234,8 +234,8 @@ async def test_whos_the_agent_round(world):
     end = read(sam, sam.game_view, room)
     sam_pk, maya_pk = sam._identity()["person_pk"], maya._identity()["person_pk"]
     assert end["scores"] == {sam_pk: 4}  # 2 right calls + Sam passed as an agent + Bo passed as a person
-    assert "xenia.tales.questions" not in llms["Maya"].calls
-    assert "xenia.who.answer" in llms["Maya"].calls and "xenia.who.answer" in llms["Sam"].calls
+    assert "ninsei.tales.questions" not in llms["Maya"].calls
+    assert "ninsei.who.answer" in llms["Maya"].calls and "ninsei.who.answer" in llms["Sam"].calls
     assert read(maya, maya.game_view, room)["my_picks"] == [by_text["a sandwich, honestly"]]
     # the host's own agent is on the host's team: Maya can't flag Ada's answer, Sam can't flag Bo's
     assert set(g["blocked"]) == {by_text["a sandwich, honestly"], by_text["cold pizza probably (Bo)"]}
@@ -299,8 +299,8 @@ async def test_default_faces_differ(world):
 
 def test_store_files_are_owner_only(tmp_path):
     import stat
-    from xenia_engine.store import Store
-    st = Store(tmp_path / "data" / "xenia.db")
+    from ninsei_engine.store import Store
+    st = Store(tmp_path / "data" / "ninsei.db")
     st.set("identity", {"person_sk": "x"})
     assert stat.S_IMODE((tmp_path / "data").stat().st_mode) == 0o700
     for f in (tmp_path / "data").iterdir():
@@ -309,7 +309,7 @@ def test_store_files_are_owner_only(tmp_path):
 
 
 def test_malformed_host_events_are_skipped():
-    from xenia_engine.engine import Engine
+    from ninsei_engine.engine import Engine
     view = {"n": 1, "phase": "fakes", "options": [], "reveal": None, "scores": {}}
     for bad in ({"t": "tales_reveal", "n": 1, "names": ["x"], "authors": "y", "picks": 3, "scores": [1]},
                 {"t": "tales_vote_open", "n": 1, "options": {"a": 1}, "ends_at": "soon"},
@@ -337,3 +337,24 @@ async def test_own_message_shows_not_delivered_while_no_relay_is_up(tmp_path):
         assert e.pool._store is e.store
     finally:
         await asyncio.to_thread(e.stop)
+
+
+async def test_a_join_that_beats_the_room_name_still_gets_it(world):
+    """Joining by code before the creator's metadata reaches the relay used to leave "Room 4fb0" forever."""
+    from ninsei_engine.engine import KIND_META, room_id_for
+    from ninsei_engine import nostr as nz
+    _, engines, _ = world
+    maya, sam = engines["Maya"], engines["Sam"]
+    ident = maya._identity()
+    nonce = "00" * 8
+    rid = room_id_for(ident["person_pk"], nonce)
+    await run(sam, sam.join_room, rid)                       # nothing published yet: placeholder name
+    assert read(sam, sam.store.rooms)[rid]["name"] == "Room " + rid[:4]
+    meta = {"id": rid, "nonce": nonce, "name": "late club", "about": "", "interests": [], "creator": ident["person_pk"]}
+    # a forged copy from someone else is ignored; the creator's own lands
+    forged = nz.build_event(sam._identity()["person_sk"], KIND_META, json.dumps({**meta, "name": "hijacked"}),
+                            [["d", f"ninsei/room/{rid}"]], pow_bits=0)
+    real = nz.build_event(ident["person_sk"], KIND_META, json.dumps(meta), [["d", f"ninsei/room/{rid}"]], pow_bits=0)
+    await run(maya, maya.pool.publish, forged)
+    await run(maya, maya.pool.publish, real)
+    assert await wait_for(lambda: read(sam, sam.store.rooms)[rid]["name"] == "late club", 8)

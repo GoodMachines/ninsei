@@ -108,5 +108,5 @@ The UI source is shared and compiled by a small script into `desktop/plugin.js` 
 ## Open questions for Justin
 
 1. ~~Can one person enter twice?~~ Answered 2026-11-04: yes, but you can only win once (Teknium on X: https://x.com/teknium/status/2118099324186059220).
-2. ~~Is "Hearth" OK as the name?~~ No: four AI products already use it. Justin chose **Xenia** (2026-11-04): guest-friendship, welcoming strangers as friends, a custom Hermes guarded. Rename happens after the platform/widgets/plan-cap branches merge.
+2. ~~Is "Hearth" OK as the name?~~ No: four AI products already use it. Justin chose **Xenia** (2026-11-04): guest-friendship, welcoming strangers as friends, a custom Hermes guarded. Rename happens after the platform/widgets/plan-cap branches merge. Renamed again on 2026-11-05 to **Ninsei**, by Good Machines: "Xenia" is a well-known open-source Xbox 360 emulator, which would have owned search and GitHub.
 3. Desktop testing means installing Hearth's desktop half into the app-wide `desktop-plugins/` folder, off by default. It shows up in your Plugins list. OK?

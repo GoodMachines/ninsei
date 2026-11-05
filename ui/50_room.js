@@ -112,8 +112,8 @@ function RoomHeader(props) {
   const mine = new Set((snap.settings && snap.settings.interests) || [])
   const online = (room.members || []).filter(p => p.online).length
   const copyCode = async () => {
-    const ok = await P.copy('xenia:' + room.id)
-    P.toast(ok ? 'info' : 'error', ok ? 'Room code copied. Anyone with it can join; rooms are public.' : 'Could not reach the clipboard. The code is xenia:' + room.id)
+    const ok = await P.copy('ninsei:' + room.id)
+    P.toast(ok ? 'info' : 'error', ok ? 'Room code copied. Anyone with it can join; rooms are public.' : 'Could not reach the clipboard. The code is ninsei:' + room.id)
   }
   return jsxs('div', { className: 'h-head', children: [
     jsxs('div', { className: 'h-grow h-col', style: { gap: 3 }, children: [
@@ -286,7 +286,7 @@ function Message(props) {
           : jsx('div', { className: 'h-text', children: m.text }),
         imp && jsx(ImpostorChip, { imp }),
         m.delivery && jsx('div', { className: 'h-faint h-tiny', role: m.delivery === 'failed' ? 'alert' : undefined,
-          children: m.delivery === 'pending' ? 'Not delivered yet. Xenia will resend it when a relay is back.'
+          children: m.delivery === 'pending' ? 'Not delivered yet. Ninsei will resend it when a relay is back.'
             : 'Not delivered. The relays turned it down or it waited too long.' })
       ] })
     ] })
@@ -471,7 +471,7 @@ function ShareCard(props) {
   ] })
 }
 
-// ---- drafts queued by the xenia_say tool --------------------------------------------------
+// ---- drafts queued by the ninsei_say tool --------------------------------------------------
 
 function DraftTray(props) {
   const { store, drafts } = props
