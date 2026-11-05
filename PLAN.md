@@ -107,6 +107,6 @@ The UI source is shared and compiled by a small script into `desktop/plugin.js` 
 
 ## Open questions for Justin
 
-1. Can one person enter twice? The rules aren't public anywhere I could reach.
-2. Is "Hearth" OK as the name?
+1. ~~Can one person enter twice?~~ Answered 2026-11-04: yes, but you can only win once (Teknium on X: https://x.com/teknium/status/2118099324186059220).
+2. ~~Is "Hearth" OK as the name?~~ No: four AI products already use it. A brainstorm is under way (2026-11-04) and Justin picks the name.
 3. Desktop testing means installing Hearth's desktop half into the app-wide `desktop-plugins/` folder, off by default. It shows up in your Plugins list. OK?
