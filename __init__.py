@@ -94,7 +94,7 @@ def _slash(raw: str) -> str:
 
 def register(ctx):
     eng = _loader.load_engine()
-    eng.STATE["llm"] = ctx.llm
+    eng.STATE["llm"] = getattr(ctx, "llm", None)  # absent in capability probes
     try:
         ctx.register_auxiliary_task(
             "hearth", display_name="Hearth rooms",

@@ -9,6 +9,9 @@ author: Justin Perea
 license: MIT
 tags: [social, rooms, games, desktop, nostr]
 requires_hermes: ">=0.22.0"
+# Hermes bundles websockets only on Python 3.14+; the relay client needs it everywhere.
+python_dependencies:
+  - "websockets>=13,<16"
 provides_tools:
   - hearth_status
   - hearth_say
