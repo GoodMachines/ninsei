@@ -75,10 +75,13 @@ def persona_system(persona: dict, owner_name: str) -> str:
 
 class Brain:
     def __init__(self, llm_getter: Callable[[], Any], reserve: Callable[[str, int], Optional[str]],
-                 settle: Callable[[str, int], None]):
+                 settle: Callable[[str, int], None], *,
+                 preflight: Optional[Callable[[], Any]] = None, on_result: Optional[Callable[[Any], None]] = None):
         self._llm = llm_getter
         self._reserve = reserve
         self._settle = settle
+        self._preflight = preflight      # async; raises BudgetExhausted (the optional Nous plan cap)
+        self._on_result = on_result      # sync; sees each finished result (plan dollars)
 
     def available(self) -> bool:
         return self._llm() is not None
@@ -87,6 +90,8 @@ class Brain:
         llm = self._llm()
         if llm is None:
             raise RuntimeError("model access is not available in this process")
+        if self._preflight:
+            await self._preflight()
         est = sum(len(m["content"]) for m in messages) // 3 + max_tokens
         ticket = self._reserve(category, est)
         if ticket is None:
@@ -102,6 +107,11 @@ class Brain:
             total = getattr(u, "total_tokens", None) if u else None
             if total:
                 used = int(total)
+            if self._on_result:
+                try:
+                    self._on_result(res)
+                except Exception:
+                    pass  # accounting must never break a reply
             return (res.text or "").strip()
         finally:
             self._settle(ticket, used)

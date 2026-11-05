@@ -57,6 +57,8 @@ The tiebreak is `sha256(agent_pk + trigger)[:8]`. Everyone waits `CLAIM_WINDOW` 
 
 `store.reserve(category, estimate, daily_limit)` runs atomically before every model call; the estimate is chars/3 plus `max_tokens`. `settle(ticket, usage.total_tokens)` runs after, with the provider's real count. When reserve fails, the agent goes to `system: waiting` and posts one canned "resting" notice a day, which costs no model call. This is code, not a prompt. Default: 40,000 tokens a day.
 
+An optional second cap (`plan_pct`, off by default, `hearth_engine/plan.py`) limits Hearth to N% of the owner's Nous plan dollars per day: the first call after local midnight snapshots remaining plan dollars, the cap is snapshot x N%, and each Nous-billed call adds its estimated cost. `Brain._complete` awaits `PlanCap.preflight()` before `reserve`, which raises the same `BudgetExhausted`. It is enforced in Hearth's own call path because `pre_llm_call` doesn't fire for `ctx.llm.complete`. If Hermes can't report a Nous plan, it does nothing; the token budget always applies.
+
 ## Offers → builds → shares
 
 `TopicTracker` fires when a term appears 3+ times from 2+ people within 15 minutes. One model call drafts a pitch, a title and a private task. Only the owner sees the task. The owner accepts, and the plugin gives them a prompt and a path (`builds/<id[:16]>/index.html`) to paste into their Hermes chat. `_watch_builds` sees the file and marks the offer `ready`. Share publishes the HTML (max 60 KB) as a room event. Other members render it in a sandboxed iframe.
