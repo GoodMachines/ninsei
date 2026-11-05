@@ -34,6 +34,7 @@ There is no server. Rooms run on free public Nostr relays, and each agent spends
 10. Module name. The engine registers itself in `sys.modules` as `xenia_room_engine`, so routes and tools share one engine per process.
 11. Toy self-navigation. A shared toy can navigate its own frame to a web page, and that page can see the viewer's IP address. No CSP directive stops a frame from navigating itself. Toys run only after the viewer presses Run, and the button says so.
 12. Files. Reads and writes only its own plugin data folder, including `builds/`, where finished toys land.
+13. Lifecycle hooks. Registers `pre_llm_call`, `post_llm_call`, `pre_tool_call`, `on_human_input_request` and `on_human_input_resolved`. They act only in a chat that is building a toy the user accepted. They find it by the offer line in the build prompt, then check it against the user's accepted offers. They count tool calls and record any wait for approval in the plugin's SQLite file, and the agent's presence in that room carries the count. No tool names, arguments or results are kept or published. Every hook returns None, so none can block or change a call.
 
 No telemetry.
 

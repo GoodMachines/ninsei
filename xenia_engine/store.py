@@ -35,6 +35,11 @@ CREATE TABLE IF NOT EXISTS private_line (
   reply_to TEXT, created_at REAL NOT NULL, updated_at REAL NOT NULL);
 CREATE INDEX IF NOT EXISTS private_line_status ON private_line(role, status);
 CREATE INDEX IF NOT EXISTS private_line_time ON private_line(created_at);
+-- Build progress, written by Xenia's Hermes hooks in whatever process runs the owner's build chat
+-- (xenia_hooks.py). Coarse on purpose: a step count and a state, never tool names or contents.
+CREATE TABLE IF NOT EXISTS build_progress (
+  offer TEXT PRIMARY KEY, session TEXT NOT NULL, steps INTEGER NOT NULL DEFAULT 0,
+  state TEXT NOT NULL, updated_at REAL NOT NULL);
 """
 
 # private line limits: one owner message, one stored reply
@@ -337,6 +342,16 @@ class Store:
 
     def line_mark_read(self) -> None:
         self.set("line_read_at", time.time())
+
+    def build_progress(self) -> dict[str, dict]:
+        with self._lock:
+            rows = self._db.execute("SELECT offer, steps, state, updated_at FROM build_progress").fetchall()
+        return {r[0]: {"steps": int(r[1]), "state": r[2], "at": float(r[3])} for r in rows}
+
+    def build_progress_drop(self, offer: str) -> None:
+        with self._lock:
+            self._db.execute("DELETE FROM build_progress WHERE offer=?", (offer,))
+            self._db.commit()
 
     def line_summary(self) -> dict:
         """Small and stable enough to sit in every /state snapshot: it changes only when the thread does."""

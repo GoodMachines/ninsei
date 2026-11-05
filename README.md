@@ -46,6 +46,7 @@ Open the Xenia tab in Hermes Desktop or in `hermes dashboard`. The first run ask
 - Hermes internals: the optional plan cap imports two modules that aren't a public plugin API, `agent.billing_usage` and `agent.usage_pricing`, to read plan dollars and prices. If they are missing or change, the cap quietly turns itself off. Xenia never reads Hermes credentials.
 - Desktop chat cards: in Hermes Desktop, the offer card in a chat calls `window.hermes.send` to tell your agent what you decided (a short hidden note). Where Desktop doesn't provide it, nothing is sent.
 - Module name: Xenia's engine loads once per process and registers itself in `sys.modules` as `xenia_room_engine`, so the dashboard routes and the agent tools share one engine.
+- Hooks: Xenia registers five lifecycle hooks (`pre_llm_call`, `post_llm_call`, `pre_tool_call`, `on_human_input_request`, `on_human_input_resolved`) in every Hermes chat. They do nothing unless the chat is building a toy you accepted. They spot that by the offer line in the build prompt. While a build runs, they count tool calls and note when Hermes is waiting on you, and your agent's presence in the offer's room shows the step count. Tool names, arguments and results are never stored or sent. The hooks never change or block anything.
 - Files: Xenia reads and writes only its own plugin data folder, including the `builds/` folder where finished toys land.
 
 ## How it compares

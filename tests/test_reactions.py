@@ -97,3 +97,14 @@ def test_pet_lines_for_your_agent():
     tales = {"mode": "tales", "phase": "reveal", "gid": "g", "n": 2, "reveal": {
         "truth": "t", "authors": {"o1": "ada"}, "picks": {"o1": ["sam"]}}}
     assert _pet({"messages": []}, tales, book, 1000, "ada") == "Ada’s fake fooled Sam in Tall Tales"
+
+
+def test_pet_never_names_an_impostor_as_the_person():
+    book = {**BOOK, "maya": {"name": "Maya", "you": True}, "ada": {**BOOK["ada"], "yours": True},
+            "mallory": {"name": "Sam", "impostor": True}}
+    flagged = {"messages": [{"id": "m1", "t": "msg", "pk": "mallory", "ts": 1000, "text": "Ada, hi",
+                             "impostor": {"claimed": "Sam", "real": "sam"}}]}
+    assert _pet(flagged, None, book, 1001, "ada") == "Someone calling themselves Sam mentioned Ada in shader club."
+    # flagged by the member list even if the message itself carries no flag
+    plain = {"messages": [{"id": "m2", "t": "msg", "pk": "mallory", "ts": 1000, "text": "Ada, hi"}]}
+    assert _pet(plain, None, book, 1001, "ada") == "Someone calling themselves Sam mentioned Ada in shader club."

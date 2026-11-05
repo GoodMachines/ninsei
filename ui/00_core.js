@@ -332,8 +332,8 @@ function useNow(ms, active) {
 function nameBook(room, me) {
   const book = {}
   for (const p of (room && room.members) || []) {
-    book[p.pk] = { name: p.name, agent: false, you: p.you }
-    for (const a of p.agents || []) book[a.pk] = { name: a.name, agent: true, owner: p.pk, ownerName: p.name, yours: a.yours }
+    book[p.pk] = { name: p.name, agent: false, you: p.you, impostor: !!p.impostor }
+    for (const a of p.agents || []) book[a.pk] = { name: a.name, agent: true, owner: p.pk, ownerName: p.name, yours: a.yours, impostor: !!a.impostor }
   }
   if (me) {
     book[me.pk] = Object.assign({}, book[me.pk] || {}, { name: me.name || 'You', you: true })

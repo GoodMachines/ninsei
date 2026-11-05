@@ -37,6 +37,8 @@ KIND_META = 30078         # parameterized replaceable: room metadata, interest c
 APP_TAG = "xenia"
 PRESENCE_EVERY = 30
 ABSENT_AFTER = 95
+BUILD_FRESH = 600         # s: a build-progress row older than this is an abandoned build
+MAX_BUILD_STEPS = 999
 CLAIM_WINDOW = 1.5
 CLAIM_PRIOS = {20, 30, 40, 60, 100}
 HISTORY_DAYS = 3
@@ -120,6 +122,16 @@ def _secs(c: dict) -> float:
         return max(0.0, min(float(c.get("secs") or 0), 600.0))
     except (TypeError, ValueError):
         return 0.0
+
+
+def _build_claim(b: Any) -> Optional[dict]:
+    """A peer's build progress, as a presence field: an offer id, a step count and a flag, nothing else."""
+    if not isinstance(b, dict) or not isinstance(b.get("offer"), str) or not OFFER_ID_RE.match(b["offer"]):
+        return None
+    step = b.get("step")
+    if not isinstance(step, int) or isinstance(step, bool):
+        step = 0
+    return {"offer": b["offer"], "step": max(0, min(step, MAX_BUILD_STEPS)), "wait": b.get("wait") is True}
 
 
 def _name_ok(name: str, fallback: str) -> str:
@@ -221,6 +233,8 @@ class Engine:
         self._inflight = 0                                 # model calls caused by room events, running now
         self._error_until = 0.0
         self.last_error = ""
+        self._build_live: Optional[dict] = None             # the owner's build in progress, from xenia_hooks
+        self._build_mark: Optional[tuple] = None            # the (state, note) we set for it, to undo only ours
         self._cc: dict[str, dict] = {}
 
     # ============================================================================================
@@ -553,7 +567,8 @@ class Engine:
             name = _name_ok(c.get("name"), "Agent")
             pres[ev["pubkey"]] = {
                 "state": str(c.get("state", "activity: idle"))[:32], "budget": c.get("budget"),
-                "at": time.time(), "owner": owner, "name": name, "face": c.get("face")}
+                "at": time.time(), "owner": owner, "name": name, "face": c.get("face"),
+                "build": _build_claim(c.get("build"))}
             self._seen_active(room, ev["pubkey"], time.time())
             self._register_name(room, ev["pubkey"], name, agent=True)
             self._note_agent_name(room, ev["pubkey"], name)
@@ -1163,6 +1178,42 @@ class Engine:
             if changed:
                 self.store.set("offers", offers)
                 self._bump()
+            try:
+                self._sync_build_progress(offers)
+            except Exception as e:  # decoration: a bad row must not stop the build watcher
+                log.debug("build progress: %s", e)
+
+    def _sync_build_progress(self, offers: dict) -> None:
+        """Show the agent building while the owner's Hermes works on an accepted offer. The hooks in the
+        build chat's process write a step count and a state; only those, the offer id and its (already
+        public) title reach the room, and only the offer's own room."""
+        now = time.time()
+        live = None
+        for oid, r in self.store.build_progress().items():
+            o = offers.get(oid)
+            if not o or o.get("status") != "building":
+                self.store.build_progress_drop(oid)
+                continue
+            if r["state"] in ("working", "waiting") and now - r["at"] < BUILD_FRESH and (live is None or r["at"] > live["at"]):
+                live = {"offer": oid, "room": o["room"], "title": o.get("title", ""), "at": r["at"],
+                        "step": max(0, min(int(r["steps"]), MAX_BUILD_STEPS)), "wait": r["state"] == "waiting"}
+        prev, self._build_live = self._build_live, live
+        sig = lambda b: b and (b["offer"], b["step"], b["wait"])
+        ours = self._build_mark is not None and (self.agent_state, self.agent_note) == self._build_mark
+        if live:
+            if sig(prev) == sig(live) and ours:
+                return
+            if not ours and self.agent_state != "activity: idle":
+                return  # busy with something else (a reply, a budget stop): leave it, retry next tick
+            title = live["title"] or "the toy"
+            want = (("system: waiting", f"waiting for you to approve a step in “{title}”") if live["wait"]
+                    else ("activity: working", f"building “{title}”, step {live['step']}"))
+            self._build_mark = want
+            self._set_state(*want)
+        elif prev or self._build_mark:
+            if ours:
+                self._set_state("activity: idle")
+            self._build_mark = None
 
     def _read_build_raw(self, offer_id: str) -> str:
         data = self.build_path(offer_id).read_bytes()
@@ -1777,6 +1828,9 @@ class Engine:
         for room in list(self.store.rooms()):
             content = {"t": "presence", "state": self.agent_state,
                        "budget": round(bv["pct"], 2) if s["share_budget"] else None}
+            b = self._build_live
+            if b and b["room"] == room:
+                content["build"] = {"offer": b["offer"], "step": b["step"], "wait": b["wait"]}
             try:
                 await self._publish_room(room, True, content, kind=KIND_LIVE)
             except Exception:
@@ -1818,9 +1872,12 @@ class Engine:
         now = time.time()
         people: dict[str, dict] = {}
         agents: dict[str, dict] = {}
+        offer_titles: dict[str, tuple] = {}
         for e in self._sorted(room):
             c = self._content(e)
             owner = self.owner_of(e)
+            if owner and c.get("t") == "offer":
+                offer_titles[e["id"]] = (e["pubkey"], str(c.get("title", ""))[:60])
             if owner:
                 agents[e["pubkey"]] = {"pk": e["pubkey"], "name": _name_ok(c.get("name"), "Agent"), "owner": owner,
                                        "face": c.get("face") or {}, "last": e["created_at"]}
@@ -1831,6 +1888,10 @@ class Engine:
             a = agents.setdefault(pk, {"pk": pk, "name": p["name"], "owner": p["owner"], "face": p.get("face") or {},
                                        "last": 0})
             a.update(state=p["state"], budget=p.get("budget"), seen=p["at"])
+            b = p.get("build")
+            # a build is shown only for an offer this same agent made in this room, under its own title
+            if b and offer_titles.get(b["offer"], ("",))[0] == pk:
+                a["build"] = {"title": offer_titles[b["offer"]][1], "step": b["step"], "wait": b["wait"]}
             people.setdefault(p["owner"], {"pk": p["owner"], "name": _short(p["owner"]), "last": 0})
         who = self._who(room)
         out = []
@@ -1849,6 +1910,9 @@ class Engine:
                 state = a.get("state", "system: absent")
                 if a["pk"] == ident["agent_pk"]:
                     state = self.agent_state
+                    b = self._build_live
+                    a = {**a, "build": {"title": b["title"], "step": b["step"], "wait": b["wait"]}
+                         if b and b["room"] == room else None}
                 elif now - a.get("seen", 0) >= ABSENT_AFTER:
                     state = "system: absent"
                 entry["agents"].append({**a, "state": state, "yours": a["pk"] == ident["agent_pk"]})

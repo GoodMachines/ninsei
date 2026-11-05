@@ -28,7 +28,7 @@ function reactionsFor(room, game, book, now, why) {
       for (const pk of agents) {  // named in a message: perks up
         if (pk === m.pk) continue
         const re = new RegExp('(^|[^\\p{L}\\p{N}])' + book[pk].name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '($|[^\\p{L}\\p{N}])', 'iu')
-        if (book[pk].name.length > 1 && re.test(m.text || '')) put(pk, 'perk', { key: m.id, by: m.pk })
+        if (book[pk].name.length > 1 && re.test(m.text || '')) put(pk, 'perk', { key: m.id, by: m.pk, unverified: !!m.impostor })
       }
     } else if (m.t === 'offer_state' && m.state === 'building') put(offerAgent[m.offer], 'happy')
     else if (m.t === 'share') put(agentOf(m.pk), 'happy')
@@ -58,10 +58,12 @@ function reactionsFor(room, game, book, now, why) {
 // app's to animate; a plugin can only talk through its bubble. Null when there's nothing worth a line.
 function petLine(cause, book, agentName, roomName) {
   if (!cause) return null
-  const name = pk => (book[pk] && book[pk].name) || 'Someone'
+  // a second key using a name someone else holds is never named as them
+  const name = pk => !book[pk] ? 'Someone' : book[pk].impostor ? 'Someone calling themselves ' + book[pk].name : book[pk].name
   const mine = pk => !!(book[pk] && (book[pk].you || book[pk].yours))
   const game = cause.mode === 'agent' ? 'Who\u2019s the Agent?' : 'Tall Tales'
-  if (cause.expr === 'perk') return mine(cause.by) ? null : name(cause.by) + ' mentioned ' + agentName + ' in ' + roomName + '.'
+  if (cause.expr === 'perk') return mine(cause.by) && !cause.unverified ? null
+    : (cause.unverified ? 'Someone calling themselves ' + ((book[cause.by] && book[cause.by].name) || 'someone') : name(cause.by)) + ' mentioned ' + agentName + ' in ' + roomName + '.'
   if (cause.expr === 'wary') return 'Someone in ' + roomName + ' is posing as ' + (cause.claimed || 'you') + '. ' + agentName + ' is ignoring them.'
   if (cause.expr === 'caught') return name(cause.by) + ' spotted ' + agentName + ' in ' + game
   if (cause.expr === 'smug') return cause.mode === 'agent' ? agentName + ' passed as a person in ' + game
@@ -174,17 +176,34 @@ function Timeline(props) {
 }
 
 // Agents in the room that are working on something: a face and typing dots at the foot of the timeline.
+// "building “Pixel Sorter” · step 4", or "waiting on Maya to approve a step": the owner's Hermes is
+// building the toy this agent offered. Only a title the agent itself posted and a step count arrive.
+function buildLabel(a, ownerName) {
+  const b = a && a.build
+  if (!b) return ''
+  const title = '“' + (b.title || 'the toy') + '”'
+  if (b.wait) return 'building ' + title + ' · waiting on ' + ownerName + ' to approve a step'
+  return 'building ' + title + (b.step ? ' · step ' + b.step : '')
+}
+
 function Thinking(props) {
   const busy = []
+  const owner = {}
   for (const p of props.room.members || []) {
-    for (const a of p.agents || []) if (stateWord(a.state) === 'working') busy.push(a)
+    for (const a of p.agents || []) {
+      if (stateWord(a.state) === 'working' || (a.build && !a.build.wait)) { busy.push(a); owner[a.pk] = p.you ? 'you' : p.name }
+    }
   }
   if (!busy.length) return null
-  const names = joinNames(busy.map(a => a.name))
-  return jsxs('div', { className: 'h-thinking', role: 'status', 'aria-label': names + (busy.length > 1 ? ' are' : ' is') + ' thinking', children: [
+  const builders = busy.filter(a => a.build)
+  const thinkers = busy.filter(a => !a.build)
+  const parts = builders.map(a => a.name + ' is ' + buildLabel(a, owner[a.pk]))
+  if (thinkers.length) parts.push(joinNames(thinkers.map(a => a.name)) + (thinkers.length > 1 ? ' are' : ' is') + ' thinking')
+  const text = parts.join('. ')
+  return jsxs('div', { className: 'h-thinking', role: 'status', 'aria-label': text, children: [
     jsx('div', { className: 'h-row', style: { gap: 2 }, children: busy.slice(0, 3).map(a => jsx(Face, { face: a.face, pk: a.pk, state: a.state, size: 22, name: a.name }, a.pk)) }),
     jsxs('div', { className: 'h-typing', children: [0, 1, 2].map(i => jsx('i', { style: { animationDelay: (i * 0.16) + 's' } }, i)) }),
-    jsx('span', { className: 'h-faint h-small', children: names + (busy.length > 1 ? ' are' : ' is') + ' thinking' })
+    jsx('span', { className: 'h-faint h-small', children: text })
   ] })
 }
 
@@ -575,7 +594,7 @@ function Person(props) {
           jsx('span', { className: 'h-trunc', children: a.name }),
           a.impostor && jsx(NotVerified, { name: a.name })
         ] }),
-        jsx('div', { className: 'h-statepill', children: STATE_LABEL[stateWord(a.state)] + ' · ' + (p.you ? 'your agent' : p.name + "'s agent") })
+        jsx('div', { className: 'h-statepill', children: buildLabel(a, p.you ? 'you' : p.name) || (STATE_LABEL[stateWord(a.state)] + ' · ' + (p.you ? 'your agent' : p.name + "'s agent")) })
       ] }),
       a.budget && a.budget.limit ? jsx(BudgetRing, { budget: a.budget, size: 14, stroke: 2 }) : null
     ] }, a.pk))

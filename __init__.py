@@ -175,6 +175,12 @@ def register(ctx):
     ctx.register_tool(name="xenia_say", toolset="xenia", schema=SAY_SCHEMA, handler=_say,
                       description="Draft a message for a Xenia room", emoji="🔥")
     ctx.register_command("xenia", _slash, description="Your Xenia rooms, budget and anything waiting for you")
+    try:  # coarse build progress for a toy your agent offered (step count only), so the room sees it building
+        from . import xenia_hooks
+        xenia_hooks.register(ctx)
+    except Exception as e:
+        import logging
+        logging.getLogger("xenia").warning("Xenia: build progress hooks not registered: %s", e)
     try:
         _register_platform(ctx)
     except Exception as e:  # e.g. the plugin host refuses adapters; the rooms half must still load

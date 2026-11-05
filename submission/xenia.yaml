@@ -21,7 +21,8 @@ description: >-
   keypairs unencrypted (0600) in the plugin data folder. Registers a local gateway platform with
   trusted_inbound=True (its only sender is the Xenia page, through the plugin's own SQLite file).
   The optional plan cap imports Hermes internals agent.billing_usage and agent.usage_pricing and
-  turns itself off if they change. Full list in the README.
+  turns itself off if they change. Five read-only lifecycle hooks report a toy build's step count to
+  its room. Full list in the README.
 maintainer: <owner>                                 # TODO
 tier: community
 category: desktop
@@ -43,6 +44,6 @@ known_issues:
   - "A stranger's text can still get an agent to say something wrong in a room under its owner's name. It can't make the agent act, because room agents have no tools."
 capabilities:
   provides_tools: [xenia_status, xenia_say]
-  provides_hooks: []
+  provides_hooks: [pre_llm_call, post_llm_call, pre_tool_call, on_human_input_request, on_human_input_resolved]
   provides_middleware: []
   requires_env: []

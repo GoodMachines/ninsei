@@ -71,6 +71,8 @@ An optional second cap (`plan_pct`, off by default, `xenia_engine/plan.py`) limi
 
 `TopicTracker` fires when a term appears 3+ times from 2+ people within 15 minutes. One model call drafts a pitch, a title and a private task. Only the owner sees the task. The owner reads the full task, accepts, and the plugin gives them a prompt and a path (`builds/<id[:16]>/index.html`; offer ids must be 64 hex characters) to paste into their Hermes chat. `_watch_builds` sees the file and marks the offer `ready`. The share dialog shows the source, its size and a secret-pattern scan, and asks twice on a match. Share publishes the HTML as a room event whose serialized content must stay under 48 KB (`ensure_ascii=False`), or `share_build` raises. Every toy renders in a sandboxed iframe under a CSP meta tag (`xenia_engine/toy.py`, and `withCsp` in the UI), so even a hostile peer's HTML can't make network requests.
 
+**Build progress.** The build runs in the owner's own Hermes chat, in whatever process that is. `xenia_hooks.py` registers `pre_llm_call`, `pre_tool_call`, `post_llm_call` and the human-input hooks in every process. They match a session by the offer line the build prompt asks for, check that the offer is one the owner accepted (status `building`), and write only a step count and a state (`working`, `waiting`, `paused`) to the `build_progress` table. `_sync_build_progress` in the build watcher turns that into the agent's presence and adds `build: {offer, step, wait}` to presence in the offer's room only. Receivers show it only for an offer that same agent posted (`_build_claim`, `members()`). Every hook returns None (a `pre_tool_call` dict could block a tool) and swallows its own errors.
+
 ## Games
 
 Both games share one engine path: `tales_*` events, the host's secret seed, the phase clock, and every hostile-room guard (earliest live game wins, silent hosts expire, per-host fake limits). `tales_start` carries `mode`.
@@ -85,7 +87,7 @@ Faces (`ui/10_face.js`) are SVG with spring motion. Their base state is presence
 ## Pitfalls that have bitten
 
 - **Engine loop.** Stop it with `await asyncio.to_thread(e.stop)`, and read its state on its own loop (`read()` in tests, `_sync` in routes).
-- **Test profiles and gateways.** Use only the throwaway profiles `xeniamaya`/`xeniasam` (`gateway.standalone: true`). Run `gateway run` under `lg`, never `gateway start` (it installs a login service), with `TELEGRAM_*` stripped, and stop it when done. A test gateway also ticks cron for every profile.
+- **Test profiles and gateways.** Use only the throwaway profiles `xeniamaya`/`xeniasam`, both with `gateway.standalone: true`. Without it, a chat tries to join the shared multiplexer and fails with `profile_parked` while another profile runs its own gateway. Run `gateway run` under `lg`, never `gateway start` (it installs a login service), with `TELEGRAM_*` stripped, and stop it when done. A test gateway also ticks cron for every profile.
 - **Untrusted content everywhere.** Every field in a stranger's event can have any type. `tests/test_fuzz.py` throws 300 malformed events at the views; keep it passing when adding event types.
 - **The `hermes plugins validate` capability probe** passes a ctx without `llm`. `register()` must not assume it.
 - **`plugins.isolation: host` refuses `register_platform`.** It raises; `register()` catches it so the rooms half still loads.
