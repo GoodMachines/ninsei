@@ -116,6 +116,19 @@ function watchForPet(ctx, store) {
         : 'Your build “' + o.title + '” is ready to share in ' + room + '.'
       ctx.pet.say(line, { id: 'offer', tone: 'wait', ttlMs: 15000 })
     }
+    // Your agent's reactions in the open room (named, impersonated, spotted, passed as a person).
+    const room = snap.room
+    const me = snap.me.agent
+    if (!room || !me || !me.pk) return
+    const book = nameBook(room, snap.me)
+    const why = {}
+    reactionsFor(room, room.game, book, Date.now() / 1000, why)
+    const cause = why[me.pk]
+    const key = cause && 'react:' + cause.expr + ':' + cause.key
+    if (!cause || said.has(key)) return
+    said.add(key)
+    const line = petLine(cause, book, agent, room.name || 'a room')
+    if (line) ctx.pet.say(line, { id: 'react', tone: 'info', ttlMs: 8000 })
   }))
 }
 

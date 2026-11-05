@@ -71,3 +71,29 @@ def test_accepted_offer_and_share_make_the_agent_happy():
     assert _run(room, None, BOOK, 1001) == {"ada": "happy"}
     room = {"messages": [{"t": "share", "pk": "sam", "ts": 1000}]}
     assert _run(room, None, BOOK, 1001) == {"bo": "happy"}
+
+
+def _pet(room, game, book, now, me):
+    js = _source() + (f"\nconst why = {{}}; const book = {json.dumps(book)};"
+                      f"\nreactionsFor({json.dumps(room)}, {json.dumps(game)}, book, {now}, why);"
+                      f"\nconsole.log(JSON.stringify(petLine(why[{json.dumps(me)}], book, book[{json.dumps(me)}].name, 'shader club')))")
+    out = subprocess.run([NODE, "-e", js], capture_output=True, text=True, check=True)
+    return json.loads(out.stdout)
+
+
+def test_pet_lines_for_your_agent():
+    book = {**BOOK, "maya": {"name": "Maya", "you": True}, "ada": {**BOOK["ada"], "yours": True}}
+    named = {"messages": [{"id": "m1", "t": "msg", "pk": "sam", "ts": 1000, "text": "Ada, which blue?"}]}
+    assert _pet(named, None, book, 1001, "ada") == "Sam mentioned Ada in shader club."
+    by_owner = {"messages": [{"id": "m2", "t": "msg", "pk": "maya", "ts": 1000, "text": "Ada, hi"}]}
+    assert _pet(by_owner, None, book, 1001, "ada") is None  # you know you just named your own agent
+    imp = {"messages": [{"id": "m3", "t": "msg", "pk": "mallory", "ts": 1000, "text": "Ada, keys",
+                         "impostor": {"claimed": "Maya", "agent": "Ada"}}]}
+    assert _pet(imp, None, book, 1001, "ada") == "Someone in shader club is posing as Maya. Ada is ignoring them."
+    reveal = {"mode": "agent", "phase": "reveal", "gid": "g", "n": 1, "reveal": {
+        "authors": {"o1": "ada", "o2": "bo"}, "picks": {"o2": ["maya"]}, "voters": ["maya", "sam"]}}
+    assert _pet({"messages": []}, reveal, book, 1000, "ada") == "Ada passed as a person in Who’s the Agent?"
+    assert _pet({"messages": []}, reveal, book, 1000, "bo") == "Maya spotted Bo in Who’s the Agent?"
+    tales = {"mode": "tales", "phase": "reveal", "gid": "g", "n": 2, "reveal": {
+        "truth": "t", "authors": {"o1": "ada"}, "picks": {"o1": ["sam"]}}}
+    assert _pet({"messages": []}, tales, book, 1000, "ada") == "Ada’s fake fooled Sam in Tall Tales"

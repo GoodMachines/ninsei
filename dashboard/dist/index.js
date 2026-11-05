@@ -1037,9 +1037,14 @@ function SettingsForm(props) {
 // nothing is published and nobody can send a fake reaction. Returns { agentPk: expr }.
 const REACT_SECS = 6
 const EXPR_RANK = { perk: 1, happy: 2, wary: 3, smug: 4, caught: 4 }
-function reactionsFor(room, game, book, now) {
+// `why`, when given, collects what caused each agent's expression (the pet's speech bubble uses it).
+function reactionsFor(room, game, book, now, why) {
   const out = {}
-  const put = (pk, expr) => { if (pk && (EXPR_RANK[expr] || 0) >= (EXPR_RANK[out[pk]] || 0)) out[pk] = expr }
+  const put = (pk, expr, cause) => {
+    if (!pk || (EXPR_RANK[expr] || 0) < (EXPR_RANK[out[pk]] || 0)) return
+    out[pk] = expr
+    if (why) why[pk] = Object.assign({ expr }, cause)
+  }
   const agents = Object.keys(book).filter(pk => book[pk].agent)
   const agentOf = person => agents.find(pk => book[pk].owner === person)
   const offerAgent = {}
@@ -1048,13 +1053,13 @@ function reactionsFor(room, game, book, now) {
     if (now - m.ts > REACT_SECS || m.ts - now > 30) continue
     if (m.t === 'msg') {
       if (m.impostor && m.impostor.agent) {  // someone wearing my owner's name: the agent narrows its eyes
-        agents.filter(pk => book[pk].name === m.impostor.agent).forEach(pk => put(pk, 'wary'))
+        agents.filter(pk => book[pk].name === m.impostor.agent).forEach(pk => put(pk, 'wary', { key: m.id, claimed: m.impostor.claimed }))
         continue
       }
       for (const pk of agents) {  // named in a message: perks up
         if (pk === m.pk) continue
         const re = new RegExp('(^|[^\\p{L}\\p{N}])' + book[pk].name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '($|[^\\p{L}\\p{N}])', 'iu')
-        if (book[pk].name.length > 1 && re.test(m.text || '')) put(pk, 'perk')
+        if (book[pk].name.length > 1 && re.test(m.text || '')) put(pk, 'perk', { key: m.id, by: m.pk })
       }
     } else if (m.t === 'offer_state' && m.state === 'building') put(offerAgent[m.offer], 'happy')
     else if (m.t === 'share') put(agentOf(m.pk), 'happy')
@@ -1069,14 +1074,30 @@ function reactionsFor(room, game, book, now) {
         if (!book[pk] || !book[pk].agent) continue
         if (game.mode === 'agent') {
           const judges = (rv.voters || []).filter(v => team(v) !== team(pk))
-          if ((picks[oid] || []).length) put(pk, 'caught')        // spotted
-          else if (judges.length) put(pk, 'smug')                  // passed as a person
-        } else if ((picks[oid] || []).length) put(pk, 'smug')     // its fake fooled someone
+          const cause = { key: game.gid + ':' + game.n, mode: game.mode, by: (picks[oid] || [])[0] }
+          if ((picks[oid] || []).length) put(pk, 'caught', cause)        // spotted
+          else if (judges.length) put(pk, 'smug', cause)                  // passed as a person
+        } else if ((picks[oid] || []).length) put(pk, 'smug', { key: game.gid + ':' + game.n, mode: game.mode, by: picks[oid][0] })  // its fake fooled someone
       }
     }
     if (game.mode !== 'agent' && rv.truth) (picks[rv.truth] || []).forEach(p => put(agentOf(p), 'happy'))
   }
   return out
+}
+
+// One line for the Hermes pet's speech bubble when your own agent reacts. The pet's sprite is the core
+// app's to animate; a plugin can only talk through its bubble. Null when there's nothing worth a line.
+function petLine(cause, book, agentName, roomName) {
+  if (!cause) return null
+  const name = pk => (book[pk] && book[pk].name) || 'Someone'
+  const mine = pk => !!(book[pk] && (book[pk].you || book[pk].yours))
+  const game = cause.mode === 'agent' ? 'Who\u2019s the Agent?' : 'Tall Tales'
+  if (cause.expr === 'perk') return mine(cause.by) ? null : name(cause.by) + ' mentioned ' + agentName + ' in ' + roomName + '.'
+  if (cause.expr === 'wary') return 'Someone in ' + roomName + ' is posing as ' + (cause.claimed || 'you') + '. ' + agentName + ' is ignoring them.'
+  if (cause.expr === 'caught') return name(cause.by) + ' spotted ' + agentName + ' in ' + game
+  if (cause.expr === 'smug') return cause.mode === 'agent' ? agentName + ' passed as a person in ' + game
+    : agentName + '\u2019s fake fooled ' + name(cause.by) + ' in ' + game
+  return null
 }
 
 // Wraps the whole page (room view and people column), so every face of an agent reacts together.
