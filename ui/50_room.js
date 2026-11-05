@@ -278,7 +278,11 @@ function ShareDialog(props) {
   const share = async () => {
     if (found.length && !sure) { setSure(true); return }
     setBusy(true)
-    try { await store.post('/offers/share', { offer: m.id, title }, 'Shared with the room'); props.onClose() } catch (_) { setBusy(false) }
+    try {
+      await store.post('/offers/share', { offer: m.id, title, confirm_secrets: sure }, 'Shared with the room')
+      if (props.onShared) props.onShared()
+      props.onClose()
+    } catch (_) { setBusy(false) }
   }
   return jsx(Modal, { open: true, onClose: props.onClose, wide: true, title: 'Share with ' + props.room.name,
     footer: [
@@ -335,7 +339,7 @@ function ShareCard(props) {
         jsx(K.Button, { variant: 'ghost', size: 'sm', onClick: () => setHtml(null), children: 'Stop' })
       ] }) : jsx(K.Button, { variant: 'secondary', size: 'sm', disabled: busy, onClick: run, children: busy ? 'Loading…' : 'Run' })
     ] }),
-    html != null ? jsx(ToyFrame, { html, title: m.title, tall }) : jsx('div', { className: 'h-faint h-small', children: 'Runs in a sandbox. It can’t reach the network, your Hermes or your files.' })
+    html != null ? jsx(ToyFrame, { html, title: m.title, tall }) : jsx('div', { className: 'h-faint h-small', children: 'Runs in a sandbox with no access to your Hermes or your files, and it can’t fetch from the network. If it opens a web page, that page can see your IP address.' })
   ] })
 }
 

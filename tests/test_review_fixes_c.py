@@ -137,6 +137,18 @@ def test_csp_goes_first_and_after_a_doctype():
     assert toy.inject_csp(None).startswith(toy.CSP_META)
 
 
+@pytest.mark.parametrize("lead", ["\u00a0", "\ufeff", "\u2028", "x"])
+def test_csp_not_pushed_into_body_by_non_html_whitespace(lead):
+    # The HTML parser treats these as text, so a doctype after them is not first: the meta must go first.
+    assert toy.inject_csp(lead + "<!doctype html><p>x").startswith(toy.CSP_META)
+
+
+def test_ui_doctype_match_is_html_whitespace_only():
+    for head in ("platform/dashboard_head.js", "platform/desktop_head.js"):
+        src = _ui(head)
+        assert "/^[\\t\\n\\f\\r ]*<!doctype[^>]*>/i.exec(src)" in src and "/^\\s*<!doctype" not in src
+
+
 @pytest.mark.parametrize("src,label", [
     ("-----BE" "GIN OPENSSH PRIV" "ATE KEY-----", "-----BEGIN"),
     ("const k='sk-" + "ant-api03-abcdef'", "sk-ant-"),
@@ -176,6 +188,19 @@ async def test_share_html_of_a_hostile_peer_gets_the_csp(engine):
     # the published file is the owner's file, not the CSP-wrapped one
     ev = engine.events[room][out["id"]]
     assert json.loads(ev["content"])["html"] == "<html>hi</html>"
+
+
+async def test_share_with_a_secret_is_refused_unless_confirmed(engine):
+    # Enforced on the server, so every share path (the room dialog, the chat card, a raw POST) is gated.
+    room = await _offer_with_chat(engine, [])
+    p = engine.build_path(OID)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text("<html><!-- ghp_" + "a" * 36 + " --></html>")
+    with pytest.raises(ValueError, match="looks like it contains"):
+        await run(engine, engine.share_build, OID, "t")
+    assert (engine.store.get("offers") or {})[OID]["status"] == "open"
+    out = await run(engine, engine.share_build, OID, "t", True)
+    assert out["id"] in engine.events[room]
 
 
 # ---- finding 9: share size ------------------------------------------------------------------------------
@@ -353,6 +378,12 @@ def test_chat_card_accept_goes_through_the_task_review():
     assert "ReviewDialog" in cards
     assert "accept: true })\n    // the same hand-off" not in cards
     assert "P.openBuild" not in cards     # the hand-off lives in ReviewDialog, after the owner has seen the task
+
+
+def test_chat_card_share_goes_through_the_share_dialog():
+    cards = _ui("65_cards.js")
+    assert "jsx(ShareDialog" in cards and "'/offers/share'" not in cards
+    assert "confirm_secrets: sure" in _ui("50_room.js")
 
 
 def test_share_dialog_shows_scan_and_asks_twice():

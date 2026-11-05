@@ -30,8 +30,9 @@ description: >-
   cards call window.hermes.send, where the host provides it, to tell the agent what the owner decided.
   (9) The engine loader registers itself in sys.modules as "xenia_room_engine" so routes and tools
   share one engine per process. (10) Shared toys render in a sandboxed frame under a CSP that blocks
-  network requests; the share dialog scans the source for key-like strings but cannot guarantee it
-  finds them.
+  network requests, but a toy can navigate its own frame, which can reveal the viewer's IP; toys run
+  only after the viewer presses Run. The share path scans the source for key-like strings and needs
+  a second confirmation on a match, but the scan cannot guarantee it finds everything.
 maintainer: <owner>                                 # TODO
 tier: community
 category: desktop

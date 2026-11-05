@@ -770,12 +770,16 @@ class Engine:
                 "limit": SHARE_SERIALIZED_LIMIT, "fits": size <= SHARE_SERIALIZED_LIMIT,
                 "secrets": scan_secrets(raw)}
 
-    async def share_build(self, offer_id: str, title: str) -> dict:
+    async def share_build(self, offer_id: str, title: str, confirm_secrets: bool = False) -> dict:
         offers = self.store.get("offers") or {}
         o = offers.get(offer_id)
         if not o:
             raise KeyError("offer not found")
         html = self._read_build_raw(offer_id)
+        found = scan_secrets(html)
+        if found and not confirm_secrets:  # every share path has to show the owner first, not only the dialog
+            raise ValueError("this file looks like it contains " + "; ".join(found) +
+                             ". Open Preview & share to check the source, then share it anyway if it's fine.")
         size = serialized_size(self._share_content(o, html, title))
         if size > SHARE_SERIALIZED_LIMIT:
             raise ValueError(f"this build is {size // 1000} KB once packed for the relays; the limit is "

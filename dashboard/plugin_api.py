@@ -95,6 +95,7 @@ class OfferAnswer(BaseModel):
 class ShareIn(BaseModel):
     offer: str
     title: str = ""
+    confirm_secrets: bool = False
 
 
 class FakeIn(BaseModel):
@@ -195,7 +196,7 @@ async def offer_build(offer: str):
 @router.post("/offers/share")
 async def offer_share(body: ShareIn):
     eng = await _engine()
-    return await _run(eng.share_build, body.offer, body.title)
+    return await _run(eng.share_build, body.offer, body.title, body.confirm_secrets)
 
 
 @router.get("/share")

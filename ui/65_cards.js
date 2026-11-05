@@ -127,11 +127,8 @@ function OfferChatCard(props) {
     await cs.post('/offers/answer', { offer: m.id, accept: false })
     tellAgent('Xenia: I passed on offer ' + m.id.slice(0, 12) + '. No action needed.')
   })
-  const share = () => run('share', async () => {
-    await cs.post('/offers/share', { offer: m.id, title: '' }, 'Shared with the room')
-    setSure(false)
-    tellAgent('Xenia: I shared the build for offer ' + m.id.slice(0, 12) + ' with the room.')
-  })
+  // Sharing goes through the same dialog as the Xenia page: preview, size, secret scan and source.
+  const shared = () => tellAgent('Xenia: I shared the build for offer ' + m.id.slice(0, 12) + ' with the room.')
 
   let status = null
   let actions = null
@@ -140,11 +137,8 @@ function OfferChatCard(props) {
       jsx(K.Button, { variant: 'primary', size: 'sm', disabled: !!busy, onClick: () => setReview(true), children: 'Review & build' }, 'a'),
       jsx(K.Button, { variant: 'ghost', size: 'sm', disabled: !!busy, onClick: decline, children: 'Not now' }, 'n')]
     else if (state === 'building') status = 'Your Hermes is building it. When the file is saved, you can share it here.'
-    else if (state === 'ready') actions = sure ? [
-      jsx('span', { className: 'h-small', children: 'Share the built file with #' + room.name + '?' }, 'q'),
-      jsx(K.Button, { variant: 'primary', size: 'sm', disabled: !!busy, onClick: share, children: busy === 'share' ? 'Sharing…' : 'Yes, share' }, 'y'),
-      jsx(K.Button, { variant: 'ghost', size: 'sm', disabled: !!busy, onClick: () => setSure(false), children: 'Not yet' }, 'x')]
-      : [jsx(K.Button, { variant: 'primary', size: 'sm', onClick: () => setSure(true), children: 'Share to room' }, 's')]
+    else if (state === 'ready') actions = [
+      jsx(K.Button, { variant: 'primary', size: 'sm', onClick: () => setSure(true), children: 'Preview & share' }, 's')]
     else if (state === 'shared') status = 'Shared with #' + room.name + '.'
     else if (state === 'declined') status = 'You passed on this one.'
   } else {
@@ -165,6 +159,7 @@ function OfferChatCard(props) {
     status && jsx('div', { className: 'h-faint h-small', children: status }),
     actions && jsx('div', { className: 'h-actions', children: actions }),
     review && jsx(ReviewDialog, { m, store: cs, onClose: () => { setReview(false); props.refresh() }, onPrompt: setPrompt }),
+    sure && jsx(ShareDialog, { m, store: cs, room, onShared: shared, onClose: () => { setSure(false); props.refresh() } }),
     prompt && jsx(PromptDialog, { prompt, onClose: () => setPrompt(null) })
   ] })
 }

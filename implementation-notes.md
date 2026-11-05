@@ -134,3 +134,9 @@ Findings 4, 5, 9, 11, 12, 16, 18 (offer ids and lobby tags), 19, 20, 21. Tests: 
 - **Catalog entry:** the description is now about 2,600 characters. I don't know the catalog's length limit; check it before submitting.
 - **ARCHITECTURE.md** was 1537 words; it's 1507 after rewording and trimming unrelated detail (test-profile notes, scoring detail).
 - **Not verified:** no live Hermes, Desktop or dashboard run (no servers allowed). The UI changes (task review in the chat card, share dialog, auto-growing draft, `withCsp`) are syntax-checked and covered by source-level tests only.
+
+## Security review of the C merge (2026-11-05, overnight)
+
+- **CSP placement bypass, verified and fixed.** `withCsp` and `inject_csp` skipped any `\s` before a doctype. NBSP or a BOM there is text to the HTML parser, so the meta landed in `<body>`, where a CSP is ignored. In Chromium a NBSP-prefixed toy's `no-cors` fetch succeeded under the old placement and is blocked under the new one. The match now allows only `[\t\n\f\r ]`, and the toy, JS and test sides all agree. While fixing it I put an inline `//` comment between the regex and `.exec(src)`, which turned `m` into the regex itself. A node run caught it before commit, and the source test now requires `.exec(src)` on that line.
+- **Share gate moved to the server.** The chat card's "Share to room" skipped the share dialog, so it also skipped the secret scan. `share_build` now refuses a file with a scan match unless `confirm_secrets` is true. Only the dialog sends that, after its second ask. The chat card now opens the same `ShareDialog`.
+- **Self-navigation is disclosed, not fixed.** The sandbox blocks popups, forms and top navigation, but a frame can always navigate itself (`location = …`, meta refresh). `navigate-to` never shipped in any browser, so no CSP closes this. The README, the catalog entry and the share card now say a toy can reveal your IP, and that it runs only after you press Run.

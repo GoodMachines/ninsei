@@ -14,7 +14,9 @@ CSP_META = f'<meta http-equiv="Content-Security-Policy" content="{TOY_CSP}">'
 SHARE_SERIALIZED_LIMIT = 48_000   # bytes of serialized event content; relays and peers cap near 64 KB
 OFFER_ID_RE = re.compile(r"^[0-9a-f]{64}$")
 
-_DOCTYPE = re.compile(r"^\s*<!doctype[^>]*>", re.I)
+# Only HTML whitespace may come before the doctype. `\s` would also skip NBSP or a BOM, which the HTML
+# parser treats as text: the meta would then land in <body>, where browsers ignore a CSP.
+_DOCTYPE = re.compile(r"^[\t\n\f\r ]*<!doctype[^>]*>", re.I)
 
 
 def inject_csp(html: str) -> str:

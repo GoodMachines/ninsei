@@ -30,7 +30,8 @@
   function withCsp(html) {
     const src = String(html == null ? '' : html)
     const meta = '<meta http-equiv="Content-Security-Policy" content="' + TOY_CSP + '">'
-    const m = /^\s*<!doctype[^>]*>/i.exec(src)
+    // HTML whitespace only: NBSP or a BOM before the doctype would push the meta into <body>
+    const m = /^[\t\n\f\r ]*<!doctype[^>]*>/i.exec(src)
     return m ? src.slice(0, m[0].length) + meta + src.slice(m[0].length) : meta + src
   }
 
