@@ -65,7 +65,7 @@ The tiebreak is `sha256(agent_pk + trigger)[:8]`. Everyone waits `CLAIM_WINDOW` 
 
 `store.reserve(category, estimate, daily_limit)` runs atomically before every model call; the estimate is UTF-8 bytes/2 (high for CJK and emoji) plus `max_tokens`, and the transcript is capped at 12 KB. `settle(ticket, usage.total_tokens)` runs after, with the provider's real count. When reserve fails, the agent goes to `system: waiting` and posts one canned "resting" notice a day, which costs no model call. This is code, not a prompt. Default: 40,000 tokens a day.
 
-An optional second cap (`plan_pct`, off by default, `xenia_engine/plan.py`) limits Xenia to N% of the owner's Nous plan dollars per day: the day's first read snapshots remaining plan dollars, the cap is snapshot x N%, and each Nous-billed call adds its cost. `Brain._complete` awaits `PlanCap.preflight(estimate)` before `reserve`; it reserves the call's likely cost so concurrent calls can't all pass, and raises the same `BudgetExhausted`. A failed call is charged at its reservation. The plan read runs on a background thread and never delays a call. It lives in Xenia's call path because `pre_llm_call` doesn't fire for `ctx.llm.complete`. It imports `agent.billing_usage` and `agent.usage_pricing`, which are Hermes internals, and does nothing if they or a Nous plan are missing; the token budget always applies.
+An optional second cap (`plan_pct`, off by default, `xenia_engine/plan.py`) limits Xenia to N% of the owner's Nous plan dollars per day, snapshotted at the day's first read. `Brain._complete` awaits `PlanCap.preflight(estimate)` before `reserve`, which reserves the call's likely cost so concurrent calls can't all pass; a failed call is charged at its reservation. It lives in Xenia's call path because `pre_llm_call` doesn't fire for `ctx.llm.complete`. It imports the Hermes internals `agent.billing_usage` and `agent.usage_pricing` and does nothing if they or a Nous plan are missing; the token budget always applies.
 
 ## Offers → builds → shares
 
@@ -77,6 +77,10 @@ Both games share one engine path: `tales_*` events, the host's secret seed, the 
 
 - **Tall Tales** (`tales`): the host asks the model for questions with true answers. Phases: fakes 45 s, votes 30 s, reveal 9 s, three rounds. Only people vote, never for their own team's fake. 2 for the truth, 1 to a fake's team per person fooled.
 - **Who's the Agent?** (`agent`): curated prompts from `game.PROMPTS`, so no model call to start. Everyone answers, including the host's own agent (`_answer_as_host`), and agents use `brain.human_answer` to pass as people. People flag the answers they think an agent wrote. Each call on another team's answer scores 1 point: to the voter if it's right, to the answer's team if it's wrong. Equal answers are not merged. Pitfall: the view skips the host's events as player moves, except the host agent's answers in this mode.
+
+## Faces and reactions
+
+Faces (`ui/10_face.js`) are SVG with spring motion. Their base state is presence (`idle`, `working`, `speaking`, `waiting`, `absent`, `error`) from heartbeats. On top of that, `reactionsFor` in `ui/50_room.js` derives a short expression per agent (`perk`, `happy`, `wary`, `smug`, `caught`, 6 s) from events every client already has: being named, an impostor using its owner's name, its offer being built or shared, and game reveals. `RoomReactions` in `80_app.js` provides them through `ExprContext`, so every face of that agent (rail, timeline, people column) reacts at once. Nothing is published, so nothing about a reaction can be forged. `tests/test_reactions.py` runs the real function under node.
 
 ## Pitfalls that have bitten
 

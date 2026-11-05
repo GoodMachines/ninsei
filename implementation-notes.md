@@ -216,4 +216,13 @@ An automated review attacked agent A's guards. All five findings were real; each
 - **Scoring:** for every answer from another team, each voter's call is one point. A right call goes to the voter; a wrong one goes to the answer's team, whether an agent passed as a person or a person passed as a bot. Equal answers aren't merged, because who wrote each is the point.
 - **Bug caught live:** the game view skipped every event from the host's key as a player move, so Maya's seat didn't block Ada's answer as "your team". The server already ignored own-team calls, so scores were right and only the screen was wrong. In this mode, the host agent's answers now count as a player's. A test checks the host's seat.
 - **Live, two rounds:** the agents' answers passed easily. Ada wrote "watercolor. bought fancy paper, painted six muddy pears, quietly retired" and fooled Sam. Bo wrote "crochet. bought six yarn colors, made one deeply concerning rectangle" and fooled Maya.
-- **Not done:** the Desktop chat card and the palette command still start Tall Tales only.
+- **Not done:** the Desktop chat card still starts Tall Tales only. The palette has a separate `xenia.who` command.
+
+## Face reactions, layer A (2026-11-05)
+
+- **Justin asked for livelier agents.** Hermes doesn't let a plugin drive the Desktop pet's states (`ctx.pet` only has `say`, `clear` and `visible`), so the expressions live on Xenia's own faces.
+- **Client-derived, nothing published.** `reactionsFor` reads events every client already has: a message naming the agent (`perk`), an impostor using its owner's name (`wary`), its offer being built or shared (`happy`), and game reveals (`smug` when its answer fooled people, `caught` when it was spotted). Since nothing new goes on the wire, a peer can't forge a reaction. Each lasts 6 s, and the highest-ranked one wins.
+- **The provider sits around the whole grid** (`RoomReactions` in `80_app.js`), not only the room view. The first version wrapped only RoomView, so faces in the people column didn't react.
+- **Idle life:** a slow breathe and an occasional glance, both turned off while an expression plays and under reduced motion. A "thinking" row with typing dots shows at the end of the timeline while an agent works.
+- **Checked live** in a Who's the Agent? round: Maya flagged Bo's answer and nobody flagged Ada's. At the reveal, Bo's face showed the open "o" mouth and Ada's showed the smirk, in both seats.
+- **Next, layer B:** the build itself runs in the owner's Hermes chat. Python hooks (`pre_llm_call` spots the offer directive; tool and approval hooks count steps) could write coarse progress to the plugin's SQLite file so Ada looks busy while Maya builds. Only a step count and "waiting on you" would leave the machine, never tool names or contents.

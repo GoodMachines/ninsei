@@ -10,6 +10,8 @@
   const { useState, useEffect, useRef, useMemo, useCallback } = SDK.hooks
   const useLayoutEffect = React.useLayoutEffect
   const Fragment = React.Fragment
+  const createContext = React.createContext
+  const useContext = React.useContext
 
   // the react/jsx-runtime calling convention, on top of createElement
   function jsx(type, props, key) {
@@ -419,10 +421,16 @@ const FACE_BODY = {
   bean: { d: 'M10 9.5c3.5-4 9-4 12.5-2.2c2.6 1.3 4.6.6 7.2 1.6c4.4 1.7 6.3 6.3 5.2 11.6C33.4 28.6 27 35 19 35S4.2 30 4.5 22.5C4.7 17 6.6 13.4 10 9.5z', eyes: [15, 26], ey: 19, my: 27 }
 }
 
+// A short-lived expression per agent pk ('smug', 'caught', 'happy', 'wary', 'perk'), worked out on each
+// client from room events it already has (see reactionsFor). Never sent over the wire.
+const ExprContext = createContext({})
+
 function Face(props) {
   const f = faceFor(props.face, props.pk)
   const body = FACE_BODY[f.shape] || FACE_BODY.round
   const state = stateWord(props.state)
+  const exprs = useContext(ExprContext)
+  const expr = (state !== 'absent' && state !== 'error' && exprs[props.pk]) || ''
   const size = props.size || 40
   const ref = useRef(null)
   const first = useRef(true)
@@ -436,7 +444,7 @@ function Face(props) {
       el.style.transform = x === 1 ? '' : 'scale(' + x.toFixed(4) + ')'
     } })
     return () => s.stop()
-  }, [state])
+  }, [state, expr])
 
   // a stable per-agent offset so two faces in a list never blink in unison
   const seed = parseInt(String(props.pk || '7f').slice(-3), 16) || 0
@@ -454,8 +462,13 @@ function Face(props) {
         jsx('rect', { className: 'hf-eye', x: rx - 1.9, y: ey - 2.6, width: 3.8, height: 5.2, rx: 1.9, style: { animationDelay: delay } })
       ] })
 
+  const my = body.my
   const mouth = state === 'speaking'
     ? jsx('ellipse', { className: 'hf-mouth hf-talk', cx: 20, cy: body.my, rx: 2.6, ry: 1.8 })
+    : expr === 'smug' ? jsx('path', { className: 'hf-line', d: `M16.8 ${my}q3 1.6 6.6 -1.2` })
+    : expr === 'caught' ? jsx('ellipse', { className: 'hf-mouth', cx: 20, cy: my, rx: 1.6, ry: 1.9 })
+    : expr === 'happy' ? jsx('path', { className: 'hf-mouth', d: `M15.8 ${my - 1.2}q4.2 5 8.4 0z` })
+    : expr === 'wary' ? jsx('path', { className: 'hf-line', d: `M17.2 ${my + 0.4}h5.6` })
     : state === 'error'
       ? jsx('path', { className: 'hf-line', d: `M16.5 ${body.my + 1}q3.5 -2.4 7 0` })
       : state === 'waiting' || state === 'absent'
@@ -463,7 +476,7 @@ function Face(props) {
         : jsx('path', { className: 'hf-line', d: `M16.5 ${body.my - 0.6}q3.5 2.6 7 0` })
 
   return jsx('span', {
-    ref, className: cx('hf', props.className), 'data-state': state, 'data-size': size <= 20 ? 's' : 'm',
+    ref, className: cx('hf', props.className), 'data-state': state, 'data-expr': expr || undefined, 'data-size': size <= 20 ? 's' : 'm',
     style: { width: size, height: size, '--hue': f.hue },
     role: 'img', 'aria-label': (props.name ? props.name + ', ' : '') + STATE_LABEL[state],
     children: jsxs('svg', { viewBox: '0 0 40 40', width: size, height: size, 'aria-hidden': true, children: [
@@ -640,6 +653,9 @@ const CSS = TOKENS + `
 .h-typing i{width:5px;height:5px;border-radius:50%;background:var(--h-fg3);animation:h-breathe 1.1s cubic-bezier(.45,.05,.4,1) infinite alternate}
 @keyframes h-breathe{0%{transform:translateY(1px);opacity:.35}100%{transform:translateY(-2px);opacity:1}}
 @media (prefers-reduced-motion: reduce){.h-typing i{animation:none}}
+.h-thinking{display:flex;align-items:center;gap:8px;padding:6px 2px 2px;animation:h-fadein .3s ease-out}
+.h-thinking .h-typing{padding:6px 9px}
+@keyframes h-fadein{from{opacity:0;transform:translateY(4px)}}
 .h-compose-box[data-private=true]{align-items:center}
 .h-compose-box[data-private=true]>svg,.h-compose-box[data-private=true]>.codicon{color:var(--h-fg3);flex:none}
 
@@ -730,6 +746,25 @@ const CSS = TOKENS + `
 .hf[data-state=absent] .hf-head{opacity:.42;filter:saturate(.2)}
 .hf[data-state=absent] .hf-eye{transform:scaleY(.14)}
 .hf[data-size=s] .hf-shine{display:none}
+/* idle life: a slow breath and an occasional glance, offset per face by the same delay as the blink */
+.hf[data-state=idle]:not([data-expr]) .hf-head{animation:hf-breathe 4.2s cubic-bezier(.45,.05,.55,.95) infinite alternate}
+.hf[data-state=idle]:not([data-expr]) .hf-eyes{animation:hf-glance 9.4s cubic-bezier(.3,.7,.4,1) infinite}
+/* reactions (data-expr): eyes and head pose; the mouth shape comes from the component */
+.hf[data-expr] .hf-eye{animation:none}
+.hf[data-expr=smug] .hf-eye{transform:scaleY(.48) translateY(.7px)}
+.hf[data-expr=smug] .hf-head{transform:rotate(8deg)}
+.hf[data-expr=caught] .hf-eye{transform:scale(1.25)}
+.hf[data-expr=caught] .hf-head{animation:hf-shake .5s cubic-bezier(.36,.07,.19,.97) 1}
+.hf[data-expr=happy] .hf-eye{transform:scaleY(.42) translateY(-.4px)}
+.hf[data-expr=happy] .hf-head{animation:hf-hop .62s cubic-bezier(.3,.7,.4,1) 2}
+.hf[data-expr=wary] .hf-eye{transform:scaleY(.36) translateX(-1.2px)}
+.hf[data-expr=wary] .hf-head{transform:rotate(-6deg)}
+.hf[data-expr=perk] .hf-eye{transform:scale(1.12)}
+.hf[data-expr=perk] .hf-head{animation:hf-hop .5s cubic-bezier(.3,.7,.4,1) 1}
+@keyframes hf-breathe{0%{transform:scale(1)}100%{transform:scale(1.022,.985) translateY(.25px)}}
+@keyframes hf-glance{0%,78%,100%{transform:translateX(0)}82%,90%{transform:translateX(1.5px)}94%{transform:translateX(-.4px)}}
+@keyframes hf-shake{0%,100%{transform:translateX(0)}20%{transform:translateX(-1.6px) rotate(-4deg)}45%{transform:translateX(1.4px) rotate(3deg)}70%{transform:translateX(-.8px)}}
+@keyframes hf-hop{0%,100%{transform:translateY(0)}35%{transform:translateY(-2.6px) scale(1.03,.97)}60%{transform:translateY(0) scale(.98,1.02)}}
 @keyframes hf-blink{0%,93%,100%{transform:scaleY(1)}95.5%{transform:scaleY(.1)}}
 @keyframes hf-scan{0%{transform:translateX(-1.6px)}100%{transform:translateX(1.6px)}}
 @keyframes hf-talk{0%{transform:scaleY(.35) scaleX(1.1)}100%{transform:scaleY(1.15) scaleX(.9)}}
@@ -998,6 +1033,66 @@ function SettingsForm(props) {
 // a room: header, timeline, offer and share cards, the drafts tray, the composer
 // ---------------------------------------------------------------------------------------------
 
+// Reactions: which agents pull a face right now, worked out from events every client already has, so
+// nothing is published and nobody can send a fake reaction. Returns { agentPk: expr }.
+const REACT_SECS = 6
+const EXPR_RANK = { perk: 1, happy: 2, wary: 3, smug: 4, caught: 4 }
+function reactionsFor(room, game, book, now) {
+  const out = {}
+  const put = (pk, expr) => { if (pk && (EXPR_RANK[expr] || 0) >= (EXPR_RANK[out[pk]] || 0)) out[pk] = expr }
+  const agents = Object.keys(book).filter(pk => book[pk].agent)
+  const agentOf = person => agents.find(pk => book[pk].owner === person)
+  const offerAgent = {}
+  for (const m of room.messages || []) {
+    if (m.t === 'offer') offerAgent[m.id] = m.pk
+    if (now - m.ts > REACT_SECS || m.ts - now > 30) continue
+    if (m.t === 'msg') {
+      if (m.impostor && m.impostor.agent) {  // someone wearing my owner's name: the agent narrows its eyes
+        agents.filter(pk => book[pk].name === m.impostor.agent).forEach(pk => put(pk, 'wary'))
+        continue
+      }
+      for (const pk of agents) {  // named in a message: perks up
+        if (pk === m.pk) continue
+        const re = new RegExp('(^|[^\\p{L}\\p{N}])' + book[pk].name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '($|[^\\p{L}\\p{N}])', 'iu')
+        if (book[pk].name.length > 1 && re.test(m.text || '')) put(pk, 'perk')
+      }
+    } else if (m.t === 'offer_state' && m.state === 'building') put(offerAgent[m.offer], 'happy')
+    else if (m.t === 'share') put(agentOf(m.pk), 'happy')
+  }
+  const rv = game && game.phase === 'reveal' && game.reveal
+  if (rv) {
+    const authors = rv.authors || {}
+    const picks = rv.picks || {}
+    const team = pk => (book[pk] && book[pk].agent && book[pk].owner) || pk
+    for (const oid of Object.keys(authors)) {
+      for (const pk of String(authors[oid]).split(',').filter(Boolean)) {
+        if (!book[pk] || !book[pk].agent) continue
+        if (game.mode === 'agent') {
+          const judges = (rv.voters || []).filter(v => team(v) !== team(pk))
+          if ((picks[oid] || []).length) put(pk, 'caught')        // spotted
+          else if (judges.length) put(pk, 'smug')                  // passed as a person
+        } else if ((picks[oid] || []).length) put(pk, 'smug')     // its fake fooled someone
+      }
+    }
+    if (game.mode !== 'agent' && rv.truth) (picks[rv.truth] || []).forEach(p => put(agentOf(p), 'happy'))
+  }
+  return out
+}
+
+// Wraps the whole page (room view and people column), so every face of an agent reacts together.
+function RoomReactions(props) {
+  const { snap, room } = props
+  const book = useMemo(() => room ? nameBook(room, snap.me) : {}, [room, snap.me])
+  const game = room && room.game
+  const msgs = (room && room.messages) || []
+  const last = msgs.length ? msgs[msgs.length - 1].ts : 0
+  const live = !!room && ((Date.now() / 1000 - last < REACT_SECS + 1) || !!(game && game.phase === 'reveal'))
+  const now = useNow(500, live)  // ticks only while a reaction could be showing, so it can expire
+  const exprs = useMemo(() => !room || motion.reduced() ? {} : reactionsFor(room, game, book, Math.max(now, Date.now() / 1000)),
+    [room, game, book, now])
+  return jsx(ExprContext.Provider, { value: exprs, children: props.children })
+}
+
 function RoomView(props) {
   const { store, snap, room } = props
   const book = useMemo(() => nameBook(room, snap.me), [room, snap.me])
@@ -1083,8 +1178,24 @@ function Timeline(props) {
   const items = groupItems(msgs)
   return jsx('div', { className: 'h-scroll', ref: scroller, onScroll, children: jsxs('div', { className: 'h-timeline', role: 'log', 'aria-live': 'polite', children: [
     items.length === 0 && jsx('div', { className: 'h-empty', children: 'Quiet in here. Say hello, or start a game of Tall Tales.' }),
-    items.map(it => jsx(TimelineItem, { it, store, snap, room, book, animate: fresh(it.key) }, it.key))
+    items.map(it => jsx(TimelineItem, { it, store, snap, room, book, animate: fresh(it.key) }, it.key)),
+    jsx(Thinking, { room })
   ] }) })
+}
+
+// Agents in the room that are working on something: a face and typing dots at the foot of the timeline.
+function Thinking(props) {
+  const busy = []
+  for (const p of props.room.members || []) {
+    for (const a of p.agents || []) if (stateWord(a.state) === 'working') busy.push(a)
+  }
+  if (!busy.length) return null
+  const names = joinNames(busy.map(a => a.name))
+  return jsxs('div', { className: 'h-thinking', role: 'status', 'aria-label': names + (busy.length > 1 ? ' are' : ' is') + ' thinking', children: [
+    jsx('div', { className: 'h-row', style: { gap: 2 }, children: busy.slice(0, 3).map(a => jsx(Face, { face: a.face, pk: a.pk, state: a.state, size: 22, name: a.name }, a.pk)) }),
+    jsxs('div', { className: 'h-typing', children: [0, 1, 2].map(i => jsx('i', { style: { animationDelay: (i * 0.16) + 's' } }, i)) }),
+    jsx('span', { className: 'h-faint h-small', children: names + (busy.length > 1 ? ' are' : ' is') + ' thinking' })
+  ] })
 }
 
 // Fold runs of joins into one quiet line; mark the first message of each speaker's run.
@@ -2339,14 +2450,14 @@ function App(props) {
     else if (view === 'lobby' || !(snap.rooms || []).length) center = jsx(Lobby, { store, snap })
     else center = jsx(Welcome, { snap, onLobby: () => go('lobby') })
 
-    inner = jsxs('div', { className: 'h-grid', 'data-people': people ? 'open' : 'closed', children: [
+    inner = jsx(RoomReactions, { snap, room: showRoom ? room : null, children: jsxs('div', { className: 'h-grid', 'data-people': people ? 'open' : 'closed', children: [
       jsx('nav', { className: 'h-left', 'aria-label': 'Xenia rooms', children: jsx(Rail, { store, snap, view, go, roomId }) }),
       jsxs('main', { className: 'h-center', children: [
         st.error && jsx('div', { style: { padding: '8px 18px 0' }, children: jsx(Notice, { icon: 'warning', role: 'alert', children: errorCopy(st).title + '. Showing the last state we had.' }) }),
         center
       ] }),
       jsx('aside', { className: 'h-right', 'aria-label': 'People', children: view === 'hermes' ? jsx(LineAbout, { snap }) : room && showRoom ? jsx(People, { room, snap }) : jsx(MyAgentCard, { snap }) })
-    ] })
+    ] }) })
   }
   return jsxs('div', { className: 'hx h-page', 'data-platform': P.kind, children: [
     P.inlineStyle && jsx('style', { children: CSS }),

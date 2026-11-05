@@ -2,6 +2,66 @@
 // a room: header, timeline, offer and share cards, the drafts tray, the composer
 // ---------------------------------------------------------------------------------------------
 
+// Reactions: which agents pull a face right now, worked out from events every client already has, so
+// nothing is published and nobody can send a fake reaction. Returns { agentPk: expr }.
+const REACT_SECS = 6
+const EXPR_RANK = { perk: 1, happy: 2, wary: 3, smug: 4, caught: 4 }
+function reactionsFor(room, game, book, now) {
+  const out = {}
+  const put = (pk, expr) => { if (pk && (EXPR_RANK[expr] || 0) >= (EXPR_RANK[out[pk]] || 0)) out[pk] = expr }
+  const agents = Object.keys(book).filter(pk => book[pk].agent)
+  const agentOf = person => agents.find(pk => book[pk].owner === person)
+  const offerAgent = {}
+  for (const m of room.messages || []) {
+    if (m.t === 'offer') offerAgent[m.id] = m.pk
+    if (now - m.ts > REACT_SECS || m.ts - now > 30) continue
+    if (m.t === 'msg') {
+      if (m.impostor && m.impostor.agent) {  // someone wearing my owner's name: the agent narrows its eyes
+        agents.filter(pk => book[pk].name === m.impostor.agent).forEach(pk => put(pk, 'wary'))
+        continue
+      }
+      for (const pk of agents) {  // named in a message: perks up
+        if (pk === m.pk) continue
+        const re = new RegExp('(^|[^\\p{L}\\p{N}])' + book[pk].name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '($|[^\\p{L}\\p{N}])', 'iu')
+        if (book[pk].name.length > 1 && re.test(m.text || '')) put(pk, 'perk')
+      }
+    } else if (m.t === 'offer_state' && m.state === 'building') put(offerAgent[m.offer], 'happy')
+    else if (m.t === 'share') put(agentOf(m.pk), 'happy')
+  }
+  const rv = game && game.phase === 'reveal' && game.reveal
+  if (rv) {
+    const authors = rv.authors || {}
+    const picks = rv.picks || {}
+    const team = pk => (book[pk] && book[pk].agent && book[pk].owner) || pk
+    for (const oid of Object.keys(authors)) {
+      for (const pk of String(authors[oid]).split(',').filter(Boolean)) {
+        if (!book[pk] || !book[pk].agent) continue
+        if (game.mode === 'agent') {
+          const judges = (rv.voters || []).filter(v => team(v) !== team(pk))
+          if ((picks[oid] || []).length) put(pk, 'caught')        // spotted
+          else if (judges.length) put(pk, 'smug')                  // passed as a person
+        } else if ((picks[oid] || []).length) put(pk, 'smug')     // its fake fooled someone
+      }
+    }
+    if (game.mode !== 'agent' && rv.truth) (picks[rv.truth] || []).forEach(p => put(agentOf(p), 'happy'))
+  }
+  return out
+}
+
+// Wraps the whole page (room view and people column), so every face of an agent reacts together.
+function RoomReactions(props) {
+  const { snap, room } = props
+  const book = useMemo(() => room ? nameBook(room, snap.me) : {}, [room, snap.me])
+  const game = room && room.game
+  const msgs = (room && room.messages) || []
+  const last = msgs.length ? msgs[msgs.length - 1].ts : 0
+  const live = !!room && ((Date.now() / 1000 - last < REACT_SECS + 1) || !!(game && game.phase === 'reveal'))
+  const now = useNow(500, live)  // ticks only while a reaction could be showing, so it can expire
+  const exprs = useMemo(() => !room || motion.reduced() ? {} : reactionsFor(room, game, book, Math.max(now, Date.now() / 1000)),
+    [room, game, book, now])
+  return jsx(ExprContext.Provider, { value: exprs, children: props.children })
+}
+
 function RoomView(props) {
   const { store, snap, room } = props
   const book = useMemo(() => nameBook(room, snap.me), [room, snap.me])
@@ -87,8 +147,24 @@ function Timeline(props) {
   const items = groupItems(msgs)
   return jsx('div', { className: 'h-scroll', ref: scroller, onScroll, children: jsxs('div', { className: 'h-timeline', role: 'log', 'aria-live': 'polite', children: [
     items.length === 0 && jsx('div', { className: 'h-empty', children: 'Quiet in here. Say hello, or start a game of Tall Tales.' }),
-    items.map(it => jsx(TimelineItem, { it, store, snap, room, book, animate: fresh(it.key) }, it.key))
+    items.map(it => jsx(TimelineItem, { it, store, snap, room, book, animate: fresh(it.key) }, it.key)),
+    jsx(Thinking, { room })
   ] }) })
+}
+
+// Agents in the room that are working on something: a face and typing dots at the foot of the timeline.
+function Thinking(props) {
+  const busy = []
+  for (const p of props.room.members || []) {
+    for (const a of p.agents || []) if (stateWord(a.state) === 'working') busy.push(a)
+  }
+  if (!busy.length) return null
+  const names = joinNames(busy.map(a => a.name))
+  return jsxs('div', { className: 'h-thinking', role: 'status', 'aria-label': names + (busy.length > 1 ? ' are' : ' is') + ' thinking', children: [
+    jsx('div', { className: 'h-row', style: { gap: 2 }, children: busy.slice(0, 3).map(a => jsx(Face, { face: a.face, pk: a.pk, state: a.state, size: 22, name: a.name }, a.pk)) }),
+    jsxs('div', { className: 'h-typing', children: [0, 1, 2].map(i => jsx('i', { style: { animationDelay: (i * 0.16) + 's' } }, i)) }),
+    jsx('span', { className: 'h-faint h-small', children: names + (busy.length > 1 ? ' are' : ' is') + ' thinking' })
+  ] })
 }
 
 // Fold runs of joins into one quiet line; mark the first message of each speaker's run.

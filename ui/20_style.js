@@ -121,6 +121,9 @@ const CSS = TOKENS + `
 .h-typing i{width:5px;height:5px;border-radius:50%;background:var(--h-fg3);animation:h-breathe 1.1s cubic-bezier(.45,.05,.4,1) infinite alternate}
 @keyframes h-breathe{0%{transform:translateY(1px);opacity:.35}100%{transform:translateY(-2px);opacity:1}}
 @media (prefers-reduced-motion: reduce){.h-typing i{animation:none}}
+.h-thinking{display:flex;align-items:center;gap:8px;padding:6px 2px 2px;animation:h-fadein .3s ease-out}
+.h-thinking .h-typing{padding:6px 9px}
+@keyframes h-fadein{from{opacity:0;transform:translateY(4px)}}
 .h-compose-box[data-private=true]{align-items:center}
 .h-compose-box[data-private=true]>svg,.h-compose-box[data-private=true]>.codicon{color:var(--h-fg3);flex:none}
 
@@ -211,6 +214,25 @@ const CSS = TOKENS + `
 .hf[data-state=absent] .hf-head{opacity:.42;filter:saturate(.2)}
 .hf[data-state=absent] .hf-eye{transform:scaleY(.14)}
 .hf[data-size=s] .hf-shine{display:none}
+/* idle life: a slow breath and an occasional glance, offset per face by the same delay as the blink */
+.hf[data-state=idle]:not([data-expr]) .hf-head{animation:hf-breathe 4.2s cubic-bezier(.45,.05,.55,.95) infinite alternate}
+.hf[data-state=idle]:not([data-expr]) .hf-eyes{animation:hf-glance 9.4s cubic-bezier(.3,.7,.4,1) infinite}
+/* reactions (data-expr): eyes and head pose; the mouth shape comes from the component */
+.hf[data-expr] .hf-eye{animation:none}
+.hf[data-expr=smug] .hf-eye{transform:scaleY(.48) translateY(.7px)}
+.hf[data-expr=smug] .hf-head{transform:rotate(8deg)}
+.hf[data-expr=caught] .hf-eye{transform:scale(1.25)}
+.hf[data-expr=caught] .hf-head{animation:hf-shake .5s cubic-bezier(.36,.07,.19,.97) 1}
+.hf[data-expr=happy] .hf-eye{transform:scaleY(.42) translateY(-.4px)}
+.hf[data-expr=happy] .hf-head{animation:hf-hop .62s cubic-bezier(.3,.7,.4,1) 2}
+.hf[data-expr=wary] .hf-eye{transform:scaleY(.36) translateX(-1.2px)}
+.hf[data-expr=wary] .hf-head{transform:rotate(-6deg)}
+.hf[data-expr=perk] .hf-eye{transform:scale(1.12)}
+.hf[data-expr=perk] .hf-head{animation:hf-hop .5s cubic-bezier(.3,.7,.4,1) 1}
+@keyframes hf-breathe{0%{transform:scale(1)}100%{transform:scale(1.022,.985) translateY(.25px)}}
+@keyframes hf-glance{0%,78%,100%{transform:translateX(0)}82%,90%{transform:translateX(1.5px)}94%{transform:translateX(-.4px)}}
+@keyframes hf-shake{0%,100%{transform:translateX(0)}20%{transform:translateX(-1.6px) rotate(-4deg)}45%{transform:translateX(1.4px) rotate(3deg)}70%{transform:translateX(-.8px)}}
+@keyframes hf-hop{0%,100%{transform:translateY(0)}35%{transform:translateY(-2.6px) scale(1.03,.97)}60%{transform:translateY(0) scale(.98,1.02)}}
 @keyframes hf-blink{0%,93%,100%{transform:scaleY(1)}95.5%{transform:scaleY(.1)}}
 @keyframes hf-scan{0%{transform:translateX(-1.6px)}100%{transform:translateX(1.6px)}}
 @keyframes hf-talk{0%{transform:scaleY(.35) scaleX(1.1)}100%{transform:scaleY(1.15) scaleX(.9)}}

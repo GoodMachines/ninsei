@@ -3,7 +3,7 @@
 // The SDK is imported as a namespace so newer pieces (composer drafts, settings pages, the pet,
 // budgeted loops) can be feature-detected instead of failing the module on an older Desktop.
 import * as sdk from '@hermes/plugin-sdk'
-import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { jsx, jsxs } from 'react/jsx-runtime'
 
 const host = sdk.host

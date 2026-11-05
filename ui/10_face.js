@@ -15,10 +15,16 @@ const FACE_BODY = {
   bean: { d: 'M10 9.5c3.5-4 9-4 12.5-2.2c2.6 1.3 4.6.6 7.2 1.6c4.4 1.7 6.3 6.3 5.2 11.6C33.4 28.6 27 35 19 35S4.2 30 4.5 22.5C4.7 17 6.6 13.4 10 9.5z', eyes: [15, 26], ey: 19, my: 27 }
 }
 
+// A short-lived expression per agent pk ('smug', 'caught', 'happy', 'wary', 'perk'), worked out on each
+// client from room events it already has (see reactionsFor). Never sent over the wire.
+const ExprContext = createContext({})
+
 function Face(props) {
   const f = faceFor(props.face, props.pk)
   const body = FACE_BODY[f.shape] || FACE_BODY.round
   const state = stateWord(props.state)
+  const exprs = useContext(ExprContext)
+  const expr = (state !== 'absent' && state !== 'error' && exprs[props.pk]) || ''
   const size = props.size || 40
   const ref = useRef(null)
   const first = useRef(true)
@@ -32,7 +38,7 @@ function Face(props) {
       el.style.transform = x === 1 ? '' : 'scale(' + x.toFixed(4) + ')'
     } })
     return () => s.stop()
-  }, [state])
+  }, [state, expr])
 
   // a stable per-agent offset so two faces in a list never blink in unison
   const seed = parseInt(String(props.pk || '7f').slice(-3), 16) || 0
@@ -50,8 +56,13 @@ function Face(props) {
         jsx('rect', { className: 'hf-eye', x: rx - 1.9, y: ey - 2.6, width: 3.8, height: 5.2, rx: 1.9, style: { animationDelay: delay } })
       ] })
 
+  const my = body.my
   const mouth = state === 'speaking'
     ? jsx('ellipse', { className: 'hf-mouth hf-talk', cx: 20, cy: body.my, rx: 2.6, ry: 1.8 })
+    : expr === 'smug' ? jsx('path', { className: 'hf-line', d: `M16.8 ${my}q3 1.6 6.6 -1.2` })
+    : expr === 'caught' ? jsx('ellipse', { className: 'hf-mouth', cx: 20, cy: my, rx: 1.6, ry: 1.9 })
+    : expr === 'happy' ? jsx('path', { className: 'hf-mouth', d: `M15.8 ${my - 1.2}q4.2 5 8.4 0z` })
+    : expr === 'wary' ? jsx('path', { className: 'hf-line', d: `M17.2 ${my + 0.4}h5.6` })
     : state === 'error'
       ? jsx('path', { className: 'hf-line', d: `M16.5 ${body.my + 1}q3.5 -2.4 7 0` })
       : state === 'waiting' || state === 'absent'
@@ -59,7 +70,7 @@ function Face(props) {
         : jsx('path', { className: 'hf-line', d: `M16.5 ${body.my - 0.6}q3.5 2.6 7 0` })
 
   return jsx('span', {
-    ref, className: cx('hf', props.className), 'data-state': state, 'data-size': size <= 20 ? 's' : 'm',
+    ref, className: cx('hf', props.className), 'data-state': state, 'data-expr': expr || undefined, 'data-size': size <= 20 ? 's' : 'm',
     style: { width: size, height: size, '--hue': f.hue },
     role: 'img', 'aria-label': (props.name ? props.name + ', ' : '') + STATE_LABEL[state],
     children: jsxs('svg', { viewBox: '0 0 40 40', width: size, height: size, 'aria-hidden': true, children: [

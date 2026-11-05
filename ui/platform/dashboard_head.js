@@ -10,6 +10,8 @@
   const { useState, useEffect, useRef, useMemo, useCallback } = SDK.hooks
   const useLayoutEffect = React.useLayoutEffect
   const Fragment = React.Fragment
+  const createContext = React.createContext
+  const useContext = React.useContext
 
   // the react/jsx-runtime calling convention, on top of createElement
   function jsx(type, props, key) {
