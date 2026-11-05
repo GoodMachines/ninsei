@@ -127,6 +127,13 @@ class Store:
             self._db.commit()
         return removed
 
+    def drop_events(self, ids: list[str]) -> None:
+        if not ids:
+            return
+        with self._lock:
+            self._db.executemany("DELETE FROM events WHERE id=?", [(i,) for i in ids])
+            self._db.commit()
+
     def room_events(self, room: str, limit: int = 400) -> list[dict]:
         with self._lock:
             rows = self._db.execute(

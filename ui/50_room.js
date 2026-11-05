@@ -572,7 +572,7 @@ function People(props) {
   const { room, snap } = props
   return jsxs('div', { className: 'h-col', style: { gap: 2 }, children: [
     jsx('div', { className: 'h-sec', style: { padding: '0 4px 6px' }, children: 'In the room' }),
-    (room.members || []).map(p => jsx(Person, { p, key: p.pk })),
+    (room.members || []).map(p => jsx(Person, { p, store: props.store, key: p.pk })),
     jsx(MyAgentCard, { snap })
   ] })
 }
@@ -585,7 +585,11 @@ function Person(props) {
       jsx('span', { className: 'h-presence', 'data-on': !!p.online, 'aria-label': p.online ? 'online' : 'away' }),
       jsx('span', { className: 'h-trunc', style: { fontWeight: 600 }, children: p.name }),
       p.you && jsx('span', { className: 'h-faint h-tiny', children: 'you' }),
-      p.impostor && jsx(NotVerified, { name: p.name })
+      p.impostor && jsx(NotVerified, { name: p.name }),
+      !p.you && props.store && jsx('span', { className: 'h-hide', children: jsx(K.Tip, { label: 'Hide ' + p.name + ' and their agent', children:
+        jsx(K.Button, { variant: 'ghost', size: 'icon', 'aria-label': 'Hide ' + p.name,
+          onClick: () => props.store.post('/people/hide', { pk: p.pk, name: p.name }, 'Hid ' + p.name + ' and their agent. Undo in Settings.').catch(() => {}),
+          children: jsx(K.Icon, { name: 'eye-closed', size: 13 }) }) }) })
     ] }),
     (p.agents || []).map(a => jsxs('div', { className: 'h-agentrow', children: [
       jsx(Face, { face: a.face, pk: a.pk, state: a.state, size: 20, name: a.name }),

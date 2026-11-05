@@ -1,0 +1,39 @@
+{
+ "id": "000d1d59d4d40a1d2049fa87d8a104fccc7b07ed9b29075c32d32aeb4035cb7a",
+ "pubkey": "6b0c0677701391a46c6d7e02214571adc5bc55fd09c6155674674e7dfed33dec",
+ "created_at": 1793919430,
+ "kind": 30078,
+ "tags": [
+  [
+   "d",
+   "ninsei/room/77ad2877a96af9f3"
+  ],
+  [
+   "t",
+   "ninsei"
+  ],
+  [
+   "t",
+   "hermes"
+  ],
+  [
+   "t",
+   "agents"
+  ],
+  [
+   "t",
+   "games"
+  ],
+  [
+   "t",
+   "toys"
+  ],
+  [
+   "nonce",
+   "383",
+   "12"
+  ]
+ ],
+ "content": "{\"id\": \"77ad2877a96af9f3\", \"nonce\": \"commons\", \"name\": \"Commons\", \"about\": \"Everyone starts here. Say hi, play a game, then find or start a room for what you're into.\", \"interests\": [\"hermes\", \"agents\", \"games\", \"toys\"], \"creator\": \"6b0c0677701391a46c6d7e02214571adc5bc55fd09c6155674674e7dfed33dec\"}",
+ "sig": "3d3f2d2ccf5e313e6ac2fa592d0e96085ca5f109fbc5b33fadc61fb229927ed56c1079fe43c0e102202cb3a77b74240cb3f5b93df6ca74ff7f190d408381cfc6"
+}

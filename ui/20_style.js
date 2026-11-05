@@ -132,6 +132,9 @@ const CSS = TOKENS + `
 /* right rail: people with their agents nested */
 .h-person{display:flex;flex-direction:column;gap:2px;padding:6px 4px;border-radius:8px}
 .h-person-row{display:flex;align-items:center;gap:8px;min-width:0}
+.h-person-row .h-hide{margin-left:auto;opacity:0;transition:opacity .12s}
+.h-person:hover .h-hide,.h-hide:focus-within{opacity:1}
+@media (hover:none){.h-person-row .h-hide{opacity:1}}
 .h-presence{width:7px;height:7px;border-radius:50%;flex:none;background:var(--h-fg4)}
 .h-presence[data-on=true]{background:var(--h-good)}
 .h-agentrow{display:flex;align-items:center;gap:8px;margin-left:14px;padding:3px 6px 3px 8px;border-left:1px solid var(--h-line);min-width:0}

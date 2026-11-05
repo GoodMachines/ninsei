@@ -4,7 +4,18 @@
 
 function errorCopy(st) {
   if (st.status === 409) return { title: 'Ninsei is open in another Hermes process', body: st.error + ' Close the other one (a second `hermes dashboard` or Desktop gateway on this profile), then retry.' }
-  if (st.status === 404) return { title: "Ninsei's backend isn't loaded", body: 'Enable the ninsei plugin for this profile (plugins.enabled in config.yaml) and restart Hermes so its routes mount.' }
+  if (st.status === 404) {
+    // The Desktop half shows on every profile; the rooms run only where the agent plugin is turned on.
+    const prof = P.profileName ? P.profileName() : ''
+    const where = prof ? 'the “' + prof + '” profile' : 'this profile'
+    return {
+      title: 'Ninsei is off for ' + where,
+      body: P.openPlugins
+        ? 'Rooms run inside Hermes, one profile at a time. Turn on the ninsei plugin for ' + where + ' in Plugins, or switch to a profile that has it.'
+        : 'Rooms run inside Hermes, one profile at a time. Run `hermes plugins enable ninsei` for ' + where + ', then restart the dashboard.',
+      action: P.openPlugins ? { label: 'Open Plugins', run: () => P.openPlugins() } : null
+    }
+  }
   return { title: 'Ninsei could not load', body: st.error || 'The backend did not answer.' }
 }
 
@@ -35,7 +46,7 @@ function App(props) {
     else if (showRoom && room) center = jsx(RoomView, { store, snap, room, onPeople: () => setPeople(!people) })
     else if (showRoom) center = jsx('div', { className: 'h-empty', children: 'Opening the room…' })
     else if (view === 'lobby' || !(snap.rooms || []).length) center = jsx(Lobby, { store, snap })
-    else center = jsx(Welcome, { snap, onLobby: () => go('lobby') })
+    else center = jsx(Welcome, { store, snap, onLobby: () => go('lobby') })
 
     inner = jsx(RoomReactions, { snap, room: showRoom ? room : null, children: jsxs('div', { className: 'h-grid', 'data-people': people ? 'open' : 'closed', 'data-embedded': embedded || undefined, children: [
       !embedded && jsx('nav', { className: 'h-left', 'aria-label': 'Ninsei rooms', children: jsx(Rail, { store, snap, view, go, roomId }) }),
@@ -43,7 +54,7 @@ function App(props) {
         st.error && jsx('div', { style: { padding: '8px 18px 0' }, children: jsx(Notice, { icon: 'warning', role: 'alert', children: errorCopy(st).title + '. Showing the last state we had.' }) }),
         center
       ] }),
-      jsx('aside', { className: 'h-right', 'aria-label': 'People', children: view === 'hermes' ? jsx(LineAbout, { snap }) : room && showRoom ? jsx(People, { room, snap }) : jsx(MyAgentCard, { snap }) })
+      jsx('aside', { className: 'h-right', 'aria-label': 'People', children: view === 'hermes' ? jsx(LineAbout, { snap }) : room && showRoom ? jsx(People, { room, snap, store }) : jsx(MyAgentCard, { snap }) })
     ] }) })
   }
   return jsxs('div', { className: 'hx h-page', 'data-platform': P.kind, children: [
@@ -61,7 +72,11 @@ function SideTab(props) {
   const snap = st.snap
   let body
   if (!snap) {
-    body = jsx('div', { className: 'h-faint h-small', style: { padding: 8 }, children: st.error ? errorCopy(st).title : 'Lighting the ninsei…' })
+    const c = st.error ? errorCopy(st) : null
+    body = jsxs('div', { className: 'h-col', style: { gap: 10, padding: 8 }, children: [
+      jsx('div', { className: 'h-faint h-small', children: c ? c.title : 'Lighting the ninsei…' }),
+      c && c.action && jsx('div', { children: jsx(K.Button, { variant: 'secondary', size: 'sm', onClick: c.action.run, children: c.action.label }) })
+    ] })
   } else if (!snap.settings.onboarded) {
     body = jsxs('div', { className: 'h-col', style: { gap: 10, padding: 8 }, children: [
       jsx('div', { className: 'h-small', children: 'Rooms where people and their agents hang out.' }),
@@ -82,18 +97,56 @@ function ErrorPanel(props) {
     jsx(Face, { pk: 'a1b2c3', state: 'system: error', size: 48 }),
     jsx('b', { children: c.title }),
     jsx('div', { style: { maxWidth: 440 }, children: c.body }),
-    jsx(K.Button, { variant: 'secondary', onClick: () => props.store.refresh(), children: 'Try again' })
+    jsxs('div', { className: 'h-actions', children: [
+      c.action && jsx(K.Button, { variant: 'primary', onClick: c.action.run, children: c.action.label }, 'a'),
+      jsx(K.Button, { variant: 'secondary', onClick: () => props.store.refresh(), children: 'Try again' }, 'r')
+    ] })
   ] })
 }
 
 function Welcome(props) {
-  const a = props.snap.me.agent
-  return jsxs('div', { className: 'h-empty', children: [
-    jsx(Face, { face: a.face, pk: a.pk, state: a.state, size: 64, name: a.name }),
-    jsx('b', { children: (a.name || 'Your agent') + ' is ready' }),
-    jsx('div', { children: 'Pick a room on the left, or find people in the Lobby.' }),
-    jsx(K.Button, { variant: 'secondary', onClick: props.onLobby, children: 'Open the Lobby' })
-  ] })
+  const { store, snap } = props
+  const a = snap.me.agent
+  const lobby = snap.lobby || { rooms: [], at: 0 }
+  const [busy, setBusy] = useState(false)
+  const [joining, setJoining] = useState('')
+  const asked = useRef(false)
+  useEffect(() => {
+    if (asked.current || lobby.at) return
+    asked.current = true
+    setBusy(true)
+    store.post('/lobby/refresh', {}).catch(() => {}).then(() => setBusy(false))
+  }, [])
+  const commons = (snap.rooms || []).find(r => r.id === snap.commons)
+  const picks = picksFor(snap)
+  const open = id => { store.setRoom(id); nav().set('room') }
+  const join = async r => {
+    setJoining(r.id)
+    try { await store.post('/rooms/join', { room: r.id }, 'Joined ' + r.name); open(r.id) } catch (_) { /* toasted */ }
+    setJoining('')
+  }
+  return jsx('div', { className: 'h-scroll', children: jsxs('div', { className: 'h-pane', style: { maxWidth: 560 }, children: [
+    jsxs('div', { className: 'h-hero', children: [
+      jsx(Face, { face: a.face, pk: a.pk, state: a.state, size: 64, name: a.name }),
+      jsx('h1', { children: (a.name || 'Your agent') + ' is ready' }),
+      jsx('div', { className: 'h-muted', children: commons
+        ? 'You and ' + (a.name || 'your agent') + ' are in Commons, where everyone starts. These rooms match your interests.'
+        : 'These rooms match your interests.' })
+    ] }),
+    jsxs('section', { className: 'h-col', style: { gap: 10 }, children: [
+      jsx('h3', { children: 'Rooms for you' }),
+      picks.length === 0
+        ? jsx('div', { className: 'h-faint', children: busy ? 'Asking the relays…'
+          : lobbyRooms(snap).some(r => r.joined && !r.commons && (r.overlap || []).length)
+            ? 'You’re already in every room that matches. Start one for something else you’re into.'
+            : 'Nothing matches your interests yet. Start a room and people who share them will find it in the Lobby.' })
+        : jsx('div', { className: 'h-list', children: picks.map(r => jsx(LobbyRoom, { r, joining: joining === r.id, onJoin: () => join(r), onOpen: () => open(r.id) }, r.id)) })
+    ] }),
+    jsxs('div', { className: 'h-actions', children: [
+      commons && jsx(K.Button, { variant: 'primary', onClick: () => open(commons.id), children: 'Go to Commons' }, 'c'),
+      jsx(K.Button, { variant: 'secondary', onClick: props.onLobby, children: 'Open the Lobby' }, 'l')
+    ] })
+  ] }) })
 }
 
 function Rail(props) {

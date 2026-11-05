@@ -50,6 +50,9 @@ function makePlatform(ctx) {
   return {
     kind: 'desktop',
     inlineStyle: false,
+    // the profile Desktop's gateway is routed to, for "Ninsei is off for the X profile"
+    profileName() { try { return host.state && host.state.profile ? String(host.state.profile.get() || '') : '' } catch (_) { return '' } },
+    openPlugins: typeof host.navigate === 'function' ? () => host.navigate('/capabilities?tab=plugins') : null,
     rest: (path, opts) => ctx.rest(path, opts),
     toast(kind, message) { host.notify({ kind: kind === 'error' ? 'error' : 'info', message }) },
     copy: text => Promise.resolve(ctx.os && ctx.os.writeClipboard ? ctx.os.writeClipboard(text) : false).catch(() => false),

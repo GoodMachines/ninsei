@@ -58,6 +58,8 @@ FAKES_PER_HOST = 5         # tall-tale fakes my agent writes for one host per FA
 FAKES_WINDOW = 600
 MAX_PRESENCE = 64          # agents tracked per room
 MAX_CLAIM_TRIGGERS = 500
+LIVE_ROOM = 1800           # seconds: a room with a message this recent counts as active now
+MAX_HIDDEN = 500           # people one owner can hide
 MAX_CLAIMS_PER_TRIGGER = 16
 MAX_PLAYED = 256
 MAX_NAMES = 2000           # name holders remembered per room; when full, unknown names count as unverified
@@ -81,6 +83,23 @@ FACE_SHAPES = ["round", "soft", "tall", "wide", "drop", "bean"]
 def room_id_for(creator_pk: str, nonce: str) -> str:
     """A room id commits to its creator, so only the creator's metadata is accepted for it."""
     return hashlib.sha256(f"ninsei-room:{creator_pk}:{nonce}".encode()).hexdigest()[:16]
+
+
+def _load_commons(path: Optional[Path] = None) -> tuple[Optional[dict], str]:
+    """Commons: the public room every new install joins, so nobody starts in an empty app. Its metadata
+    ships signed by Good Machines' key (scripts/sign_commons.py); anything that fails the checks is ignored."""
+    try:
+        ev = json.loads((path or Path(__file__).with_name("commons.json")).read_text(encoding="utf-8"))
+        c = json.loads(ev["content"])
+        room = (nostr.tag_values(ev, "d") or [""])[0].split("/")[-1]
+        if nostr.check_event(ev) and ev["kind"] == KIND_META and room == room_id_for(ev["pubkey"], str(c.get("nonce", ""))):
+            return ev, room
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        pass
+    return None, ""
+
+
+COMMONS_EVENT, COMMONS_ID = _load_commons()
 
 
 class EngineLocked(RuntimeError):
@@ -236,6 +255,7 @@ class Engine:
         self._build_live: Optional[dict] = None             # the owner's build in progress, from ninsei_hooks
         self._build_mark: Optional[tuple] = None            # the (state, note) we set for it, to undo only ours
         self._cc: dict[str, dict] = {}
+        self._hidden: set[str] = set(self.store.get("hidden") or {})  # person pks the owner chose to hide
 
     # ============================================================================================
     # lifecycle and thread bridge
@@ -425,6 +445,7 @@ class Engine:
         self._spawn(self._presence_loop())
         self._spawn(self.plan.probe())
         self._spawn(self._watch_builds())
+        self._spawn(self.ensure_commons())
 
     async def _resubscribe(self) -> None:
         rooms = list(self.store.rooms())
@@ -520,6 +541,8 @@ class Engine:
         room = rooms[0]
         if room not in self.events:
             return
+        if self._hidden and self._is_hidden(ev):
+            return  # someone the owner hid: never shown, never answered, never in a transcript
         created = ev.get("created_at")
         if not isinstance(created, int):
             return
@@ -1779,6 +1802,66 @@ class Engine:
         await self._resubscribe()
         self._bump()
 
+    async def ensure_commons(self) -> None:
+        """Join Commons once, right after setup. Leaving it is respected: it is never re-joined."""
+        if not COMMONS_ID or not self.settings()["onboarded"]:
+            return
+        if COMMONS_ID in self.store.rooms():
+            self._spawn(self.pool.publish(COMMONS_EVENT))  # keep the room's details on the relays
+            return
+        if self.store.get("commons_offered"):
+            return
+        self.store.set("commons_offered", True)
+        self._spawn(self.pool.publish(COMMONS_EVENT))
+        await self.join_room(COMMONS_ID, self._room_meta_from(COMMONS_EVENT, COMMONS_ID))
+
+    # --- hiding people (local only: nothing is published, nobody is told) -------------------------
+    def _is_hidden(self, ev: dict) -> bool:
+        return ev.get("pubkey") in self._hidden or (self.owner_of(ev) or "") in self._hidden
+
+    def hidden_people(self) -> list[dict]:
+        h = self.store.get("hidden") or {}
+        return sorted(({"pk": pk, **v} for pk, v in h.items()), key=lambda x: -x.get("at", 0))
+
+    async def hide_person(self, pk: str, name: str = "") -> dict:
+        pk = str(pk or "").lower()
+        if not re.fullmatch(r"[0-9a-f]{64}", pk):
+            raise ValueError("that isn't a person's key")
+        if pk == self._identity()["person_pk"]:
+            raise ValueError("you can't hide yourself")
+        h = self.store.get("hidden") or {}
+        if pk not in h and len(h) >= MAX_HIDDEN:
+            raise ValueError(f"you can hide up to {MAX_HIDDEN} people")
+        h[pk] = {"name": _name_ok(name, _short(pk)), "at": _now()}
+        self.store.set("hidden", h)
+        self._hidden.add(pk)
+        # forget what they (and their agents) already said, here and on disk
+        for room, evs in self.events.items():
+            gone = [eid for eid, e in evs.items() if self._is_hidden(e)]
+            for eid in gone:
+                evs.pop(eid, None)
+            self.store.drop_events(gone)
+        for pres in self.presence.values():
+            for apk in [a for a, p in pres.items() if p.get("owner") == pk]:
+                pres.pop(apk, None)
+        self.lobby = {**self.lobby, "people": [p for p in self.lobby.get("people", []) if p["pk"] != pk]}
+        self._bump()
+        return {"hidden": len(h)}
+
+    async def unhide_person(self, pk: str) -> dict:
+        h = self.store.get("hidden") or {}
+        h.pop(str(pk or "").lower(), None)
+        self.store.set("hidden", h)
+        self._hidden = set(h)
+        rooms = list(self.store.rooms())
+        if rooms:  # bring back what they said while hidden, from the relays
+            hist = await self.pool.query([{"kinds": [KIND_ROOM], "#h": rooms, "since": _now() - HISTORY_DAYS * 86400,
+                                           "limit": 500}], timeout=4)
+            for ev in hist:
+                await self._on_event(ev, "history")
+        self._bump()
+        return {"hidden": len(h)}
+
     def card_content(self) -> dict:
         s = self.settings()
         return {"name": s["display_name"], "line": s["line"], "interests": s["interests"],
@@ -1803,10 +1886,12 @@ class Engine:
     async def refresh_lobby(self) -> dict:
         evs = await self.pool.query([{"kinds": [KIND_META], "#t": [APP_TAG], "since": _now() - 21 * 86400,
                                       "limit": 300}], timeout=5)
+        if COMMONS_EVENT and not any(e["id"] == COMMONS_EVENT["id"] for e in evs):
+            evs.append(COMMONS_EVENT)  # always listed, even when the relays dropped its old details
         mine = set(self.settings()["interests"])
         me = self._identity()["person_pk"]
-        rooms, people, seen_people = [], [], set()
-        for ev in reversed(evs):
+        rooms, people, seen_people, seen_rooms = [], [], set(), set()
+        for ev in sorted(evs, key=lambda e: -e["created_at"]):  # newest copy of each room first
             if nostr.leading_zero_bits(ev["id"]) < 12:
                 continue  # spam guard: cards and rooms carry a little proof of work
             d = (nostr.tag_values(ev, "d") or [""])[0]
@@ -1815,12 +1900,14 @@ class Engine:
             overlap = sorted(mine & set(tags))
             if d.startswith("ninsei/room/"):
                 rid = d.split("/")[-1]
-                if room_id_for(ev["pubkey"], str(c.get("nonce", ""))) != rid:
+                if rid in seen_rooms or room_id_for(ev["pubkey"], str(c.get("nonce", ""))) != rid:
                     continue
+                seen_rooms.add(rid)
                 rooms.append({"id": rid, "name": _name_ok(c.get("name"), "Room"), "about": str(c.get("about", ""))[:200],
                               "interests": tags[:8], "overlap": overlap, "at": ev["created_at"],
-                              "joined": rid in self.store.rooms()})
-            elif d == "ninsei/card" and ev["pubkey"] != me and ev["pubkey"] not in seen_people:
+                              "joined": rid in self.store.rooms(), "commons": rid == COMMONS_ID})
+            elif d == "ninsei/card" and ev["pubkey"] != me and ev["pubkey"] not in seen_people \
+                    and ev["pubkey"] not in self._hidden:
                 seen_people.add(ev["pubkey"])
                 at = nostr.first_tag(ev, "agent")
                 agent = c.get("agent") if isinstance(c.get("agent"), dict) else {}
@@ -1829,10 +1916,50 @@ class Engine:
                                "line": str(c.get("line", ""))[:200], "interests": tags[:8], "overlap": overlap,
                                "agent": _name_ok(agent.get("name"), "") if bound else "", "face": agent.get("face"),
                                "at": ev["created_at"]})
+        # newest rooms first when there are more than one query can count
+        rooms.sort(key=lambda r: (-len(r["overlap"]), -r["at"]))
+        rooms = rooms[:60]
+        act = await self._room_activity([r["id"] for r in rooms])
+        now = _now()
+        for r in rooms:
+            a = act.get(r["id"], {})
+            r.update(msgs=a.get("msgs", 0), talkers=a.get("talkers", 0), last=a.get("last", 0),
+                     online=self._online_in(r["id"]))
+            r["live"] = r["last"] >= now - LIVE_ROOM or r["online"] > 0
+        # active rooms first: a room where people are talking beats a perfect match nobody is in
+        room_key = lambda r: (not r["live"], -len(r["overlap"]), -r["talkers"], -r["msgs"], -r["at"])
         key = lambda x: (-len(x["overlap"]), -x["at"])
-        self.lobby = {"rooms": sorted(rooms, key=key)[:40], "people": sorted(people, key=key)[:40], "at": _now()}
+        self.lobby = {"rooms": sorted(rooms, key=room_key)[:40], "people": sorted(people, key=key)[:40], "at": now}
         self._bump()
         return self.lobby
+
+    async def _room_activity(self, rooms: list[str]) -> dict[str, dict]:
+        """Messages and distinct people per room over the last day, from the relays. Hidden people don't count."""
+        if not rooms:
+            return {}
+        evs = await self.pool.query([{"kinds": [KIND_ROOM], "#h": rooms, "since": _now() - 86400, "limit": 1000}],
+                                    timeout=4)
+        out: dict[str, dict] = {}
+        talkers: dict[str, set] = {}
+        horizon = _now() + FUTURE_SLACK
+        for ev in evs:
+            room = (nostr.tag_values(ev, "h") or [""])[0]
+            if room not in rooms or self._is_hidden(ev) or not isinstance(ev.get("created_at"), int) \
+                    or ev["created_at"] > horizon:
+                continue
+            if self._content(ev).get("t") != "msg":
+                continue
+            a = out.setdefault(room, {"msgs": 0, "talkers": 0, "last": 0})
+            a["msgs"] += 1
+            a["last"] = max(a["last"], ev["created_at"])
+            talkers.setdefault(room, set()).add(self.owner_of(ev) or ev["pubkey"])
+        for room, who in talkers.items():
+            out[room]["talkers"] = len(who)
+        return out
+
+    def _online_in(self, room: str) -> int:
+        now = time.time()
+        return sum(1 for p in self.presence.get(room, {}).values() if now - p["at"] < ABSENT_AFTER)
 
     # ============================================================================================
     # presence
@@ -2090,6 +2217,8 @@ class Engine:
             "line": self.store.line_summary(),
             "offers": pending,
             "lobby": self.lobby,
+            "hidden": self.hidden_people(),
+            "commons": COMMONS_ID,
         }
         if room and room in self.events:
             snap["room"] = {"id": room, **self.room_meta(room), "members": self.members(room),

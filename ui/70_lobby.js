@@ -3,6 +3,23 @@
 // people sorted by how many interests you share.
 // ---------------------------------------------------------------------------------------------
 
+// The engine already sends rooms in this order; sorting again keeps an older engine's list sensible.
+function byActivity(a, b) {
+  return (b.live ? 1 : 0) - (a.live ? 1 : 0) || (b.overlap || []).length - (a.overlap || []).length ||
+    (b.talkers || 0) - (a.talkers || 0) || (b.msgs || 0) - (a.msgs || 0) || (b.at || 0) - (a.at || 0)
+}
+
+// After setup and whenever no room is open: the rooms most worth joining for you right now.
+function picksFor(snap) {
+  return lobbyRooms(snap).filter(r => !r.joined && (r.live || (r.overlap || []).length)).slice(0, 3)
+}
+
+// The Lobby's rooms with "joined" taken from the rooms you're in now, not from when the Lobby was last fetched.
+function lobbyRooms(snap) {
+  const mine = new Set((snap.rooms || []).map(r => r.id))
+  return ((snap.lobby || {}).rooms || []).map(r => Object.assign({}, r, { joined: mine.has(r.id) })).sort(byActivity)
+}
+
 function Lobby(props) {
   const { store, snap } = props
   const lobby = snap.lobby || { rooms: [], people: [], at: 0 }
@@ -25,14 +42,14 @@ function Lobby(props) {
   }
 
   const byOverlap = (a, b) => (b.overlap || []).length - (a.overlap || []).length || (b.at || 0) - (a.at || 0)
-  const rooms = (lobby.rooms || []).slice().sort(byOverlap)
+  const rooms = lobbyRooms(snap)
   const people = (lobby.people || []).slice().sort(byOverlap)
 
   return jsx('div', { className: 'h-scroll', children: jsxs('div', { className: 'h-pane', children: [
     jsxs('div', { className: 'h-row', children: [
       jsxs('div', { className: 'h-grow', children: [
         jsx('h1', { children: 'Lobby' }),
-        jsx('div', { className: 'h-muted', children: 'Public rooms and people on Ninsei, closest interests first.' })
+        jsx('div', { className: 'h-muted', children: 'Public rooms and people on Ninsei. Rooms where people are talking come first, then the closest matches.' })
       ] }),
       jsx(K.Button, { variant: 'secondary', size: 'sm', disabled: busy, onClick: refresh, children: jsxs(Fragment, { children: [
         jsx(K.Icon, { name: 'refresh', size: 13, spinning: busy }), busy ? 'Looking…' : 'Refresh'] }) })
@@ -66,10 +83,25 @@ function LobbyRoom(props) {
         n > 0 && jsx('span', { className: 'h-faint h-tiny', children: n + ' shared interest' + (n === 1 ? '' : 's') })
       ] }),
       r.about && jsx('div', { className: 'h-muted h-small', children: r.about }),
+      jsx(RoomActivity, { r }),
       jsx(Chips, { items: r.interests, hits: r.overlap })
     ] }),
     r.joined ? jsx(K.Button, { variant: 'ghost', size: 'sm', onClick: props.onOpen, children: 'Open' })
       : jsx(K.Button, { variant: 'secondary', size: 'sm', disabled: props.joining, onClick: props.onJoin, children: props.joining ? 'Joining…' : 'Join' })
+  ] })
+}
+
+// How alive a room is, from the last day of messages: rooms where people are talking sort first.
+function RoomActivity(props) {
+  const r = props.r
+  let text
+  if (r.live) text = 'active now' + (r.talkers > 1 ? ' · ' + r.talkers + ' people talking today' : '')
+  else if (r.msgs > 0) text = r.msgs + ' message' + (r.msgs === 1 ? '' : 's') + ' today, last ' + fmtAgo(r.last)
+  else text = 'quiet today'
+  return jsxs('div', { className: 'h-row h-small', style: { gap: 6 }, children: [
+    jsx('span', { className: 'h-presence', 'data-on': !!r.live, 'aria-hidden': true }),
+    jsx('span', { className: r.live ? '' : 'h-faint', children: text }),
+    r.commons && jsx('span', { className: 'h-faint', children: '· everyone starts here' })
   ] })
 }
 

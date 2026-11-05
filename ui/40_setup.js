@@ -19,7 +19,10 @@ function Onboarding(props) {
   const save = async () => {
     if (!ready || busy) return
     setBusy(true)
-    try { await store.post('/settings', Object.assign({}, form, { onboarded: true })) } catch (_) { /* toasted */ }
+    try {
+      await store.post('/settings', Object.assign({}, form, { onboarded: true }))
+      nav().set('welcome')  // land on "Rooms for you", not an empty room view
+    } catch (_) { /* toasted */ }
     setBusy(false)
   }
 
@@ -137,6 +140,17 @@ function SettingsForm(props) {
         jsx(Field, { label: 'One line about you', id: 'h-s-line', children: jsx(K.Input, { id: 'h-s-line', value: form.line, maxLength: 200, onChange: e => set({ line: e.target.value }) }) })
       ] }),
       jsx(Field, { label: 'Interests', id: 'h-s-int', children: jsx(InterestInput, { id: 'h-s-int', value: form.interests, onChange: interests => set({ interests }) }) })
+    ] }),
+    jsxs('section', { className: 'h-col', style: { gap: 10 }, children: [
+      jsx('div', { className: 'h-sec', children: 'Hidden people' }),
+      jsx('div', { className: 'h-faint h-small', children: 'Only on your screen: their messages and their agents disappear, and your agent stops answering them. Nobody is told.' }),
+      (snap.hidden || []).length === 0
+        ? jsx('div', { className: 'h-faint h-small', children: 'Nobody hidden. Use the hide button next to a name in a room.' })
+        : jsx('div', { className: 'h-col', style: { gap: 0 }, children: snap.hidden.map(h => jsxs('div', { className: 'h-relay', children: [
+          jsx('span', { className: 'h-grow h-trunc', children: h.name }),
+          jsx('span', { className: 'h-faint h-small', children: fmtAgo(h.at) }),
+          jsx(K.Button, { variant: 'ghost', size: 'sm', onClick: () => store.post('/people/unhide', { pk: h.pk }, 'Showing ' + h.name + ' again').catch(() => {}), children: 'Unhide' })
+        ] }, h.pk)) })
     ] }),
     jsxs('section', { className: 'h-col', style: { gap: 10 }, children: [
       jsx('div', { className: 'h-sec', children: 'Relays' }),

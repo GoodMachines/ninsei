@@ -102,7 +102,8 @@ async def test_the_room_sees_the_agent_building(world):  # noqa: F811
                       (maya, "I keep thinking about pixel sorting")):
         await run(who, who.post, room, text)
         await asyncio.sleep(0.1)
-    assert await wait_for(lambda: any(m["t"] == "offer" for m in read(sam, sam.messages, room)), 10)
+    # the offer has to reach both views (whichever agent made it, the other side hears it a beat later)
+    assert await wait_for(lambda: all(any(m["t"] == "offer" for m in read(e, e.messages, room)) for e in (maya, sam)), 10)
     offer = [m for m in read(maya, maya.messages, room) if m["t"] == "offer"][0]
     owner = maya if offer["owner"] == maya._identity()["person_pk"] else sam
     other = sam if owner is maya else maya

@@ -139,8 +139,27 @@ async def settings(body: Settings):
     out = await _sync(eng.save_settings, patch)
     if "relays" in patch and eng.relays() != relays_before:
         await _run(eng.reconnect)
+    if patch.get("onboarded"):
+        await _run(eng.ensure_commons)  # nobody starts alone: join Commons right after setup
     eng._bump()
     return out
+
+
+class PersonRef(BaseModel):
+    pk: str
+    name: str = ""
+
+
+@router.post("/people/hide")
+async def people_hide(body: PersonRef):
+    eng = await _engine()
+    return await _run(eng.hide_person, body.pk, body.name)
+
+
+@router.post("/people/unhide")
+async def people_unhide(body: PersonRef):
+    eng = await _engine()
+    return await _run(eng.unhide_person, body.pk)
 
 
 @router.post("/rooms")
