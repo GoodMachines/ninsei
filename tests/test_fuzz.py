@@ -60,3 +60,46 @@ async def test_views_survive_malformed_events(world):
     assert snap["room"]["id"] == room
     json.dumps(snap)  # and stay JSON-serialisable for the API
     await asyncio.sleep(0)
+
+
+async def test_hostile_game_and_claim_floods(world):
+    """A bound stranger agent floods tales_start, tales_round and claims as live events. The victim's
+    agent writes at most a handful of fakes, its caches stay bounded, its views stay fast, and its
+    owner's open question still gets an answer."""
+    import hashlib
+    import time as _t
+    from xenia_engine.engine import FAKES_PER_HOST, MAX_CLAIM_TRIGGERS, MAX_CLAIMS_PER_TRIGGER, MAX_PLAYED
+    from test_engine import wait_for
+    _, engines, llms = world
+    room = await setup_room(engines)
+    maya = engines["Maya"]
+    rng = random.Random(99)
+    person, agent = hashlib.sha256(b"flood-person").hexdigest(), hashlib.sha256(b"flood-agent").hexdigest()
+    apk = nostr.pubkey(agent)
+    tags = [["h", room], ["owner", nostr.pubkey(person), nostr.owner_binding(person, apk)]]
+    gids = [f"g{i}" for i in range(40)]
+    for gid in gids:
+        c = {"t": "tales_start", "gid": gid, "rounds": rng.choice([3, 50, "x", None]), "seq": 1, "name": "Flood"}
+        await run(maya, maya._on_event, nostr.build_event(agent, KIND_ROOM, json.dumps(c), tags), "relay")
+    for i in range(120):
+        c = {"t": "tales_round", "gid": rng.choice(gids), "n": rng.choice([1, 2, 3, 0, 99, "1", None]),
+             "q": "?", "secs": 45, "ends_at": _t.time() + 45, "seq": 2 + i, "name": "Flood"}
+        await run(maya, maya._on_event, nostr.build_event(agent, KIND_ROOM, json.dumps(c), tags), "relay")
+    for i in range(MAX_CLAIM_TRIGGERS + 100):
+        c = {"t": "claim", "trigger": f"t{i % (MAX_CLAIM_TRIGGERS + 50)}", "prio": 100}
+        ev = {"id": hashlib.sha256(f"c{i}".encode()).hexdigest(), "pubkey": apk, "created_at": int(_t.time()),
+              "kind": KIND_LIVE, "tags": tags, "content": json.dumps(c), "sig": ""}
+        await run(maya, maya._on_event, ev, "relay")
+    await asyncio.sleep(1.0)
+    assert llms["Maya"].calls.count("xenia.tales.fake") <= FAKES_PER_HOST
+    assert len(maya.claims) <= MAX_CLAIM_TRIGGERS
+    assert all(len(v) <= MAX_CLAIMS_PER_TRIGGER for v in maya.claims.values())
+    assert len(maya._played) <= MAX_PLAYED
+    t0 = _t.time()
+    snap = await asyncio.wrap_future(maya.call(_wrap(maya.snapshot, room)))
+    assert _t.time() - t0 < 1.0
+    json.dumps(snap)
+    # the flood's game counts as live (agents then answer only when addressed), and Maya still can talk
+    # to her own agent through it
+    await run(maya, maya.post, room, "Ada, know a good palette tool?")
+    assert await wait_for(lambda: llms["Maya"].calls.count("xenia.reply") == 1, 5)

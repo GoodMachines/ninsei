@@ -16,10 +16,14 @@ FAKE_SECONDS = 45
 VOTE_SECONDS = 30
 REVEAL_SECONDS = 9
 ROUNDS = 3
+MAX_ROUNDS = 5       # a host can't ask for more; players only fake for rounds 1..MAX_ROUNDS
+MAX_OPTIONS = 12     # clients show at most 12 options (A-L), so the host never sends more
 
 
-def norm(text: str) -> str:
-    text = re.sub(r"[^a-z0-9 ]", "", (text or "").lower())
+def norm(text) -> str:
+    """Comparable form of an answer. Fakes come from strangers, so any type is accepted."""
+    text = text if isinstance(text, str) else ("" if text is None else str(text))
+    text = re.sub(r"[^a-z0-9 ]", "", text.lower())
     text = re.sub(r"\b(the|a|an)\b", " ", text)
     return re.sub(r"\s+", " ", text).strip()
 
@@ -31,18 +35,22 @@ def build_options(truth: str, fakes: dict[str, str], seed: str) -> tuple[list[di
 
     A fake that matches the truth (after normalising) is dropped and its author is "lucky": they
     guessed the real answer while trying to bluff. Duplicate fakes collapse into one option, credited
-    to everyone who wrote it."""
+    to everyone who wrote it. At most MAX_OPTIONS options go out and the truth is always one of them;
+    fakes past the cap (in arrival order) are left out and score nothing."""
     truth_n = norm(truth)
     by_text: dict[str, list[str]] = {}
     shown: dict[str, str] = {}
     lucky = []
     for author, text in fakes.items():
+        text = text if isinstance(text, str) else ("" if text is None else str(text))
         n = norm(text)
         if not n:
             continue
         if n == truth_n:
             lucky.append(author)
             continue
+        if n not in by_text and len(by_text) >= MAX_OPTIONS - 1:
+            continue  # no room left beside the truth
         by_text.setdefault(n, []).append(author)
         shown.setdefault(n, text.strip()[:80])
     rng = random.Random(seed)
