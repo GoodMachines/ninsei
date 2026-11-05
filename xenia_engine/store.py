@@ -25,6 +25,9 @@ CREATE TABLE IF NOT EXISTS ledger (
 CREATE INDEX IF NOT EXISTS ledger_day ON ledger(day);
 CREATE TABLE IF NOT EXISTS outbox (
   id TEXT PRIMARY KEY, room TEXT NOT NULL, text TEXT NOT NULL, origin TEXT, status TEXT NOT NULL, created_at REAL NOT NULL);
+-- Signed events no relay has acknowledged yet (the relay pool resends them on reconnect).
+CREATE TABLE IF NOT EXISTS event_outbox (
+  id TEXT PRIMARY KEY, json TEXT NOT NULL, status TEXT NOT NULL, created_at REAL NOT NULL, updated_at REAL NOT NULL);
 -- The private line: the owner and their own full Hermes, never published. Only the local UI writes
 -- 'owner' rows; only the gateway adapter writes 'hermes' rows. Nothing that reads relays touches it.
 CREATE TABLE IF NOT EXISTS private_line (
@@ -39,6 +42,12 @@ LINE_OWNER_MAX = 8000
 LINE_REPLY_MAX = 64000
 LINE_GATEWAY_FRESH = 45   # seconds: the adapter heartbeats every 10
 LINE_TYPING_FRESH = 12    # seconds: the gateway re-sends typing every few seconds while it works
+
+
+# room history kept on disk: age window (matches the engine's HISTORY_DAYS) and a per-room hard cap
+EVENT_HISTORY_DAYS = 3
+EVENT_ROOM_CAP = 1500
+EVENT_PRUNE_EVERY = 100   # adds between cheap prune passes
 
 
 def today() -> str:
@@ -64,6 +73,10 @@ class Store:
                 os.chmod(f, 0o600)
         self._db.executescript(SCHEMA)
         self._db.commit()
+        self.event_history_days = EVENT_HISTORY_DAYS
+        self.event_room_cap = EVENT_ROOM_CAP
+        self._adds = 0
+        self.prune_events()
 
     def close(self) -> None:
         with self._lock:
@@ -88,7 +101,26 @@ class Store:
                 "INSERT OR IGNORE INTO events(id,room,kind,pubkey,created_at,json) VALUES(?,?,?,?,?,?)",
                 (ev["id"], room, ev["kind"], ev["pubkey"], ev["created_at"], json.dumps(ev)))
             self._db.commit()
-            return cur.rowcount > 0
+            added = cur.rowcount > 0
+            if added:
+                self._adds += 1
+                if self._adds % EVENT_PRUNE_EVERY == 0:
+                    self.prune_events(room)
+            return added
+
+    def prune_events(self, room: Optional[str] = None) -> int:
+        """Drop events older than the history window and keep only the newest `event_room_cap` per room."""
+        cutoff = int(time.time() - self.event_history_days * 86400)
+        removed = 0
+        with self._lock:
+            removed += self._db.execute("DELETE FROM events WHERE created_at < ?", (cutoff,)).rowcount
+            rooms = [room] if room else [r[0] for r in self._db.execute("SELECT DISTINCT room FROM events")]
+            for r in rooms:
+                removed += self._db.execute(
+                    "DELETE FROM events WHERE room=? AND id NOT IN (SELECT id FROM events WHERE room=? "
+                    "ORDER BY created_at DESC, id DESC LIMIT ?)", (r, r, self.event_room_cap)).rowcount
+            self._db.commit()
+        return removed
 
     def room_events(self, room: str, limit: int = 400) -> list[dict]:
         with self._lock:
@@ -108,6 +140,7 @@ class Store:
     def forget_room(self, room_id: str) -> None:
         with self._lock:
             self._db.execute("DELETE FROM rooms WHERE id=?", (room_id,))
+            self._db.execute("DELETE FROM events WHERE room=?", (room_id,))
             self._db.commit()
 
     def rooms(self) -> dict[str, dict]:
@@ -171,6 +204,39 @@ class Store:
             self._db.execute("UPDATE outbox SET status=? WHERE id=?", (status, oid))
             self._db.commit()
         return {"id": row[0], "room": row[1], "text": row[2]}
+
+    # --- event outbox (signed events waiting for a relay to acknowledge them) ---------------------
+    def event_outbox_put(self, ev: dict, status: str = "pending") -> None:
+        now = time.time()
+        with self._lock:
+            self._db.execute(
+                "INSERT INTO event_outbox(id,json,status,created_at,updated_at) VALUES(?,?,?,?,?) "
+                "ON CONFLICT(id) DO UPDATE SET status=excluded.status, updated_at=excluded.updated_at",
+                (ev["id"], json.dumps(ev), status, now, now))
+            self._db.commit()
+
+    def event_outbox_set(self, eid: str, status: str) -> None:
+        with self._lock:
+            self._db.execute("UPDATE event_outbox SET status=?, updated_at=? WHERE id=?", (status, time.time(), eid))
+            self._db.commit()
+
+    def event_outbox_status(self, eid: str) -> Optional[str]:
+        with self._lock:
+            row = self._db.execute("SELECT status FROM event_outbox WHERE id=?", (eid,)).fetchone()
+        return row[0] if row else None
+
+    def event_outbox_pending(self) -> list[tuple[dict, float]]:
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT json, created_at FROM event_outbox WHERE status='pending' ORDER BY created_at").fetchall()
+        return [(json.loads(r[0]), r[1]) for r in rows]
+
+    def event_outbox_prune(self, older_than: float) -> None:
+        """Forget finished (sent/failed) rows older than `older_than` seconds."""
+        with self._lock:
+            self._db.execute("DELETE FROM event_outbox WHERE status!='pending' AND updated_at < ?",
+                             (time.time() - older_than,))
+            self._db.commit()
 
     # --- private line (you and your own Hermes; see xenia_platform.py) ---------------------------
     _LINE_COLS = ("id", "role", "text", "status", "reply_to", "created_at", "updated_at")

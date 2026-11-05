@@ -22,12 +22,16 @@ get got gonna wanna kind sort thing things stuff make made one two lot bit right
 hey hi hello actually probably pretty still even much way want need see look said say says time day today now well
 something anything everything someone anyone everyone people agent agents room xenia""".split())
 
+MAX_WORDS = 300  # per message; a 64 KB message must not mint thousands of terms
+MAX_TERMS = 5000  # tracked terms per room
+MAX_HITS = 100  # hits kept per term
+
 WORD = re.compile(r"[a-z][a-z0-9'+-]{2,}")
 
 
 def terms(text: str) -> set[str]:
     words = [w.strip("'-") for w in WORD.findall((text or "").lower())]
-    words = [w for w in words if w and w not in STOP and not w.startswith("@")]
+    words = [w for w in words if w and w not in STOP and not w.startswith("@")][:MAX_WORDS]
     out = set(words)
     out |= {f"{a} {b}" for a, b in zip(words, words[1:])}
     return out
@@ -36,7 +40,7 @@ def terms(text: str) -> set[str]:
 class TopicTracker:
     def __init__(self, window_s: int = 900, min_mentions: int = 3, min_people: int = 2):
         self.window_s, self.min_mentions, self.min_people = window_s, min_mentions, min_people
-        self._hits: dict[str, deque] = defaultdict(deque)  # term -> deque[(ts, author)]
+        self._hits: dict[str, deque] = defaultdict(lambda: deque(maxlen=MAX_HITS))  # term -> deque[(ts, author)]
         self.offered: set[str] = set()
 
     def add(self, author: str, text: str, ts: float | None = None) -> list[str]:
@@ -52,6 +56,8 @@ class TopicTracker:
                 continue
             if len(dq) >= self.min_mentions and len({a for _, a in dq}) >= self.min_people:
                 hot.append(t)
+        if len(self._hits) > MAX_TERMS:
+            self._trim(ts)
         hot.sort(key=lambda t: (-(" " in t), -len(self._hits[t]), t))
         # a phrase subsumes its words
         chosen = []
@@ -59,6 +65,14 @@ class TopicTracker:
             if not any(t in c.split(" ") for c in chosen):
                 chosen.append(t)
         return chosen
+
+    def _trim(self, ts: float) -> None:
+        """Drop expired terms; if still over the cap, drop the terms seen longest ago."""
+        for t in [t for t, dq in self._hits.items() if not dq or dq[-1][0] < ts - self.window_s]:
+            del self._hits[t]
+        if len(self._hits) > MAX_TERMS:
+            keep = sorted(self._hits, key=lambda t: self._hits[t][-1][0], reverse=True)[: MAX_TERMS * 3 // 4]
+            self._hits = defaultdict(lambda: deque(maxlen=MAX_HITS), {t: self._hits[t] for t in keep})
 
     def mark_offered(self, term: str) -> None:
         self.offered.add(term)
