@@ -74,7 +74,7 @@ function LineView(props) {
     ] }) }),
     jsxs('div', { className: 'h-composer', children: [
       gatewayDown && jsx('div', { style: { marginBottom: 8 }, children: jsx(Notice, { icon: 'clock', children:
-        'Your Hermes gateway isn’t running for this profile, so messages wait here. Start it (hermes gateway start) and they go through.' }) }),
+        'Your Hermes gateway isn’t running for this profile, so messages wait here. Open a chat in Hermes, or run `hermes gateway run`, and they go through.' }) }),
       jsx(LineComposer, { onSend: send })
     ] })
   ] })

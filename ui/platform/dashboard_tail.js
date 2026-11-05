@@ -125,7 +125,7 @@
     Toggle,
     Tip: props => jsx('span', { title: typeof props.label === 'string' ? props.label : undefined, style: { display: 'inline-flex' }, children: props.children }),
     // a shared toy: opaque origin (no allow-same-origin), scripts only
-    Toy: props => jsx('iframe', { title: props.title, sandbox: 'allow-scripts', srcDoc: props.html, referrerPolicy: 'no-referrer' })
+    Toy: props => jsx('iframe', { title: props.title, sandbox: 'allow-scripts', srcDoc: withCsp(props.html), referrerPolicy: 'no-referrer' })
   }
 
   const DASH_CSS = `

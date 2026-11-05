@@ -235,7 +235,7 @@ function ReviewDialog(props) {
     if (!opened) props.onPrompt(out.prompt)
   }
   return jsx(Modal, { open: true, onClose: props.onClose, wide: true, title: 'Build “' + m.title + '”?',
-    description: 'This is the task your own Hermes will work on. Edit anything you like.',
+    description: 'This is the full task your own Hermes will work on. Your room agent drafted it from room chat, which anyone in the room can write, so read all of it. Edit anything you like.',
     footer: [
       jsx(K.Button, { variant: 'ghost', onClick: props.onClose, children: 'Cancel' }, 'c'),
       jsx(K.Button, { variant: 'primary', disabled: busy || !task.trim(), onClick: go, children: busy ? 'Opening…' : P.kind === 'desktop' ? 'Build in Hermes' : 'Accept & get prompt' }, 'b')
@@ -269,17 +269,21 @@ function ShareDialog(props) {
   const [err, setErr] = useState('')
   const [title, setTitle] = useState(m.title || '')
   const [busy, setBusy] = useState(false)
+  const [sure, setSure] = useState(false)
   useEffect(() => {
     P.rest('/offers/build?offer=' + encodeURIComponent(m.id)).then(setBuild, e => setErr(errText(e)))
   }, [m.id])
+  const found = (build && build.secrets) || []
+  const fits = !build || build.fits !== false
   const share = async () => {
+    if (found.length && !sure) { setSure(true); return }
     setBusy(true)
     try { await store.post('/offers/share', { offer: m.id, title }, 'Shared with the room'); props.onClose() } catch (_) { setBusy(false) }
   }
   return jsx(Modal, { open: true, onClose: props.onClose, wide: true, title: 'Share with ' + props.room.name,
     footer: [
       jsx(K.Button, { variant: 'ghost', onClick: props.onClose, children: 'Not yet' }, 'c'),
-      jsx(K.Button, { variant: 'primary', disabled: !build || busy, onClick: share, children: busy ? 'Sharing…' : 'Share this file' }, 's')
+      jsx(K.Button, { variant: 'primary', disabled: !build || busy || !fits, onClick: share, children: busy ? 'Sharing…' : sure ? 'Share anyway' : 'Share this file' }, 's')
     ],
     children: jsxs('div', { className: 'h-col', style: { gap: 10 }, children: [
       err ? jsx(Notice, { icon: 'warning', role: 'alert', children: err })
@@ -289,7 +293,16 @@ function ShareDialog(props) {
           jsx(Field, { label: 'Title', id: 'h-share-title', children: jsx(K.Input, { id: 'h-share-title', value: title, maxLength: 80, onChange: e => setTitle(e.target.value) }) }),
           jsx(Notice, { icon: 'globe', children: jsxs('span', { children: [
             'This exact file (', jsx('b', { children: fmtBytes(build.bytes) }), ') is published publicly to the room’s relays. Everyone in the room can run it in a sandbox. Public relays keep messages effectively forever.'
-          ] }) })
+          ] }) }),
+          !fits && jsx(Notice, { icon: 'warning', role: 'alert', children: 'Too big to send: ' + fmtBytes(build.serialized_bytes) + ' once packed for the relays, and the limit is ' + fmtBytes(build.limit) + '. Ask Hermes to make it smaller.' }),
+          found.length > 0 && jsx(Notice, { icon: 'warning', role: 'alert', children: jsxs('span', { children: [
+            jsx('b', { children: 'This file looks like it contains ' + (found.length === 1 ? 'a secret' : 'secrets') + ': ' }), found.join('; '),
+            '. Check the source before you share it. ', sure ? 'Press “Share anyway” to publish it regardless.' : 'You will be asked once more.'
+          ] }) }),
+          jsxs('details', { children: [
+            jsx('summary', { className: 'h-faint h-small', style: { cursor: 'pointer' }, children: 'Source (' + fmtBytes(build.bytes) + ')' }),
+            jsx('pre', { className: 'h-pre', style: { maxHeight: 240 }, children: build.html })
+          ] })
         ] })
     ] }) })
 }
@@ -322,7 +335,7 @@ function ShareCard(props) {
         jsx(K.Button, { variant: 'ghost', size: 'sm', onClick: () => setHtml(null), children: 'Stop' })
       ] }) : jsx(K.Button, { variant: 'secondary', size: 'sm', disabled: busy, onClick: run, children: busy ? 'Loading…' : 'Run' })
     ] }),
-    html != null ? jsx(ToyFrame, { html, title: m.title, tall }) : jsx('div', { className: 'h-faint h-small', children: 'Runs in a sandbox with no access to your Hermes, files or the network’s cookies.' })
+    html != null ? jsx(ToyFrame, { html, title: m.title, tall }) : jsx('div', { className: 'h-faint h-small', children: 'Runs in a sandbox. It can’t reach the network, your Hermes or your files.' })
   ] })
 }
 
@@ -337,11 +350,19 @@ function Draft(props) {
   const { store, d } = props
   const [text, setText] = useState(d.text)
   const ref = useEnter(true)
+  const ta = useRef(null)
+  // grow to the whole draft, so nothing is sent without being read
+  useLayoutEffect(() => {
+    const el = ta.current
+    if (!el) return
+    el.style.height = 'auto'
+    el.style.height = el.scrollHeight + 'px'
+  }, [text])
   return jsxs('div', { className: 'h-draft', ref, children: [
     jsx(K.Icon, { name: 'edit', size: 14 }),
     jsxs('div', { className: 'h-grow h-col', style: { gap: 4 }, children: [
       jsx('div', { className: 'h-faint h-tiny', children: 'Draft from ' + (d.origin || 'Hermes') + ' · not sent yet' }),
-      jsx('textarea', { className: 'h-ta', rows: 1, value: text, onChange: e => setText(e.target.value), 'aria-label': 'Draft text' })
+      jsx('textarea', { ref: ta, className: 'h-ta', rows: 1, style: { overflow: 'hidden', resize: 'none' }, value: text, onChange: e => setText(e.target.value), 'aria-label': 'Draft text' })
     ] }),
     jsxs('div', { className: 'h-col', style: { gap: 4 }, children: [
       jsx(K.Button, { variant: 'primary', size: 'sm', disabled: !text.trim(), onClick: () => store.post('/drafts/send', { id: d.id, text }), children: 'Send' }),

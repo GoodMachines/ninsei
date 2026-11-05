@@ -19,3 +19,13 @@ const TOKENS = `
 
 // Set in register(): the platform door every shared component goes through.
 let P = null
+
+// Every toy renders under this policy, added here as well as by the backend so it holds even for HTML
+// that came straight from a stranger. It goes first (after a doctype, which keeps standards mode).
+const TOY_CSP = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:"
+function withCsp(html) {
+  const src = String(html == null ? '' : html)
+  const meta = '<meta http-equiv="Content-Security-Policy" content="' + TOY_CSP + '">'
+  const m = /^\s*<!doctype[^>]*>/i.exec(src)
+  return m ? src.slice(0, m[0].length) + meta + src.slice(m[0].length) : meta + src
+}

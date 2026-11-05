@@ -24,6 +24,16 @@
     return Array.isArray(kids) ? React.createElement.apply(null, [type, p].concat(kids)) : React.createElement(type, p, kids)
   }
 
+  // Every toy renders under this policy, added here as well as by the backend so it holds even for HTML
+  // that came straight from a stranger. It goes first (after a doctype, which keeps standards mode).
+  const TOY_CSP = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:"
+  function withCsp(html) {
+    const src = String(html == null ? '' : html)
+    const meta = '<meta http-equiv="Content-Security-Policy" content="' + TOY_CSP + '">'
+    const m = /^\s*<!doctype[^>]*>/i.exec(src)
+    return m ? src.slice(0, m[0].length) + meta + src.slice(m[0].length) : meta + src
+  }
+
   // Xenia's colour tokens, mapped onto the dashboard theme's own variables
   const TOKENS = `
 .hx{--h-fg:var(--color-card-foreground);--h-fg2:var(--color-muted-foreground);
@@ -1216,7 +1226,7 @@ function ReviewDialog(props) {
     if (!opened) props.onPrompt(out.prompt)
   }
   return jsx(Modal, { open: true, onClose: props.onClose, wide: true, title: 'Build “' + m.title + '”?',
-    description: 'This is the task your own Hermes will work on. Edit anything you like.',
+    description: 'This is the full task your own Hermes will work on. Your room agent drafted it from room chat, which anyone in the room can write, so read all of it. Edit anything you like.',
     footer: [
       jsx(K.Button, { variant: 'ghost', onClick: props.onClose, children: 'Cancel' }, 'c'),
       jsx(K.Button, { variant: 'primary', disabled: busy || !task.trim(), onClick: go, children: busy ? 'Opening…' : P.kind === 'desktop' ? 'Build in Hermes' : 'Accept & get prompt' }, 'b')
@@ -1250,17 +1260,21 @@ function ShareDialog(props) {
   const [err, setErr] = useState('')
   const [title, setTitle] = useState(m.title || '')
   const [busy, setBusy] = useState(false)
+  const [sure, setSure] = useState(false)
   useEffect(() => {
     P.rest('/offers/build?offer=' + encodeURIComponent(m.id)).then(setBuild, e => setErr(errText(e)))
   }, [m.id])
+  const found = (build && build.secrets) || []
+  const fits = !build || build.fits !== false
   const share = async () => {
+    if (found.length && !sure) { setSure(true); return }
     setBusy(true)
     try { await store.post('/offers/share', { offer: m.id, title }, 'Shared with the room'); props.onClose() } catch (_) { setBusy(false) }
   }
   return jsx(Modal, { open: true, onClose: props.onClose, wide: true, title: 'Share with ' + props.room.name,
     footer: [
       jsx(K.Button, { variant: 'ghost', onClick: props.onClose, children: 'Not yet' }, 'c'),
-      jsx(K.Button, { variant: 'primary', disabled: !build || busy, onClick: share, children: busy ? 'Sharing…' : 'Share this file' }, 's')
+      jsx(K.Button, { variant: 'primary', disabled: !build || busy || !fits, onClick: share, children: busy ? 'Sharing…' : sure ? 'Share anyway' : 'Share this file' }, 's')
     ],
     children: jsxs('div', { className: 'h-col', style: { gap: 10 }, children: [
       err ? jsx(Notice, { icon: 'warning', role: 'alert', children: err })
@@ -1270,7 +1284,16 @@ function ShareDialog(props) {
           jsx(Field, { label: 'Title', id: 'h-share-title', children: jsx(K.Input, { id: 'h-share-title', value: title, maxLength: 80, onChange: e => setTitle(e.target.value) }) }),
           jsx(Notice, { icon: 'globe', children: jsxs('span', { children: [
             'This exact file (', jsx('b', { children: fmtBytes(build.bytes) }), ') is published publicly to the room’s relays. Everyone in the room can run it in a sandbox. Public relays keep messages effectively forever.'
-          ] }) })
+          ] }) }),
+          !fits && jsx(Notice, { icon: 'warning', role: 'alert', children: 'Too big to send: ' + fmtBytes(build.serialized_bytes) + ' once packed for the relays, and the limit is ' + fmtBytes(build.limit) + '. Ask Hermes to make it smaller.' }),
+          found.length > 0 && jsx(Notice, { icon: 'warning', role: 'alert', children: jsxs('span', { children: [
+            jsx('b', { children: 'This file looks like it contains ' + (found.length === 1 ? 'a secret' : 'secrets') + ': ' }), found.join('; '),
+            '. Check the source before you share it. ', sure ? 'Press “Share anyway” to publish it regardless.' : 'You will be asked once more.'
+          ] }) }),
+          jsxs('details', { children: [
+            jsx('summary', { className: 'h-faint h-small', style: { cursor: 'pointer' }, children: 'Source (' + fmtBytes(build.bytes) + ')' }),
+            jsx('pre', { className: 'h-pre', style: { maxHeight: 240 }, children: build.html })
+          ] })
         ] })
     ] }) })
 }
@@ -1303,7 +1326,7 @@ function ShareCard(props) {
         jsx(K.Button, { variant: 'ghost', size: 'sm', onClick: () => setHtml(null), children: 'Stop' })
       ] }) : jsx(K.Button, { variant: 'secondary', size: 'sm', disabled: busy, onClick: run, children: busy ? 'Loading…' : 'Run' })
     ] }),
-    html != null ? jsx(ToyFrame, { html, title: m.title, tall }) : jsx('div', { className: 'h-faint h-small', children: 'Runs in a sandbox with no access to your Hermes, files or the network’s cookies.' })
+    html != null ? jsx(ToyFrame, { html, title: m.title, tall }) : jsx('div', { className: 'h-faint h-small', children: 'Runs in a sandbox. It can’t reach the network, your Hermes or your files.' })
   ] })
 }
 
@@ -1318,11 +1341,19 @@ function Draft(props) {
   const { store, d } = props
   const [text, setText] = useState(d.text)
   const ref = useEnter(true)
+  const ta = useRef(null)
+  // grow to the whole draft, so nothing is sent without being read
+  useLayoutEffect(() => {
+    const el = ta.current
+    if (!el) return
+    el.style.height = 'auto'
+    el.style.height = el.scrollHeight + 'px'
+  }, [text])
   return jsxs('div', { className: 'h-draft', ref, children: [
     jsx(K.Icon, { name: 'edit', size: 14 }),
     jsxs('div', { className: 'h-grow h-col', style: { gap: 4 }, children: [
       jsx('div', { className: 'h-faint h-tiny', children: 'Draft from ' + (d.origin || 'Hermes') + ' · not sent yet' }),
-      jsx('textarea', { className: 'h-ta', rows: 1, value: text, onChange: e => setText(e.target.value), 'aria-label': 'Draft text' })
+      jsx('textarea', { ref: ta, className: 'h-ta', rows: 1, style: { overflow: 'hidden', resize: 'none' }, value: text, onChange: e => setText(e.target.value), 'aria-label': 'Draft text' })
     ] }),
     jsxs('div', { className: 'h-col', style: { gap: 4 }, children: [
       jsx(K.Button, { variant: 'primary', size: 'sm', disabled: !text.trim(), onClick: () => store.post('/drafts/send', { id: d.id, text }), children: 'Send' }),
@@ -1522,7 +1553,7 @@ function LineView(props) {
     ] }) }),
     jsxs('div', { className: 'h-composer', children: [
       gatewayDown && jsx('div', { style: { marginBottom: 8 }, children: jsx(Notice, { icon: 'clock', children:
-        'Your Hermes gateway isn’t running for this profile, so messages wait here. Start it (hermes gateway start) and they go through.' }) }),
+        'Your Hermes gateway isn’t running for this profile, so messages wait here. Open a chat in Hermes, or run `hermes gateway run`, and they go through.' }) }),
       jsx(LineComposer, { onSend: send })
     ] })
   ] })
@@ -1922,6 +1953,8 @@ function OfferChatCard(props) {
   const { m, room, state } = props.d
   const [busy, setBusy] = useState('')
   const [sure, setSure] = useState(false)
+  const [review, setReview] = useState(false)
+  const [prompt, setPrompt] = useState(null)
   const enter = useEnter(true)
   const cs = cardPost(props.refresh)
   const f = faceFor(m.face, m.pk)
@@ -1933,11 +1966,8 @@ function OfferChatCard(props) {
     try { await fn() } catch (_) { /* toasted */ }
     setBusy('')
   }
-  const accept = () => run('accept', async () => {
-    const out = await cs.post('/offers/answer', { offer: m.id, accept: true })
-    // the same hand-off as the Xenia page: a fresh chat with the task in its composer
-    await P.openBuild(out.prompt)
-  })
+  // Accept never hands anything over unseen: it opens the same review as the Xenia page, with the
+  // full task in an editable box. The hand-off (a fresh chat with the task in its composer) happens there.
   const decline = () => run('decline', async () => {
     await cs.post('/offers/answer', { offer: m.id, accept: false })
     tellAgent('Xenia: I passed on offer ' + m.id.slice(0, 12) + '. No action needed.')
@@ -1952,7 +1982,7 @@ function OfferChatCard(props) {
   let actions = null
   if (m.yours) {
     if (state === 'open') actions = [
-      jsx(K.Button, { variant: 'primary', size: 'sm', disabled: !!busy, onClick: accept, children: busy === 'accept' ? 'Opening…' : 'Accept' }, 'a'),
+      jsx(K.Button, { variant: 'primary', size: 'sm', disabled: !!busy, onClick: () => setReview(true), children: 'Review & build' }, 'a'),
       jsx(K.Button, { variant: 'ghost', size: 'sm', disabled: !!busy, onClick: decline, children: 'Not now' }, 'n')]
     else if (state === 'building') status = 'Your Hermes is building it. When the file is saved, you can share it here.'
     else if (state === 'ready') actions = sure ? [
@@ -1978,7 +2008,9 @@ function OfferChatCard(props) {
     ] }),
     jsx('div', { className: 'h-text', children: m.pitch }),
     status && jsx('div', { className: 'h-faint h-small', children: status }),
-    actions && jsx('div', { className: 'h-actions', children: actions })
+    actions && jsx('div', { className: 'h-actions', children: actions }),
+    review && jsx(ReviewDialog, { m, store: cs, onClose: () => { setReview(false); props.refresh() }, onPrompt: setPrompt }),
+    prompt && jsx(PromptDialog, { prompt, onClose: () => setPrompt(null) })
   ] })
 }
 
@@ -2474,7 +2506,7 @@ function StatusChip(props) {
     Toggle,
     Tip: props => jsx('span', { title: typeof props.label === 'string' ? props.label : undefined, style: { display: 'inline-flex' }, children: props.children }),
     // a shared toy: opaque origin (no allow-same-origin), scripts only
-    Toy: props => jsx('iframe', { title: props.title, sandbox: 'allow-scripts', srcDoc: props.html, referrerPolicy: 'no-referrer' })
+    Toy: props => jsx('iframe', { title: props.title, sandbox: 'allow-scripts', srcDoc: withCsp(props.html), referrerPolicy: 'no-referrer' })
   }
 
   const DASH_CSS = `
