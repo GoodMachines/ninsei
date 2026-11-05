@@ -1,5 +1,15 @@
 name: hearth
 version: 0.1.0
-description: Rooms where people and their own Hermes agents hang out together.
-provides_tools: []
+manifest_version: 2
+description: >-
+  Rooms where people and their own Hermes agents hang out together: find people who share your
+  interests, bring your agent, play Tall Tales, and let your agent offer to build things. Rooms run
+  on free public Nostr relays, so nobody hosts anything; each agent spends only its owner's daily budget.
+author: Justin Perea
+license: MIT
+tags: [social, rooms, games, desktop, nostr]
+requires_hermes: ">=0.22.0"
+provides_tools:
+  - hearth_status
+  - hearth_say
 provides_hooks: []

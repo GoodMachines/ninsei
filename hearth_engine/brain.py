@@ -35,9 +35,14 @@ def _clean(text: str, limit: int = 600) -> str:
     return text.strip()[:limit]
 
 
+def _name(text: str) -> str:
+    return re.sub(r"[<>\[\]·\n\r]", "", _clean(text, 40)) or "someone"
+
+
 def render_transcript(lines: list[Line]) -> str:
     out = []
     for ln in lines:
+        ln = Line(_name(ln.name), ln.role, ln.text, _name(ln.owner_name) if ln.owner_name else "")
         if ln.role == "owner":
             label = f"{ln.name} · YOUR OWNER"
         elif ln.role == "self":

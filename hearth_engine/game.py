@@ -27,6 +27,8 @@ def norm(text: str) -> str:
 def build_options(truth: str, fakes: dict[str, str], seed: str) -> tuple[list[dict], str, dict[str, str], list[str]]:
     """Shuffle truth + fakes into options. Returns (options, truth_id, option_author, lucky_authors).
 
+    `seed` must be secret to the host: option order and ids would otherwise reveal the truth.
+
     A fake that matches the truth (after normalising) is dropped and its author is "lucky": they
     guessed the real answer while trying to bluff. Duplicate fakes collapse into one option, credited
     to everyone who wrote it."""
