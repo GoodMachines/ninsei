@@ -388,3 +388,78 @@ async def test_peer_with_slow_clock_still_gets_answers(bare):
                       "relay")
     await settle(e, 0.4)
     assert llm.calls.count("xenia.reply") == 1
+
+
+# --- second pass: attacks on the review fixes themselves ---------------------------------------------
+
+async def test_renaming_after_the_trigger_does_not_count_as_addressed(bare):
+    e, _ = bare()
+    zed, sly = Key("zed"), Key("sly")
+    await e._on_event(zed.agent({"t": "presence", "name": "Zed"}, kind=KIND_LIVE), "relay")
+    await e._on_event(sly.agent({"t": "presence", "name": "Sly"}, kind=KIND_LIVE), "relay")
+    await asyncio.sleep(0.01)
+    trig = own_person_event(e, {"t": "msg", "text": "Zed, which palettes do you like?"})
+    await e._on_event(trig, "relay")
+    await asyncio.sleep(0.01)
+    # Sly renames itself to a word in the question after it arrived
+    await e._on_event(sly.agent({"t": "presence", "name": "palettes"}, kind=KIND_LIVE), "relay")
+    assert e._allowed_prio(ROOM, trig["id"], zed.apk, zed.ppk, 100) == 100
+    assert e._allowed_prio(ROOM, trig["id"], sly.apk, sly.ppk, 100) == 20
+
+
+async def test_one_key_cannot_fill_the_name_registry(bare, monkeypatch):
+    from xenia_engine import engine as eng_mod
+    e, _ = bare()
+    hog = Key("hog")
+    for i in range(10):
+        await e._on_event(hog.person({"t": "msg", "name": f"Name{i}", "text": f"x{i}"}), "relay")
+    assert sum(1 for v in e._names_reg(ROOM).values() if v == hog.ppk) == eng_mod.NAMES_PER_KEY
+
+
+async def test_full_registry_fails_closed(bare, monkeypatch):
+    from xenia_engine import engine as eng_mod
+    monkeypatch.setattr(eng_mod, "MAX_NAMES", 4)
+    e, _ = bare()
+    for i in range(4):
+        await e._on_event(Key(f"f{i}").person({"t": "msg", "name": f"Filler{i}", "text": "fill"}), "relay")
+    await e._on_event(Key("late").person({"t": "msg", "name": "Maya", "text": "it's me, Maya"}), "relay")
+    await e._on_event(Key("late2").person({"t": "msg", "name": "Newbie", "text": "hello"}), "relay")
+    msgs = {m["text"]: m for m in e.messages(ROOM)}
+    assert msgs["it's me, Maya"].get("impostor")      # my own name is always mine
+    assert msgs["hello"].get("impostor")              # can't be verified once the registry is full
+    assert not msgs["fill"].get("impostor")
+
+
+async def test_flood_of_later_starts_cannot_push_out_the_live_game(bare):
+    e, _ = bare(ts=1.0)
+    host = Key("host")
+    await e._on_event(host.agent({"t": "tales_start", "gid": "real", "rounds": 3, "seq": 1}), "relay")
+    await e._on_event(host.agent({"t": "tales_round", "gid": "real", "n": 1, "q": "?", "secs": 45,
+                                  "ends_at": time.time() + 45, "seq": 2}), "relay")
+    for i in range(40):
+        await e._on_event(Key(f"t{i}").agent({"t": "tales_start", "gid": f"x{i}", "rounds": 3, "seq": 1}), "relay")
+    g = e.game_view(ROOM)
+    assert g["gid"] == "real" and g["host"] == host.apk
+
+
+async def test_new_keys_cannot_beat_the_room_wide_stranger_cap(bare):
+    from xenia_engine.engine import ROOM_STRANGER_CALLS
+    e, _ = bare()
+    allowed = sum(e._stranger_call_ok(ROOM, f"reply:team{i}", STRANGER_REPLIES) for i in range(40))
+    assert allowed == ROOM_STRANGER_CALLS
+    # a refused call isn't charged to the team
+    assert e._rate.get("reply:team39") in (None, [])
+
+
+def test_flooded_fakes_cannot_crowd_out_the_players():
+    fakes = {f"spam{i}": f"spam answer {i}" for i in range(20)}       # arrive first
+    players = {"p1": "glass harmonica", "p2": "a fax machine", "a1": "the Amiga 500"}
+    fakes.update(players)
+    options, truth_id, author_of, _ = game.build_options("Mac", fakes, "secret:1", preferred=set(players))
+    assert len(options) == game.MAX_OPTIONS
+    shown = {o["text"] for o in options}
+    assert set(players.values()) <= shown and "Mac" in shown
+    # without a preference, the cut is the host's secret shuffle, not arrival order
+    a = {o["text"] for o in game.build_options("Mac", fakes, "s1")[0]}
+    b = {o["text"] for o in game.build_options("Mac", dict(reversed(list(fakes.items()))), "s1")[0]}
+    assert a == b

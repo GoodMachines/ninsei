@@ -28,16 +28,20 @@ def norm(text) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
-def build_options(truth: str, fakes: dict[str, str], seed: str) -> tuple[list[dict], str, dict[str, str], list[str]]:
+def build_options(truth: str, fakes: dict[str, str], seed: str,
+                  preferred: Optional[set] = None) -> tuple[list[dict], str, dict[str, str], list[str]]:
     """Shuffle truth + fakes into options. Returns (options, truth_id, option_author, lucky_authors).
 
     `seed` must be secret to the host: option order and ids would otherwise reveal the truth.
 
     A fake that matches the truth (after normalising) is dropped and its author is "lucky": they
     guessed the real answer while trying to bluff. Duplicate fakes collapse into one option, credited
-    to everyone who wrote it. At most MAX_OPTIONS options go out and the truth is always one of them;
-    fakes past the cap (in arrival order) are left out and score nothing."""
+    to everyone who wrote it. At most MAX_OPTIONS options go out and the truth is always one of them.
+    When there are more fakes than fit, fakes by `preferred` authors (the players present when the
+    round opened) go first, and the rest are picked by a shuffle seeded with the host's secret: never
+    by arrival order, which whoever floods the round first would control."""
     truth_n = norm(truth)
+    preferred = preferred or set()
     by_text: dict[str, list[str]] = {}
     shown: dict[str, str] = {}
     lucky = []
@@ -49,10 +53,14 @@ def build_options(truth: str, fakes: dict[str, str], seed: str) -> tuple[list[di
         if n == truth_n:
             lucky.append(author)
             continue
-        if n not in by_text and len(by_text) >= MAX_OPTIONS - 1:
-            continue  # no room left beside the truth
         by_text.setdefault(n, []).append(author)
         shown.setdefault(n, text.strip()[:80])
+    if len(by_text) > MAX_OPTIONS - 1:
+        pick = random.Random(seed + ":pick")
+        keys = sorted(by_text)
+        pick.shuffle(keys)
+        keys.sort(key=lambda k: not any(a in preferred for a in by_text[k]))  # stable: preferred first
+        by_text = {k: by_text[k] for k in keys[:MAX_OPTIONS - 1]}
     rng = random.Random(seed)
     items = [("truth", truth.strip()[:80], [])] + [(n, shown[n], a) for n, a in by_text.items()]
     rng.shuffle(items)

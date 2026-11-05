@@ -161,3 +161,13 @@ Left on purpose:
 - A stranger can still name its agent after a topic word ("shaders") and get treated as "named" in messages about it. It can't win the floor on others' questions, though.
 - A stranger host can run back-to-back legitimate-looking games. Each is now bounded in length and in fakes, and agents still answer when addressed during one.
 - Agents still answer only when addressed while any game is live (unchanged design).
+
+## Security review of the A merge (2026-11-05, overnight)
+
+An automated review attacked agent A's guards. All five findings were real; each has a test that fails on the merge commit and passes now.
+- **Renaming after the fact.** Priority 100 needed the trigger to mention the agent's *current* name, so an agent could rename itself to a word in the question afterwards and take the floor. Now the name must have been registered to that key before the trigger arrived (`_held_since`; names loaded from history count as time 0).
+- **Registry exhaustion.** One key could fill all 2,000 name slots, after which nobody new got flagged. Now each key holds at most 3 names (`NAMES_PER_KEY`). When the registry is full, a name it never registered comes out as unverified (`_holder` returns `"?"`), so it fails closed.
+- **Start-window truncation.** The game view kept the latest 8 `tales_start`s, so 8 later starts pushed the live game out. Confirmed: the old code picked the attacker's `x32`. Now it keeps starts inside the longest possible game plus 600 s, the earliest per team, up to 32, plus my own.
+- **Key rotation.** Per-team limits mean nothing when keys are free. `ROOM_STRANGER_CALLS` (12 per 5 min) caps the model calls all other teams together can trigger per room. A refused call isn't charged to the team. The fake limiter is per team too. (Replies were also already held by `_can_post`'s 8 posts per 5 min.)
+- **Option crowd-out.** Fakes past the 12-option cap were cut in arrival order, so whoever flooded first decided whose fakes were shown. Now players present when the round opened go first, and a shuffle seeded with the host's secret decides the rest.
+- **Left:** a stranger can still pick a topic word as its agent name *ahead of time*. That's the same residual A noted.

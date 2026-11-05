@@ -50,15 +50,18 @@ GAME_STALE = 60            # seconds past a phase's end with nothing from the ho
 MAX_INFLIGHT = 2           # model calls that room events can have running at once
 STRANGER_REPLIES = 4       # replies one other team can trigger from my agent per STRANGER_WINDOW
 STRANGER_WINDOW = 300
+ROOM_STRANGER_CALLS = 12   # model calls ALL other teams together can trigger per room per STRANGER_WINDOW
+                           # (keys are free, so a per-team limit alone is beaten by making new keys)
 FAKES_PER_HOST = 5         # tall-tale fakes my agent writes for one host per FAKES_WINDOW
 FAKES_WINDOW = 600
 MAX_PRESENCE = 64          # agents tracked per room
 MAX_CLAIM_TRIGGERS = 500
 MAX_CLAIMS_PER_TRIGGER = 16
 MAX_PLAYED = 256
-MAX_NAMES = 2000           # name holders remembered per room
+MAX_NAMES = 2000           # name holders remembered per room; when full, unknown names count as unverified
+NAMES_PER_KEY = 3          # names one key can hold in a room, so one stranger can't fill the registry
 MAX_ARRIVED = 5000
-MAX_STARTS = 8             # recent tales_start events considered when picking the room's game
+MAX_STARTS = 32            # tales_start events (earliest first, one per team) considered for the room's game
 # An agent whose name is a short or everyday word would "be named" in every other message, which
 # would silence every other agent (they skip messages that name someone else's agent).
 MIN_NAME_LEN = 2
@@ -208,6 +211,8 @@ class Engine:
         self._host_games: dict[str, dict] = {}             # gid -> secret host state
         self._played: dict[str, float] = {}                # "host:gid:n" my agent already faked (bounded)
         self._names: dict[str, dict[str, str]] = {}        # room -> {"p:"/"a:" + skeleton: first holder pk}
+        self._name_at: dict[tuple, float] = {}               # (room, key) -> when this machine registered it
+        self._name_count: dict[str, dict[str, int]] = {}     # room -> {pk: names held}
         self._arrived: dict[str, float] = {}               # event id -> when it reached us live (bounded)
         self._rate: dict[str, list[float]] = {}            # limiter key -> recent hit times
         self._inflight = 0                                 # model calls caused by room events, running now
@@ -579,9 +584,35 @@ class Engine:
         key = ("a:" if agent else "p:") + sk
         if key in reg or len(reg) >= MAX_NAMES:
             return
+        counts = self._name_count.get(room)
+        if counts is None:
+            counts = {}
+            for v in reg.values():
+                counts[v] = counts.get(v, 0) + 1
+            self._name_count[room] = counts
+        if counts.get(pk, 0) >= NAMES_PER_KEY:
+            return
         reg[key] = pk
+        counts[pk] = counts.get(pk, 0) + 1
+        self._name_at[(room, key)] = time.time() if save else 0.0
+        if len(self._name_at) > MAX_NAMES * 4:
+            for k in list(self._name_at)[: MAX_NAMES]:
+                self._name_at.pop(k, None)
         if save:
             self.store.set(f"names:{room}", reg)
+
+    def _held_since(self, room: str, pk: str, name: str) -> Optional[float]:
+        """When `pk` became the holder of agent name `name` in this room (0 for names loaded from
+        history), or None if it doesn't hold it."""
+        sk = skeleton(name)
+        if not sk:
+            return None
+        if pk == self._identity()["agent_pk"]:
+            return 0.0 if sk == skeleton(self.settings()["agent_name"]) else None
+        key = "a:" + sk
+        if self._names_reg(room).get(key) != pk:
+            return None
+        return self._name_at.get((room, key), 0.0)
 
     def _who(self, room: str, evs: Optional[list] = None) -> dict:
         """Everything the views need to name people and agents, built in one pass over the room.
@@ -615,7 +646,10 @@ class Engine:
             return who["ident"]["agent_pk"]
         if not agent and sk == who["me_p"]:
             return who["ident"]["person_pk"]
-        return who["reg"].get(("a:" if agent else "p:") + sk)
+        held = who["reg"].get(("a:" if agent else "p:") + sk)
+        if held is None and len(who["reg"]) >= MAX_NAMES:
+            return "?"  # registry full: a name we never registered can't be verified, so it isn't
+        return held
 
     def _owner_label(self, who: dict, pk: str) -> tuple[str, bool]:
         """(name to show for a person key, whether that key really holds the name)."""
@@ -673,6 +707,18 @@ class Engine:
                 self._rate.pop(next(iter(self._rate)))
         return True
 
+    def _stranger_call_ok(self, room: str, team_key: Optional[str], team_limit: int) -> bool:
+        """A model call triggered by someone other than my owner: within that team's own limit (if any)
+        AND the room-wide limit for all other teams together. The team is only counted if the room has room."""
+        now = time.time()
+        if team_key is not None:
+            hits = [t for t in self._rate.get(team_key, ()) if t > now - STRANGER_WINDOW]
+            if len(hits) >= team_limit:
+                return False
+        if not self._rate_ok(f"strangers:{room}", ROOM_STRANGER_CALLS, STRANGER_WINDOW):
+            return False
+        return team_key is None or self._rate_ok(team_key, team_limit, STRANGER_WINDOW)
+
     def _agent_name(self, room: str, pk: str, who: Optional[dict] = None) -> str:
         if who is not None:
             return who["agent"].get(pk, "")
@@ -704,8 +750,13 @@ class Engine:
         if claimed == 100:
             if pk in _as_list(tc.get("mentions")):
                 return 100
+            # The name must have been this agent's before the trigger reached us: an agent can't rename
+            # itself after the fact to a word in the message and so count as addressed.
             name = self._agent_name(room, pk, who)
-            if name and _nameable(name) and self._mentions(str(tc.get("text", "")), name):
+            since = self._held_since(room, pk, name) if name else None
+            arrived = self._arrived.get(trigger, tev["created_at"])
+            if since is not None and since <= arrived and _nameable(name) \
+                    and self._mentions(str(tc.get("text", "")), name):
                 return 100
             return 20
         return claimed if owner and tev["pubkey"] == owner else 20
@@ -757,8 +808,8 @@ class Engine:
             return
         # Budget-drain guards: a cap on replies any one other team can trigger, and on model calls
         # running at once. My own owner is never limited.
-        if not from_owner and not self._rate_ok(f"reply:{_team_key(ev['pubkey'], self.owner_of(ev))}",
-                                                STRANGER_REPLIES, STRANGER_WINDOW):
+        if not from_owner and not self._stranger_call_ok(room, f"reply:{_team_key(ev['pubkey'], self.owner_of(ev))}",
+                                                         STRANGER_REPLIES):
             return
         if self._inflight >= MAX_INFLIGHT:
             return
@@ -1163,7 +1214,8 @@ class Engine:
                 # fakes are strangers' content: any type can arrive, build_options takes strings only
                 fakes = {pk: str(c.get("text", ""))[:80]
                          for pk, c in self._round_events(room, gid, n, "tales_fake").items() if pk != me}
-                options, truth_id, author_of, lucky = game.build_options(q["a"], fakes, f"{g['seed']}:{n}")
+                options, truth_id, author_of, lucky = game.build_options(q["a"], fakes, f"{g['seed']}:{n}",
+                                                                         preferred=people | agents)
                 ends = time.time() + game.VOTE_SECONDS * self.ts
                 await self._host_post(g, {"t": "tales_vote_open", "gid": gid, "n": n, "options": options,
                                           "ends_at": ends, "secs": game.VOTE_SECONDS * self.ts})
@@ -1230,7 +1282,9 @@ class Engine:
         key = f"{ev['pubkey']}:{c.get('gid')}:{c.get('n')}"
         if key in self._played:
             return
-        if not self._rate_ok(f"fake:{room}:{ev['pubkey']}", FAKES_PER_HOST, FAKES_WINDOW):
+        if not self._rate_ok(f"fake:{room}:{_team_key(ev['pubkey'], self.owner_of(ev))}", FAKES_PER_HOST, FAKES_WINDOW):
+            return
+        if not self._stranger_call_ok(room, None, 0):
             return
         self._played[key] = time.time()
         while len(self._played) > MAX_PLAYED:
@@ -1341,7 +1395,24 @@ class Engine:
         if not starts:
             return None
         starts.sort(key=lambda x: x[0])
-        starts = starts[-MAX_STARTS:]
+        # Only starts recent enough to still matter (a game can't outlast its rounds, plus the 600 s the
+        # last one stays on screen), one per team (its earliest), earliest first, plus my own. Keeping the
+        # latest N instead would let a flood of later starts push the live game out of view.
+        horizon = now - (game.MAX_ROUNDS * (game.FAKE_SECONDS + game.VOTE_SECONDS + game.REVEAL_SECONDS
+                                            + GAME_STALE) * self.ts + 600)
+        mine_pk = ident["agent_pk"]
+        seen_teams, kept = set(), []
+        for item in starts:
+            t, sev, _c = item
+            team = _team_key(sev["pubkey"], self.owner_of(sev))
+            if sev["pubkey"] == mine_pk:
+                kept.append(item)
+            elif t >= horizon and team not in seen_teams and len(seen_teams) < MAX_STARTS:
+                seen_teams.add(team)
+                kept.append(item)
+        starts = kept
+        if not starts:
+            return None
         # The earliest game that is still running is the room's game: a later tales_start from someone
         # else can't take over a live game. With none live, the most recent game shows its end.
         view = None
@@ -1441,6 +1512,7 @@ class Engine:
         self.store.forget_room(room)
         self.store.set(f"names:{room}", None)
         self._names.pop(room, None)
+        self._name_count.pop(room, None)
         self.presence.pop(room, None)
         self.events.pop(room, None)
         await self._resubscribe()
