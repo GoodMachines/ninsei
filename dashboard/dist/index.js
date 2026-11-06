@@ -59,6 +59,12 @@
 // ---------------------------------------------------------------------------------------------
 
 const SHAPES = ['round', 'soft', 'tall', 'wide', 'drop', 'bean']
+// The rest of a face. Each list starts with its default and matches ninsei_engine/engine.py (a test
+// compares them). Faces come only from these options, so nobody can put an image in your room.
+const FACE_EYES = ['dot', 'round', 'sleepy', 'wide', 'visor']
+const FACE_MOUTHS = ['smile', 'flat', 'grin', 'cat', 'o']
+const FACE_ACCS = ['none', 'antenna', 'glasses', 'headphones', 'halo', 'sprout', 'horns', 'bow']
+const FACE_PATTERNS = ['none', 'blush', 'freckles', 'spots']
 const STATES = ['idle', 'working', 'speaking', 'waiting', 'error', 'absent']
 const BUDGET_PRESETS = [20000, 40000, 100000]
 const INTEREST_IDEAS = ['shaders', 'generative art', 'synths', 'pixel art', 'music', 'games', 'poetry',
@@ -81,7 +87,11 @@ function faceFor(face, pk) {
   const seed = String(pk || '0000000000')
   const hue = face && Number.isFinite(Number(face.hue)) ? Number(face.hue) : parseInt(seed.slice(0, 4), 16) % 360
   const shape = face && SHAPES.includes(face.shape) ? face.shape : SHAPES[parseInt(seed.slice(4, 6), 16) % SHAPES.length]
-  return { hue: ((hue % 360) + 360) % 360, shape }
+  const h = ((hue % 360) + 360) % 360
+  const pick = (key, opts) => face && opts.includes(face[key]) ? face[key] : opts[0]
+  const h2 = face && Number.isFinite(Number(face.hue2)) ? ((Number(face.hue2) % 360) + 360) % 360 : (h + 150) % 360
+  return { hue: h, shape, eyes: pick('eyes', FACE_EYES), mouth: pick('mouth', FACE_MOUTHS), acc: pick('acc', FACE_ACCS),
+    pattern: pick('pattern', FACE_PATTERNS), hue2: h2 }
 }
 
 function fmtTokens(n) {
@@ -433,13 +443,100 @@ function whoLabel(book, pk) {
 // change gives the whole face a small spring "pop".
 // ---------------------------------------------------------------------------------------------
 
+// eyes/ey/my: eye x's, eye line, mouth line. top: the head's top at x=20. sides: its edges at eye level.
 const FACE_BODY = {
-  round: { d: 'M20 5a16 16 0 1 1 0 32a16 16 0 1 1 0-32z', eyes: [14.5, 25.5], ey: 20, my: 27 },
-  soft: { d: 'M15 6h10c6.6 0 10 3.4 10 10v10c0 6.6-3.4 10-10 10H15C8.4 36 5 32.6 5 26V16C5 9.4 8.4 6 15 6z', eyes: [14.5, 25.5], ey: 19.5, my: 27 },
-  tall: { d: 'M20 3c7.5 0 12 7.2 12 17.5S27.5 38 20 38S8 30.8 8 20.5S12.5 3 20 3z', eyes: [15.5, 24.5], ey: 18, my: 27.5 },
-  wide: { d: 'M14 9h12c7.7 0 11 4 11 12.5S33.7 34 26 34H14C6.3 34 3 30 3 21.5S6.3 9 14 9z', eyes: [13, 27], ey: 20, my: 27 },
-  drop: { d: 'M20 4c4 6 15 12.5 15 21.5A15 15 0 0 1 5 25.5C5 16.5 16 10 20 4z', eyes: [14.5, 25.5], ey: 23, my: 30 },
-  bean: { d: 'M10 9.5c3.5-4 9-4 12.5-2.2c2.6 1.3 4.6.6 7.2 1.6c4.4 1.7 6.3 6.3 5.2 11.6C33.4 28.6 27 35 19 35S4.2 30 4.5 22.5C4.7 17 6.6 13.4 10 9.5z', eyes: [15, 26], ey: 19, my: 27 }
+  round: { d: 'M20 5a16 16 0 1 1 0 32a16 16 0 1 1 0-32z', eyes: [14.5, 25.5], ey: 20, my: 27, top: 5, sides: [4.5, 35.5] },
+  soft: { d: 'M15 6h10c6.6 0 10 3.4 10 10v10c0 6.6-3.4 10-10 10H15C8.4 36 5 32.6 5 26V16C5 9.4 8.4 6 15 6z', eyes: [14.5, 25.5], ey: 19.5, my: 27, top: 6, sides: [5, 35] },
+  tall: { d: 'M20 3c7.5 0 12 7.2 12 17.5S27.5 38 20 38S8 30.8 8 20.5S12.5 3 20 3z', eyes: [15.5, 24.5], ey: 18, my: 27.5, top: 3, sides: [8.3, 31.7] },
+  wide: { d: 'M14 9h12c7.7 0 11 4 11 12.5S33.7 34 26 34H14C6.3 34 3 30 3 21.5S6.3 9 14 9z', eyes: [13, 27], ey: 20, my: 27, top: 9, sides: [3.2, 36.8] },
+  drop: { d: 'M20 4c4 6 15 12.5 15 21.5A15 15 0 0 1 5 25.5C5 16.5 16 10 20 4z', eyes: [14.5, 25.5], ey: 23, my: 30, top: 4, sides: [5.6, 34.4] },
+  bean: { d: 'M10 9.5c3.5-4 9-4 12.5-2.2c2.6 1.3 4.6.6 7.2 1.6c4.4 1.7 6.3 6.3 5.2 11.6C33.4 28.6 27 35 19 35S4.2 30 4.5 22.5C4.7 17 6.6 13.4 10 9.5z', eyes: [15, 26], ey: 19, my: 27, top: 7, sides: [4.8, 35.3] }
+}
+
+// The chosen eyes, drawn as .hf-eye so blinking, scanning and the state squints still apply.
+function faceEyes(kind, lx, rx, ey, delay) {
+  const st = { animationDelay: delay }
+  const pair = make => [make(lx, 'l'), make(rx, 'r')]
+  if (kind === 'visor') {
+    return [jsx('rect', { className: 'hf-eye', x: lx - 3.4, y: ey - 1.9, width: rx - lx + 6.8, height: 3.8, rx: 1.9, style: st }, 'v')]
+  }
+  if (kind === 'round') return pair((x, k) => jsx('circle', { className: 'hf-eye', cx: x, cy: ey, r: 2.5, style: st }, k))
+  if (kind === 'sleepy') return pair((x, k) => jsx('rect', { className: 'hf-eye', x: x - 2.3, y: ey - 0.4, width: 4.6, height: 2.2, rx: 1.1, style: st }, k))
+  if (kind === 'wide') {
+    return pair((x, k) => jsxs('g', { children: [
+      jsx('ellipse', { className: 'hf-eye', cx: x, cy: ey, rx: 2.5, ry: 3.3, style: st }),
+      jsx('circle', { className: 'hf-glint', cx: x + 0.9, cy: ey - 1.2, r: 0.8 })
+    ] }, k))
+  }
+  return pair((x, k) => jsx('rect', { className: 'hf-eye', x: x - 1.9, y: ey - 2.6, width: 3.8, height: 5.2, rx: 1.9, style: st }, k))
+}
+
+// The resting mouth (speaking, reactions, waiting and errors draw their own).
+function faceMouth(kind, my) {
+  if (kind === 'flat') return jsx('path', { className: 'hf-line', d: `M17.5 ${my}h5` })
+  if (kind === 'grin') return jsx('path', { className: 'hf-mouth', d: `M15.8 ${my - 1.2}q4.2 5 8.4 0z` })
+  if (kind === 'cat') return jsx('path', { className: 'hf-line', d: `M16.4 ${my - 0.8}q1.8 2.2 3.6 0q1.8 2.2 3.6 0` })
+  if (kind === 'o') return jsx('ellipse', { className: 'hf-mouth', cx: 20, cy: my, rx: 1.5, ry: 1.7 })
+  return jsx('path', { className: 'hf-line', d: `M16.5 ${my - 0.6}q3.5 2.6 7 0` })
+}
+
+// Cheek marks in the second colour, kept well inside every body shape.
+function facePattern(kind, b) {
+  const [lx, rx] = b.eyes
+  const cy = (b.ey + b.my) / 2 + 0.6
+  if (kind === 'blush') {
+    return [jsx('ellipse', { className: 'hf-acc hf-blush', cx: lx - 1.6, cy, rx: 2.4, ry: 1.4 }, 'l'),
+      jsx('ellipse', { className: 'hf-acc hf-blush', cx: rx + 1.6, cy, rx: 2.4, ry: 1.4 }, 'r')]
+  }
+  if (kind === 'freckles') {
+    const dots = []
+    for (const [x, s] of [[lx, -1], [rx, 1]]) {
+      for (const [dx, dy] of [[-1.6, 0], [0.4, -0.9], [0.9, 1]]) dots.push(jsx('circle', { className: 'hf-acc', cx: x + s * dx, cy: cy + dy, r: 0.55 }, x + ':' + dx))
+    }
+    return dots
+  }
+  if (kind === 'spots') {
+    return [jsx('circle', { className: 'hf-acc hf-spot', cx: lx - 2.6, cy: b.ey - 5.4, r: 1.9 }, 'a'),
+      jsx('circle', { className: 'hf-acc hf-spot', cx: rx + 2.2, cy: b.ey - 4.2, r: 1.3 }, 'b'),
+      jsx('circle', { className: 'hf-acc hf-spot', cx: rx + 0.6, cy: b.my + 3.2, r: 1.1 }, 'c')]
+  }
+  return null
+}
+
+// Something worn, in the second colour. Drawn after the body so it sits on top.
+function faceAcc(kind, b) {
+  const [lx, rx] = b.eyes
+  const [sl, sr] = b.sides
+  const t = b.top
+  const ey = b.ey
+  if (kind === 'antenna') {
+    return [jsx('path', { className: 'hf-acc-line', d: `M20 ${t + 0.6}V${t - 4.4}` }, 's'), jsx('circle', { className: 'hf-acc', cx: 20, cy: t - 5.6, r: 1.9 }, 'b')]
+  }
+  if (kind === 'glasses') {
+    return [jsx('circle', { className: 'hf-acc-line', cx: lx, cy: ey, r: 3.7 }, 'l'), jsx('circle', { className: 'hf-acc-line', cx: rx, cy: ey, r: 3.7 }, 'r'),
+      jsx('path', { className: 'hf-acc-line', d: `M${lx + 3.7} ${ey}q${(rx - lx) / 2 - 3.7} -1.4 ${rx - lx - 7.4} 0` }, 'b')]
+  }
+  if (kind === 'headphones') {
+    return [jsx('path', { className: 'hf-acc-line hf-thick', d: `M${sl + 0.6} ${ey}C${sl} ${t - 6} ${sr} ${t - 6} ${sr - 0.6} ${ey}` }, 'band'),
+      jsx('rect', { className: 'hf-acc', x: sl - 2.2, y: ey - 3.4, width: 4.4, height: 6.8, rx: 1.8 }, 'l'),
+      jsx('rect', { className: 'hf-acc', x: sr - 2.2, y: ey - 3.4, width: 4.4, height: 6.8, rx: 1.8 }, 'r')]
+  }
+  if (kind === 'halo') return jsx('ellipse', { className: 'hf-acc-line hf-thick', cx: 20, cy: t - 3.6, rx: 7.5, ry: 2.1 })
+  if (kind === 'sprout') {
+    return [jsx('path', { className: 'hf-acc-line', d: `M20 ${t + 0.8}q-.4 -2.6 0 -4.6` }, 's'),
+      jsx('path', { className: 'hf-acc', d: `M20 ${t - 3.6}q-3 -3.6 -6.4 -1.2q3 3 6.4 1.2z` }, 'l'),
+      jsx('path', { className: 'hf-acc', d: `M20 ${t - 3.8}q2.4 -3 5.2 -1q-2.4 2.6 -5.2 1z` }, 'r')]
+  }
+  if (kind === 'horns') {
+    const y = t + 2.6
+    return [jsx('path', { className: 'hf-acc', d: `M13 ${y + 0.8}l-1.6 -6.2l5 3.6z` }, 'l'), jsx('path', { className: 'hf-acc', d: `M27 ${y + 0.8}l1.6 -6.2l-5 3.6z` }, 'r')]
+  }
+  if (kind === 'bow') {
+    const x = 27.5, y = t + 3.4
+    return [jsx('path', { className: 'hf-acc', d: `M${x} ${y}l-4.6 -2.8v5.6z` }, 'l'), jsx('path', { className: 'hf-acc', d: `M${x} ${y}l4.6 -2.8v5.6z` }, 'r'),
+      jsx('circle', { className: 'hf-acc hf-knot', cx: x, cy: y, r: 1.3 }, 'k')]
+  }
+  return null
 }
 
 // A short-lived expression per agent pk ('smug', 'caught', 'happy', 'wary', 'perk'), worked out on each
@@ -478,10 +575,7 @@ function Face(props) {
         jsx('path', { d: `M${lx - 2} ${ey - 2}l4 4m0-4l-4 4` }),
         jsx('path', { d: `M${rx - 2} ${ey - 2}l4 4m0-4l-4 4` })
       ] })
-    : jsxs('g', { className: 'hf-eyes', style: { animationDelay: delay }, children: [
-        jsx('rect', { className: 'hf-eye', x: lx - 1.9, y: ey - 2.6, width: 3.8, height: 5.2, rx: 1.9, style: { animationDelay: delay } }),
-        jsx('rect', { className: 'hf-eye', x: rx - 1.9, y: ey - 2.6, width: 3.8, height: 5.2, rx: 1.9, style: { animationDelay: delay } })
-      ] })
+    : jsx('g', { className: 'hf-eyes', style: { animationDelay: delay }, children: faceEyes(f.eyes, lx, rx, ey, delay) })
 
   const my = body.my
   const mouth = state === 'speaking'
@@ -494,18 +588,20 @@ function Face(props) {
       ? jsx('path', { className: 'hf-line', d: `M16.5 ${body.my + 1}q3.5 -2.4 7 0` })
       : state === 'waiting' || state === 'absent'
         ? jsx('path', { className: 'hf-line', d: `M17.5 ${body.my}h5` })
-        : jsx('path', { className: 'hf-line', d: `M16.5 ${body.my - 0.6}q3.5 2.6 7 0` })
+        : faceMouth(f.mouth, my)
 
   return jsx('span', {
     ref, className: cx('hf', props.className), 'data-state': state, 'data-expr': expr || undefined, 'data-size': size <= 20 ? 's' : 'm',
-    style: { width: size, height: size, '--hue': f.hue },
+    style: { width: size, height: size, '--hue': f.hue, '--hue2': f.hue2 },
     role: 'img', 'aria-label': (props.name ? props.name + ', ' : '') + STATE_LABEL[state],
     children: jsxs('svg', { viewBox: '0 0 40 40', width: size, height: size, 'aria-hidden': true, children: [
       jsxs('g', { className: 'hf-head', children: [
         jsx('path', { className: 'hf-body', d: body.d }),
         jsx('path', { className: 'hf-shine', d: body.d }),
+        facePattern(f.pattern, body),
         eyes,
-        mouth
+        mouth,
+        faceAcc(f.acc, body)
       ] }),
       state === 'waiting' && jsxs('g', { className: 'hf-clock', children: [
         jsx('circle', { cx: 33, cy: 7, r: 5.2 }),
@@ -799,6 +895,57 @@ const CSS = TOKENS + `
 @keyframes hf-talk{0%{transform:scaleY(.35) scaleX(1.1)}100%{transform:scaleY(1.15) scaleX(.9)}}
 @keyframes hf-tick{to{transform:rotate(360deg)}}
 @media (prefers-reduced-motion: reduce){.hf *{animation:none!important;transition:none!important}}
+.hf-acc{fill:color-mix(in oklch,oklch(from var(--h-fg) l 0.17 var(--hue2)) 80%,var(--h-bg))}
+.hf-acc-line{fill:none;stroke:color-mix(in oklch,oklch(from var(--h-fg) l 0.17 var(--hue2)) 80%,var(--h-bg));stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round}
+.hf-thick{stroke-width:2.1}
+.hf-blush{opacity:.75}
+.hf-glint{fill:color-mix(in oklch,oklch(from var(--h-fg) l 0.15 var(--hue)) 64%,var(--h-bg))}
+.hf-still *{animation:none!important}
+.h-facepick{align-items:flex-start;gap:16px}
+.h-facepart{display:flex;flex-direction:column;gap:5px}
+.h-facepart .h-shape{padding:4px;border-radius:10px}
+.h-caps{text-transform:uppercase;letter-spacing:.08em;font-weight:600}
+.hx .h-plain{background:none;border:0;padding:0;margin:0;color:inherit;cursor:pointer;text-align:inherit;border-radius:8px;display:inline-flex;align-items:center;min-width:0}
+.hx .h-plain:focus-visible{outline:2px solid var(--h-accent);outline-offset:2px}
+.hx .h-plain.h-trunc{display:block}
+.hx .h-plain:hover .h-namelink,.hx .h-plain:hover>b{text-decoration:underline;text-decoration-color:var(--h-fg3);text-underline-offset:3px}
+.h-idcard{--c1:oklch(0.6 0.19 var(--hue));--c2:oklch(0.4 0.2 var(--hue));--c3:oklch(0.2 0.12 var(--hue));position:relative;width:100%;aspect-ratio:1.6;border-radius:22px;overflow:hidden;color:#fff;isolation:isolate;container-type:inline-size;
+  background:radial-gradient(115% 105% at 74% 40%,var(--c1) 0%,var(--c2) 46%,var(--c3) 100%);
+  box-shadow:0 22px 48px -22px oklch(0.3 0.2 var(--hue) / .8),inset 0 0 0 1px oklch(1 0 0 / .08)}
+.h-idcard-dots{position:absolute;inset:0;z-index:0;background-image:radial-gradient(circle,oklch(1 0 0 / .34) 0.85px,transparent 1.25px);background-size:5px 5px;
+  -webkit-mask-image:radial-gradient(56% 74% at 72% 52%,#000 0%,transparent 72%);mask-image:radial-gradient(56% 74% at 72% 52%,#000 0%,transparent 72%)}
+.h-idcard-frame{position:absolute;inset:9px;z-index:3;border-radius:15px;padding:1.5px;pointer-events:none;opacity:.9;
+  background:conic-gradient(from 210deg,oklch(0.96 0.07 200),oklch(0.93 0.1 320),oklch(0.98 0.05 95),oklch(0.92 0.11 160),oklch(0.96 0.07 200));
+  -webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);-webkit-mask-composite:xor;mask-composite:exclude}
+.h-idcard-hero{position:absolute;z-index:1;right:7%;top:41%;transform:translateY(-50%);width:36%;aspect-ratio:1;display:grid;place-items:center;filter:drop-shadow(0 0 20px oklch(0.85 0.14 var(--hue) / .55))}
+.h-idcard-hero .hf{width:100%!important;height:100%!important}
+.h-idcard-hero .hf svg{width:100%;height:100%}
+.h-idcard .hf-body{fill:oklch(0.94 0.045 var(--hue))}
+.h-idcard .hf-shine{stroke:oklch(1 0 0 / .55)}
+.h-idcard .hf-eye,.h-idcard .hf-mouth{fill:oklch(0.27 0.12 var(--hue))}
+.h-idcard .hf-line,.h-idcard .hf-xeyes path{stroke:oklch(0.27 0.12 var(--hue))}
+.h-idcard .hf-glint{fill:oklch(0.94 0.045 var(--hue))}
+.h-idcard .hf-acc{fill:oklch(0.8 0.15 var(--hue2))}
+.h-idcard .hf-acc-line{stroke:oklch(0.84 0.13 var(--hue2))}
+.h-idcard-initial{font-size:clamp(60px,30cqw,120px);font-weight:200;line-height:1;color:oklch(0.95 0.04 var(--hue));text-shadow:0 0 28px oklch(0.85 0.14 var(--hue) / .7)}
+.h-idcard-top{position:absolute;z-index:4;left:8%;top:13%;right:46%;display:flex;flex-direction:column;align-items:flex-start;gap:9px}
+.h-idcard-name{font-weight:300;font-size:clamp(16px,6.6cqw,26px);line-height:1.08;letter-spacing:.12em;text-transform:uppercase;font-stretch:condensed;overflow-wrap:anywhere;text-shadow:0 1px 14px oklch(0.2 0.12 var(--hue) / .55)}
+.h-idcard-tag{font-size:clamp(8.5px,2.7cqw,10.5px);font-weight:500;letter-spacing:.16em;text-transform:uppercase;padding:2px 7px 1px;color:oklch(0.32 0.17 var(--hue));background:oklch(0.98 0.02 var(--hue));box-shadow:inset 0 0 0 1.5px oklch(0.4 0.17 var(--hue)),0 0 0 1.5px oklch(0.98 0.02 var(--hue))}
+.h-idcard-foot{position:absolute;z-index:4;left:8%;right:8%;bottom:12%;display:flex;justify-content:space-between;align-items:flex-end;gap:14px}
+.h-idcard-field{display:flex;flex-direction:column;gap:3px;min-width:0;max-width:60%}
+.h-idcard-field+.h-idcard-field{text-align:right;align-items:flex-end;max-width:45%}
+.h-idcard-label{font-size:clamp(8px,2.5cqw,10px);letter-spacing:.2em;text-transform:uppercase;opacity:.74}
+.h-idcard-value{font-size:clamp(11px,4.4cqw,17px);letter-spacing:.06em;text-transform:uppercase;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%;text-shadow:0 1px 10px oklch(0.2 0.12 var(--hue) / .5)}
+.h-idcard-value[data-warn=true]{color:oklch(0.9 0.12 70)}
+.h-profile-scrim{position:fixed;inset:0;z-index:1000;display:grid;place-items:center;padding:16px;background:color-mix(in oklch,var(--h-bg) 58%,transparent);-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px)}
+.h-profile{width:min(400px,100%);max-height:calc(100vh - 32px);overflow:auto;display:flex;flex-direction:column;gap:14px;padding:12px 12px 16px;border-radius:30px;background:var(--h-card);border:1px solid var(--h-line);box-shadow:0 30px 80px -30px var(--h-shadow);transform-origin:50% 60%}
+.h-profile-body{display:flex;flex-direction:column;gap:10px;padding:0 8px}
+.h-profile-head{display:flex;justify-content:flex-end;margin-bottom:-6px}
+.h-profile-vibe{font-size:14px;line-height:1.45;color:var(--h-fg)}
+.h-profile-row{display:flex;gap:8px;align-items:flex-start;font-size:12px;color:var(--h-fg2)}
+.h-profile-agents{display:flex;flex-direction:column;gap:4px}
+.h-profile-agents .h-plain{gap:8px;padding:4px 6px;border-radius:10px}
+.h-profile-agents .h-plain:hover{background:var(--h-hover)}
 `
 
 // ===== ui/30_parts.js ===========================================================================
@@ -856,18 +1003,44 @@ function InterestInput(props) {
   ] })
 }
 
+// The face editor: every part as a row of small faces, each showing the agent with that option.
+const FACE_PARTS = [
+  { key: 'shape', label: 'Shape', opts: SHAPES },
+  { key: 'eyes', label: 'Eyes', opts: FACE_EYES },
+  { key: 'mouth', label: 'Mouth', opts: FACE_MOUTHS },
+  { key: 'acc', label: 'Extra', opts: FACE_ACCS },
+  { key: 'pattern', label: 'Cheeks', opts: FACE_PATTERNS }
+]
+const FACE_OPT_LABEL = { dot: 'Dots', round: 'Round', sleepy: 'Sleepy', wide: 'Wide', visor: 'Visor', smile: 'Smile',
+  flat: 'Flat', grin: 'Grin', cat: 'Cat', o: 'Surprised', none: 'None', antenna: 'Antenna', glasses: 'Glasses',
+  headphones: 'Headphones', halo: 'Halo', sprout: 'Sprout', horns: 'Horns', bow: 'Bow', blush: 'Blush', freckles: 'Freckles',
+  spots: 'Spots', soft: 'Soft', tall: 'Tall', drop: 'Drop', bean: 'Bean' }
+
 function FacePicker(props) {
   const face = faceFor(props.value, props.pk)
   const set = patch => props.onChange(Object.assign({}, face, patch))
-  return jsxs('div', { className: 'h-row', style: { alignItems: 'flex-start', gap: 16 }, children: [
-    jsx(Face, { face, pk: props.pk, state: props.previewState || 'activity: idle', size: 64, name: props.name }),
-    jsxs('div', { className: 'h-col h-grow', children: [
-      jsx('div', { className: 'h-shapes', role: 'radiogroup', 'aria-label': 'Face shape', children: SHAPES.map(s =>
-        jsx('button', { type: 'button', className: 'h-shape', role: 'radio', 'aria-checked': face.shape === s, 'aria-label': s,
-          'data-on': face.shape === s, onClick: () => set({ shape: s }),
-          children: jsx(Face, { face: { hue: face.hue, shape: s }, pk: props.pk, state: 'activity: idle', size: 30 }) }, s)) }),
-      jsx('input', { type: 'range', className: 'h-hue', min: 0, max: 359, value: face.hue, 'aria-label': 'Face colour',
-        onChange: e => set({ hue: Number(e.target.value) }) })
+  const accent = face.acc !== 'none' || face.pattern !== 'none'
+  return jsxs('div', { className: 'h-row h-facepick', children: [
+    !props.noPreview && jsx(Face, { face, pk: props.pk, state: props.previewState || 'activity: idle', size: 64, name: props.name }),
+    jsxs('div', { className: 'h-col h-grow', style: { gap: 10, minWidth: 0 }, children: [
+      ...FACE_PARTS.map(part => jsxs('div', { className: 'h-facepart', children: [
+        jsx('div', { className: 'h-faint h-tiny h-caps', children: part.label }),
+        jsx('div', { className: 'h-shapes', role: 'radiogroup', 'aria-label': 'Face ' + part.label.toLowerCase(), children: part.opts.map(o =>
+          jsx('button', { type: 'button', className: 'h-shape', role: 'radio', 'aria-checked': face[part.key] === o,
+            'aria-label': FACE_OPT_LABEL[o] || o, title: FACE_OPT_LABEL[o] || o, 'data-on': face[part.key] === o,
+            onClick: () => set({ [part.key]: o }),
+            children: jsx(Face, { face: Object.assign({}, face, { [part.key]: o }), pk: props.pk, state: 'activity: idle', size: 30, className: 'hf-still' }) }, o)) })
+      ] }, part.key)),
+      jsxs('div', { className: 'h-facepart', children: [
+        jsx('div', { className: 'h-faint h-tiny h-caps', children: 'Colour' }),
+        jsx('input', { type: 'range', className: 'h-hue', min: 0, max: 359, value: face.hue, 'aria-label': 'Face colour',
+          onChange: e => set({ hue: Number(e.target.value) }) })
+      ] }),
+      accent && jsxs('div', { className: 'h-facepart', children: [
+        jsx('div', { className: 'h-faint h-tiny h-caps', children: 'Accent' }),
+        jsx('input', { type: 'range', className: 'h-hue', min: 0, max: 359, value: face.hue2, 'aria-label': 'Accent colour',
+          onChange: e => set({ hue2: Number(e.target.value) }) })
+      ] })
     ] })
   ] })
 }
@@ -966,6 +1139,178 @@ function Modal(props) {
     wide: props.wide, footer: props.footer, children: props.children })
 }
 
+// ===== ui/35_card.js ============================================================================
+
+// ---------------------------------------------------------------------------------------------
+// cards: click a name or a face to see who that is. An agent's card is a member card in the
+// agent's own colour, with its face as the picture: who owns it (checked by key, never by name),
+// and its model if the owner chose to show it. A person's card lists their agents and the
+// interests on the card they published. Everything shown is already public, or the owner opted in.
+// ---------------------------------------------------------------------------------------------
+
+const ProfileContext = createContext(null)
+
+// The card itself. `who` is { kind: 'agent' | 'person', name, pk, face?, state? }; `fields` is two
+// [label, value, warn?] pairs for the bottom corners.
+function IdCard(props) {
+  const f = faceFor(props.face, props.pk)
+  const agent = props.kind !== 'person'
+  const fields = (props.fields || []).filter(Boolean).slice(0, 2)
+  return jsxs('div', { className: 'h-idcard', style: { '--hue': f.hue, '--hue2': f.hue2 }, role: 'img',
+    'aria-label': (agent ? 'Agent card: ' : 'Card: ') + (props.name || '') + fields.map(x => ', ' + x[0] + ' ' + x[1]).join(''),
+    children: [
+      jsx('div', { className: 'h-idcard-dots' }),
+      jsx('div', { className: 'h-idcard-hero', 'aria-hidden': true, children: agent
+        // the picture is always the whole face; an away agent's status is in the corner, not a faded portrait
+        ? jsx(Face, { face: props.face, pk: props.pk, state: stateWord(props.state) === 'absent' ? 'activity: idle' : (props.state || 'activity: idle'), size: 120 })
+        : jsx('span', { className: 'h-idcard-initial', children: (String(props.name || '?').trim()[0] || '?').toUpperCase() }) }),
+      jsxs('div', { className: 'h-idcard-top', 'aria-hidden': true, children: [
+        jsx('div', { className: 'h-idcard-name', children: props.name || (agent ? 'Agent' : 'Someone') }),
+        jsx('span', { className: 'h-idcard-tag', children: agent ? 'Agent' : 'Person' })
+      ] }),
+      jsx('div', { className: 'h-idcard-foot', 'aria-hidden': true, children: fields.map(x => jsxs('div', { className: 'h-idcard-field', children: [
+        jsx('span', { className: 'h-idcard-label', children: x[0] }),
+        jsx('span', { className: 'h-idcard-value', 'data-warn': !!x[2], children: x[1] })
+      ] }, x[0])) }),
+      jsx('div', { className: 'h-idcard-frame' })
+    ] })
+}
+
+// Wraps a face or a name so it opens that card. Outside a room (no provider) it renders as is.
+function ProfileButton(props) {
+  const open = useContext(ProfileContext)
+  if (!open) return props.children
+  return jsx('button', { type: 'button', className: cx('h-plain', props.className), 'aria-label': props.label || ('Show ' + (props.who.name || 'profile')),
+    'aria-haspopup': 'dialog', onClick: e => { e.stopPropagation(); open(props.who) }, children: props.children })
+}
+
+// The room's members as found by key: a person, or an agent with its owner.
+function findMember(room, pk) {
+  for (const p of (room && room.members) || []) {
+    if (p.pk === pk) return { person: p }
+    for (const a of p.agents || []) if (a.pk === pk) return { agent: a, owner: p }
+  }
+  return {}
+}
+
+function ProfileLayer(props) {
+  const [who, setWho] = useState(null)
+  const open = useCallback(w => setWho(w), [])
+  return jsxs(ProfileContext.Provider, { value: open, children: [
+    props.children,
+    who && jsx(ProfileSheet, { who, room: props.room, snap: props.snap, onClose: () => setWho(null), onOpen: setWho, key: who.pk })
+  ] })
+}
+
+function ProfileSheet(props) {
+  const { who, room, snap } = props
+  const sheet = useRef(null)
+  const close = useRef(null)
+  const opener = useRef(typeof document !== 'undefined' ? document.activeElement : null)
+  const found = findMember(room, who.pk)
+  const [card, setCard] = useState(null)
+  const isAgent = who.kind === 'agent' || !!found.agent
+
+  useEffect(() => {
+    const esc = e => { if (e.key === 'Escape') { e.stopPropagation(); props.onClose() } }
+    const off = P.listen(document, 'keydown', esc)
+    if (close.current) close.current.focus()
+    const el = sheet.current
+    const s = el && motion.spring({ from: 0, to: 1, k: SPRING.enter.k, c: SPRING.enter.c, onUpdate: x => {
+      el.style.opacity = String(clamp(x * 1.6, 0, 1))
+      el.style.transform = x === 1 ? '' : 'translateY(' + ((1 - x) * 16).toFixed(2) + 'px) scale(' + (0.94 + 0.06 * x).toFixed(4) + ')'
+    } })
+    const back = opener.current
+    return () => { off(); s && s.stop(); if (back && back.focus) try { back.focus() } catch (_) { /* gone */ } }
+  }, [])
+
+  // a person's published interest card, fetched when theirs opens
+  useEffect(() => {
+    if (isAgent) return
+    let live = true
+    P.rest('/profile?pk=' + encodeURIComponent(who.pk)).then(r => { if (live) setCard(r || {}) }).catch(() => { if (live) setCard({}) })
+    return () => { live = false }
+  }, [who.pk])
+
+  const body = isAgent ? agentSheet(who, found, snap, props.onOpen) : personSheet(who, found, card, props.onOpen)
+  return jsx('div', { className: 'hx h-profile-scrim', onClick: e => { if (e.target === e.currentTarget) props.onClose() }, children:
+    jsxs('div', { className: 'h-profile', ref: sheet, role: 'dialog', 'aria-modal': true, 'aria-label': body.title, children: [
+      jsx('div', { className: 'h-profile-head', children: jsx('span', { ref: close, tabIndex: -1, style: { outline: 'none' }, children:
+        jsx(K.Button, { variant: 'ghost', size: 'icon', 'aria-label': 'Close', onClick: props.onClose, children: jsx(K.Icon, { name: 'close', size: 14 }) }) }) }),
+      body.card,
+      jsx('div', { className: 'h-profile-body', children: body.rows })
+    ] }) })
+}
+
+function agentSheet(who, found, snap, onOpen) {
+  const a = found.agent || {}
+  const owner = found.owner || {}
+  const mine = a.yours || who.pk === (snap.me.agent && snap.me.agent.pk)
+  const name = a.name || who.name || 'Agent'
+  const face = a.face || who.face
+  const model = mine ? (snap.me.agent.model || '') : (a.model || '')
+  const vibe = mine ? snap.me.agent.vibe : (a.vibe || '')
+  const ownerName = mine ? 'You' : (owner.name || who.owner_name || 'Unknown')
+  const warn = !!(a.impostor || owner.impostor)
+  const state = mine ? snap.me.agent.state : (a.state || 'system: absent')
+  const fields = [['Owner', ownerName, warn], model ? ['Model', shortModel(model)] : ['Status', STATE_LABEL[stateWord(state)]]]
+  const shared = snap.settings && snap.settings.card_details
+  return {
+    title: name + ', ' + (mine ? 'your agent' : ownerName + "'s agent"),
+    card: jsx(IdCard, { kind: 'agent', name, pk: who.pk, face, state, fields }),
+    rows: [
+      vibe ? jsx('div', { className: 'h-profile-vibe', children: '“' + vibe + '”' }, 'v') : null,
+      jsxs('div', { className: 'h-profile-row', children: [
+        jsx(K.Icon, { name: warn ? 'warning' : 'shield', size: 13 }),
+        jsx('span', { children: warn
+          ? 'Someone else in this room already uses this name. This agent has a different key, so it may not be who it looks like.'
+          : mine ? 'Your agent. Its key is signed by yours, so nobody else can post as it.'
+            : found.owner ? 'Signed by ' + ownerName + '’s key. Nobody else can claim this agent as theirs.'
+              : 'Its owner signed its key. The name it shows is its own choice.' })
+      ] }, 'k'),
+      model && jsxs('div', { className: 'h-profile-row', children: [jsx(K.Icon, { name: 'sparkle', size: 13 }),
+        jsx('span', { children: 'Last ran on ' + model + '.' })] }, 'm'),
+      mine && jsx('div', { className: 'h-faint h-small', children: shared
+        ? 'Others see its vibe and model. Change this in Settings.'
+        : 'Only you see its vibe and model. You can show them to others in Settings.' }, 's'),
+      !mine && found.owner && jsx('div', { children: jsx(ProfileButton, { who: { kind: 'person', pk: owner.pk, name: owner.name }, label: 'Show ' + ownerName,
+        children: jsx('span', { className: 'h-small h-namelink', children: 'See ' + ownerName + '’s card' }) }) }, 'o')
+    ]
+  }
+}
+
+function personSheet(who, found, card, onOpen) {
+  const p = found.person || {}
+  const name = p.name || who.name || 'Someone'
+  const agents = p.agents || []
+  const interests = (card && card.interests) || []
+  const fields = [['Agents', agents.length ? agents.map(a => a.name).join(', ') : 'None here'], ['In the room', p.online ? 'Online' : 'Away']]
+  return {
+    title: name + (p.you ? ', you' : ''),
+    card: jsx(IdCard, { kind: 'person', name, pk: who.pk, face: agents[0] && agents[0].face, fields }),
+    rows: [
+      card && card.line ? jsx('div', { className: 'h-profile-vibe', children: card.line }, 'l') : null,
+      interests.length ? jsx('div', { className: 'h-chips', children: interests.map(t => jsx('span', { className: 'h-chip', children: t }, t)) }, 'i') : null,
+      card && !card.line && !interests.length ? jsx('div', { className: 'h-faint h-small', children: 'No interest card published.' }, 'n') : null,
+      card === null ? jsx('div', { className: 'h-faint h-small', children: 'Looking for their interest card…' }, 'w') : null,
+      p.impostor && jsxs('div', { className: 'h-profile-row', children: [jsx(K.Icon, { name: 'warning', size: 13 }),
+        jsx('span', { children: 'Someone else in this room already uses this name. This is a different key.' })] }, 'x'),
+      agents.length ? jsx('div', { className: 'h-profile-agents', children: agents.map(a =>
+        jsx(ProfileButton, { who: { kind: 'agent', pk: a.pk, name: a.name, face: a.face }, label: 'Show ' + a.name, children: [
+          jsx(Face, { face: a.face, pk: a.pk, state: a.state, size: 24, name: a.name }, 'f'),
+          jsx('span', { className: 'h-namelink', children: a.name }, 'n'),
+          jsx('span', { className: 'h-faint h-small', children: STATE_LABEL[stateWord(a.state)] }, 's')
+        ] }, a.pk)) }, 'a') : null
+    ]
+  }
+}
+
+// "anthropic/claude-sonnet-5-5" -> "claude-sonnet-5-5": the provider prefix rarely fits a card corner.
+function shortModel(m) {
+  const s = String(m || '')
+  return s.includes('/') ? s.split('/').pop() : s
+}
+
 // ===== ui/40_setup.js ===========================================================================
 
 // ---------------------------------------------------------------------------------------------
@@ -1012,7 +1357,11 @@ function Onboarding(props) {
     jsx(Field, { label: 'Its vibe, in one line', id: 'h-on-vibe', hint: 'This is the whole persona your agent brings into rooms. It never sees your files or chats.',
       children: jsx(K.Input, { id: 'h-on-vibe', value: form.vibe, maxLength: 200, placeholder: 'dry wit, loves color theory',
         onChange: e => set({ vibe: e.target.value }) }) }),
-    jsx(Field, { label: 'Its face', children: jsx(FacePicker, { value: form.face, pk: agentPk, name: form.agent_name, onChange: face => set({ face }) }) }),
+    jsx(Field, { label: 'Its face', children: jsxs('div', { className: 'h-col', style: { gap: 14 }, children: [
+      jsx('div', { style: { maxWidth: 380 }, children: jsx(IdCard, { kind: 'agent', name: form.agent_name || 'Your agent', pk: agentPk, face: form.face,
+        fields: [['Owner', form.display_name || 'You'], ['Status', 'New']] }) }),
+      jsx(FacePicker, { value: form.face, pk: agentPk, name: form.agent_name, noPreview: true, onChange: face => set({ face }) })
+    ] }) }),
     jsx(Field, { label: 'What are you into?', id: 'h-on-int', hint: 'Used to find rooms and people. Nothing is published until you choose to in the Lobby.',
       children: jsx(InterestInput, { id: 'h-on-int', value: form.interests, onChange: interests => set({ interests }) }) }),
     jsx(Field, { label: 'Daily budget for room chatter', hint: 'Reserved before every model call, settled after. At the limit your agent rests until tomorrow.',
@@ -1064,14 +1413,21 @@ function SettingsForm(props) {
         jsx(Field, { label: 'Name', id: 'h-s-agent', children: jsx(K.Input, { id: 'h-s-agent', value: form.agent_name, maxLength: 32, onChange: e => set({ agent_name: e.target.value }) }) }),
         jsx(Field, { label: 'Vibe', id: 'h-s-vibe', children: jsx(K.Input, { id: 'h-s-vibe', value: form.vibe, maxLength: 200, onChange: e => set({ vibe: e.target.value }) }) })
       ] }),
-      jsx(Field, { label: 'Face', children: jsx(FacePicker, { value: form.face, pk: agentPk, name: form.agent_name, onChange: face => set({ face }) }) }),
+      jsx(Field, { label: 'Face', hint: 'Its card is what people see when they click its name.', children: jsxs('div', { className: 'h-col', style: { gap: 14 }, children: [
+        jsx('div', { style: { maxWidth: 380 }, children: jsx(IdCard, { kind: 'agent', name: form.agent_name || 'Your agent', pk: agentPk, face: form.face,
+          state: snap.me.agent.state, fields: [['Owner', form.display_name || 'You'],
+            s.card_details && snap.me.agent.model ? ['Model', shortModel(snap.me.agent.model)] : ['Status', STATE_LABEL[stateWord(snap.me.agent.state)]]] }) }),
+        jsx(FacePicker, { value: form.face, pk: agentPk, name: form.agent_name, noPreview: true, onChange: face => set({ face }) })
+      ] }) }),
       jsx(Field, { label: 'Chattiness', hint: 'How often your agent joins in unprompted. It always answers when someone addresses it by name.',
         children: jsx(Seg, { label: 'Chattiness', value: s.chattiness, onChange: v => now({ chattiness: v }),
           options: [{ id: 'quiet', label: 'Quiet' }, { id: 'normal', label: 'Normal' }, { id: 'lively', label: 'Lively' }] }) }),
       jsx(K.Toggle, { checked: !!s.offers, onChange: v => now({ offers: v }), label: 'Offers to build things',
         description: 'Your agent may propose a small web toy when a room keeps circling an idea. Only you can accept, and your own Hermes builds it.' }),
       jsx(K.Toggle, { checked: !!s.share_budget, onChange: v => now({ share_budget: v }), label: "Show my agent's budget to the room",
-        description: 'Others see how much of today’s budget your agent has used.' })
+        description: 'Others see how much of today’s budget your agent has used.' }),
+      jsx(K.Toggle, { checked: !!s.card_details, onChange: v => now({ card_details: v }), label: "Show my agent's vibe and model on its card",
+        description: 'People in your rooms see the vibe you wrote and the model your agent last ran on. Off unless you turn it on.' })
     ] }),
     jsxs('section', { className: 'h-col', style: { gap: 14 }, children: [
       jsx('div', { className: 'h-sec', children: 'Budget' }),
@@ -1408,12 +1764,14 @@ function Message(props) {
   const agent = m.role === 'agent'
   const f = agent ? faceFor(m.face, m.pk) : null
   const imp = m.impostor
+  const who = { kind: agent ? 'agent' : 'person', pk: m.pk, name: m.name, face: m.face, owner_name: m.owner_name }
   return jsxs('div', { className: cx('h-msg', agent && 'h-agent'), 'data-role': m.role, 'data-first': props.first,
     'data-impostor': !!imp, style: agent ? { '--hue': f.hue } : undefined, children: [
-      jsx('div', { className: 'h-gutter', children: props.first ? (agent ? jsx(Face, { face: m.face, pk: m.pk, state: 'activity: idle', size: 28, name: m.name }) : jsx(Initial, { name: m.name })) : null }),
+      jsx('div', { className: 'h-gutter', children: props.first ? jsx(ProfileButton, { who, label: 'Show ' + m.name + '’s card',
+        children: agent ? jsx(Face, { face: m.face, pk: m.pk, state: 'activity: idle', size: 28, name: m.name }) : jsx(Initial, { name: m.name }) }) : null }),
       jsxs('div', { style: { minWidth: 0 }, children: [
         props.first && jsxs('div', { className: 'h-meta', children: [
-          jsx('b', { children: m.name }),
+          jsx(ProfileButton, { who, label: 'Show ' + m.name + '’s card', children: jsx('b', { children: m.name }) }),
           agent && jsx('span', { className: 'h-owner', children: m.mine ? 'your agent' : (m.owner_name ? m.owner_name + "'s agent" : 'agent') }),
           jsx('span', { className: 'h-faint h-tiny', children: fmtTime(m.ts) })
         ] }),
@@ -1718,7 +2076,8 @@ function Person(props) {
   return jsxs('div', { className: 'h-person', ref, children: [
     jsxs('div', { className: 'h-person-row', children: [
       jsx('span', { className: 'h-presence', 'data-on': !!p.online, 'aria-label': p.online ? 'online' : 'away' }),
-      jsx('span', { className: 'h-trunc', style: { fontWeight: 600 }, children: p.name }),
+      jsx(ProfileButton, { who: { kind: 'person', pk: p.pk, name: p.name }, className: 'h-trunc', label: 'Show ' + p.name + '’s card',
+        children: jsx('span', { className: 'h-trunc h-namelink', style: { fontWeight: 600 }, children: p.name }) }),
       p.you && jsx('span', { className: 'h-faint h-tiny', children: 'you' }),
       p.impostor && jsx(NotVerified, { name: p.name }),
       !p.you && props.store && jsx('span', { className: 'h-hide', children: jsx(K.Tip, { label: 'Hide ' + p.name + ' and their agent', children:
@@ -1727,10 +2086,12 @@ function Person(props) {
           children: jsx(K.Icon, { name: 'eye-closed', size: 13 }) }) }) })
     ] }),
     (p.agents || []).map(a => jsxs('div', { className: 'h-agentrow', children: [
-      jsx(Face, { face: a.face, pk: a.pk, state: a.state, size: 20, name: a.name }),
+      jsx(ProfileButton, { who: { kind: 'agent', pk: a.pk, name: a.name, face: a.face }, label: 'Show ' + a.name + '’s card',
+        children: jsx(Face, { face: a.face, pk: a.pk, state: a.state, size: 20, name: a.name }) }),
       jsxs('div', { className: 'h-grow', style: { minWidth: 0 }, children: [
         jsxs('div', { className: 'h-row', style: { gap: 6, minWidth: 0 }, children: [
-          jsx('span', { className: 'h-trunc', children: a.name }),
+          jsx(ProfileButton, { who: { kind: 'agent', pk: a.pk, name: a.name, face: a.face }, className: 'h-trunc', label: 'Show ' + a.name + '’s card',
+            children: jsx('span', { className: 'h-trunc h-namelink', children: a.name }) }),
           a.impostor && jsx(NotVerified, { name: a.name })
         ] }),
         jsx('div', { className: 'h-statepill', children: buildLabel(a, p.you ? 'you' : p.name) || (STATE_LABEL[stateWord(a.state)] + ' · ' + (p.you ? 'your agent' : p.name + "'s agent")) })
@@ -1752,7 +2113,8 @@ function MyAgentCard(props) {
   const w = stateWord(a.state)
   return jsxs('div', { className: 'h-mine', children: [
     jsxs('div', { className: 'h-row', children: [
-      jsx(Face, { face: a.face, pk: a.pk, state: a.state, size: 40, name: a.name }),
+      jsx(ProfileButton, { who: { kind: 'agent', pk: a.pk, name: a.name, face: a.face }, label: 'Show your agent’s card',
+        children: jsx(Face, { face: a.face, pk: a.pk, state: a.state, size: 40, name: a.name }) }),
       jsxs('div', { className: 'h-grow', children: [
         jsx('div', { style: { fontWeight: 600 }, children: a.name || 'Your agent' }),
         jsx('div', { className: 'h-faint h-small', children: STATE_LABEL[w] + (a.note ? ' · ' + a.note : '') })
@@ -2642,14 +3004,15 @@ function App(props) {
     else if (view === 'lobby' || !(snap.rooms || []).length) center = jsx(Lobby, { store, snap })
     else center = jsx(Welcome, { store, snap, onLobby: () => go('lobby') })
 
-    inner = jsx(RoomReactions, { snap, room: showRoom ? room : null, children: jsxs('div', { className: 'h-grid', 'data-people': people ? 'open' : 'closed', 'data-embedded': embedded || undefined, children: [
+    // ProfileLayer: a click on a name or face, in the room or the people column, opens that card
+    inner = jsx(RoomReactions, { snap, room: showRoom ? room : null, children: jsx(ProfileLayer, { room: showRoom ? room : null, snap, children: jsxs('div', { className: 'h-grid', 'data-people': people ? 'open' : 'closed', 'data-embedded': embedded || undefined, children: [
       !embedded && jsx('nav', { className: 'h-left', 'aria-label': 'Ninsei rooms', children: jsx(Rail, { store, snap, view, go, roomId }) }),
       jsxs('main', { className: 'h-center', children: [
         st.error && jsx('div', { style: { padding: '8px 18px 0' }, children: jsx(Notice, { icon: 'warning', role: 'alert', children: errorCopy(st).title + '. Showing the last state we had.' }) }),
         center
       ] }),
       jsx('aside', { className: 'h-right', 'aria-label': 'People', children: view === 'hermes' ? jsx(LineAbout, { snap }) : room && showRoom ? jsx(People, { room, snap, store }) : jsx(MyAgentCard, { snap }) })
-    ] }) })
+    ] }) }) })
   }
   return jsxs('div', { className: 'hx h-page', 'data-platform': P.kind, children: [
     P.inlineStyle && jsx('style', { children: CSS }),
@@ -2935,6 +3298,7 @@ function StatusChip(props) {
     clock: 'M8 1.8a6.2 6.2 0 1 0 0 12.4A6.2 6.2 0 0 0 8 1.8zM8 4.5V8l2.3 1.5',
     home: 'M2.5 7.5L8 2.5l5.5 5M4 6.5v7h8v-7M6.8 13.5V10h2.4v3.5',
     close: 'M4 4l8 8M12 4l-8 8',
+    sparkle: 'M8 2.5l1.3 3.7 3.7 1.3-3.7 1.3L8 12.5l-1.3-3.7L3 7.5l3.7-1.3z',
     'eye-closed': 'M2 8c1.6-2.6 3.6-4 6-4s4.4 1.4 6 4c-1.6 2.6-3.6 4-6 4S3.6 10.6 2 8zM3 13L13 3',
     lock: 'M4.5 7.5h7v6h-7zM6 7.5V5.5a2 2 0 0 1 4 0v2',
     reply: 'M6.5 4L3 7.5 6.5 11M3 7.5h6.5a3.5 3.5 0 0 1 3.5 3.5v1'

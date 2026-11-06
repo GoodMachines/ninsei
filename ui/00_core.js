@@ -7,6 +7,12 @@
 // ---------------------------------------------------------------------------------------------
 
 const SHAPES = ['round', 'soft', 'tall', 'wide', 'drop', 'bean']
+// The rest of a face. Each list starts with its default and matches ninsei_engine/engine.py (a test
+// compares them). Faces come only from these options, so nobody can put an image in your room.
+const FACE_EYES = ['dot', 'round', 'sleepy', 'wide', 'visor']
+const FACE_MOUTHS = ['smile', 'flat', 'grin', 'cat', 'o']
+const FACE_ACCS = ['none', 'antenna', 'glasses', 'headphones', 'halo', 'sprout', 'horns', 'bow']
+const FACE_PATTERNS = ['none', 'blush', 'freckles', 'spots']
 const STATES = ['idle', 'working', 'speaking', 'waiting', 'error', 'absent']
 const BUDGET_PRESETS = [20000, 40000, 100000]
 const INTEREST_IDEAS = ['shaders', 'generative art', 'synths', 'pixel art', 'music', 'games', 'poetry',
@@ -29,7 +35,11 @@ function faceFor(face, pk) {
   const seed = String(pk || '0000000000')
   const hue = face && Number.isFinite(Number(face.hue)) ? Number(face.hue) : parseInt(seed.slice(0, 4), 16) % 360
   const shape = face && SHAPES.includes(face.shape) ? face.shape : SHAPES[parseInt(seed.slice(4, 6), 16) % SHAPES.length]
-  return { hue: ((hue % 360) + 360) % 360, shape }
+  const h = ((hue % 360) + 360) % 360
+  const pick = (key, opts) => face && opts.includes(face[key]) ? face[key] : opts[0]
+  const h2 = face && Number.isFinite(Number(face.hue2)) ? ((Number(face.hue2) % 360) + 360) % 360 : (h + 150) % 360
+  return { hue: h, shape, eyes: pick('eyes', FACE_EYES), mouth: pick('mouth', FACE_MOUTHS), acc: pick('acc', FACE_ACCS),
+    pattern: pick('pattern', FACE_PATTERNS), hue2: h2 }
 }
 
 function fmtTokens(n) {

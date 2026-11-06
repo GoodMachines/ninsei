@@ -65,7 +65,10 @@ A message cap (`msgs_daily`, default 60) limits how many chat replies the agent 
 
 Both games share `tales_*` events, the host's secret seed, the phase clock and the hostile-room guards. In Tall Tales (`tales`) only people vote, never for their own team's fake. Who's the Agent? (`agent`) uses curated `game.PROMPTS`, so no model call to start; the host's agent answers too (`_answer_as_host`) and agents use `brain.human_answer` to pass as people. Pitfall: the view skips the host's events as player moves, except the host agent's answers here.
 
-## Faces and reactions
+## Faces, cards and reactions
+
+A face is `{hue, shape, eyes, mouth, acc, pattern, hue2}`, only from fixed option lists that `engine.py` (`clean_face`) and `ui/00_core.js` (`faceFor`) keep in step (a test compares them); both sides clean every face, the UI including strangers'. `ui/35_card.js` draws cards from data the room already has; a person's interests come from `/profile` (the lobby copy, else one relay query held to the lobby's checks). Vibe and model ride in presence only with `card_details` on; the model is the `res.model` of the last completion (`Brain(on_model=)`).
+
 
 `reactionsFor` in `ui/50_room.js` derives short expressions (`perk`, `happy`, `wary`, `smug`, `caught`) from events every client already has, which `RoomReactions` (`80_app.js`) supplies via `ExprContext`. Nothing is published, so a reaction can't be forged.
 

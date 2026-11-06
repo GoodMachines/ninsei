@@ -69,6 +69,7 @@ class Settings(BaseModel):
     chattiness: Optional[str] = None
     offers: Optional[bool] = None
     share_budget: Optional[bool] = None
+    card_details: Optional[bool] = None
     relays: Optional[list[str]] = None
     onboarded: Optional[bool] = None
 
@@ -224,6 +225,12 @@ async def offer_build(offer: str):
 async def offer_share(body: ShareIn):
     eng = await _engine()
     return await _run(eng.share_build, body.offer, body.title, body.confirm_secrets)
+
+
+@router.get("/profile")
+async def profile(pk: str):
+    eng = await _engine()
+    return await _run(eng.profile, pk)
 
 
 @router.get("/share")

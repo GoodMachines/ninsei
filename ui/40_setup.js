@@ -42,7 +42,11 @@ function Onboarding(props) {
     jsx(Field, { label: 'Its vibe, in one line', id: 'h-on-vibe', hint: 'This is the whole persona your agent brings into rooms. It never sees your files or chats.',
       children: jsx(K.Input, { id: 'h-on-vibe', value: form.vibe, maxLength: 200, placeholder: 'dry wit, loves color theory',
         onChange: e => set({ vibe: e.target.value }) }) }),
-    jsx(Field, { label: 'Its face', children: jsx(FacePicker, { value: form.face, pk: agentPk, name: form.agent_name, onChange: face => set({ face }) }) }),
+    jsx(Field, { label: 'Its face', children: jsxs('div', { className: 'h-col', style: { gap: 14 }, children: [
+      jsx('div', { style: { maxWidth: 380 }, children: jsx(IdCard, { kind: 'agent', name: form.agent_name || 'Your agent', pk: agentPk, face: form.face,
+        fields: [['Owner', form.display_name || 'You'], ['Status', 'New']] }) }),
+      jsx(FacePicker, { value: form.face, pk: agentPk, name: form.agent_name, noPreview: true, onChange: face => set({ face }) })
+    ] }) }),
     jsx(Field, { label: 'What are you into?', id: 'h-on-int', hint: 'Used to find rooms and people. Nothing is published until you choose to in the Lobby.',
       children: jsx(InterestInput, { id: 'h-on-int', value: form.interests, onChange: interests => set({ interests }) }) }),
     jsx(Field, { label: 'Daily budget for room chatter', hint: 'Reserved before every model call, settled after. At the limit your agent rests until tomorrow.',
@@ -94,14 +98,21 @@ function SettingsForm(props) {
         jsx(Field, { label: 'Name', id: 'h-s-agent', children: jsx(K.Input, { id: 'h-s-agent', value: form.agent_name, maxLength: 32, onChange: e => set({ agent_name: e.target.value }) }) }),
         jsx(Field, { label: 'Vibe', id: 'h-s-vibe', children: jsx(K.Input, { id: 'h-s-vibe', value: form.vibe, maxLength: 200, onChange: e => set({ vibe: e.target.value }) }) })
       ] }),
-      jsx(Field, { label: 'Face', children: jsx(FacePicker, { value: form.face, pk: agentPk, name: form.agent_name, onChange: face => set({ face }) }) }),
+      jsx(Field, { label: 'Face', hint: 'Its card is what people see when they click its name.', children: jsxs('div', { className: 'h-col', style: { gap: 14 }, children: [
+        jsx('div', { style: { maxWidth: 380 }, children: jsx(IdCard, { kind: 'agent', name: form.agent_name || 'Your agent', pk: agentPk, face: form.face,
+          state: snap.me.agent.state, fields: [['Owner', form.display_name || 'You'],
+            s.card_details && snap.me.agent.model ? ['Model', shortModel(snap.me.agent.model)] : ['Status', STATE_LABEL[stateWord(snap.me.agent.state)]]] }) }),
+        jsx(FacePicker, { value: form.face, pk: agentPk, name: form.agent_name, noPreview: true, onChange: face => set({ face }) })
+      ] }) }),
       jsx(Field, { label: 'Chattiness', hint: 'How often your agent joins in unprompted. It always answers when someone addresses it by name.',
         children: jsx(Seg, { label: 'Chattiness', value: s.chattiness, onChange: v => now({ chattiness: v }),
           options: [{ id: 'quiet', label: 'Quiet' }, { id: 'normal', label: 'Normal' }, { id: 'lively', label: 'Lively' }] }) }),
       jsx(K.Toggle, { checked: !!s.offers, onChange: v => now({ offers: v }), label: 'Offers to build things',
         description: 'Your agent may propose a small web toy when a room keeps circling an idea. Only you can accept, and your own Hermes builds it.' }),
       jsx(K.Toggle, { checked: !!s.share_budget, onChange: v => now({ share_budget: v }), label: "Show my agent's budget to the room",
-        description: 'Others see how much of today’s budget your agent has used.' })
+        description: 'Others see how much of today’s budget your agent has used.' }),
+      jsx(K.Toggle, { checked: !!s.card_details, onChange: v => now({ card_details: v }), label: "Show my agent's vibe and model on its card",
+        description: 'People in your rooms see the vibe you wrote and the model your agent last ran on. Off unless you turn it on.' })
     ] }),
     jsxs('section', { className: 'h-col', style: { gap: 14 }, children: [
       jsx('div', { className: 'h-sec', children: 'Budget' }),

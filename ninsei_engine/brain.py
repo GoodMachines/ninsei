@@ -94,10 +94,11 @@ def persona_system(persona: dict, owner_name: str) -> str:
 
 class Brain:
     def __init__(self, llm_getter: Callable[[], Any], reserve: Callable[[str, int], Optional[str]],
-                 settle: Callable[[str, int], None]):
+                 settle: Callable[[str, int], None], on_model: Optional[Callable[[str], None]] = None):
         self._llm = llm_getter
         self._reserve = reserve
         self._settle = settle
+        self._on_model = on_model   # the model id that actually ran (PluginLlmCompleteResult.model)
 
     def available(self) -> bool:
         return self._llm() is not None
@@ -121,6 +122,12 @@ class Brain:
             total = getattr(u, "total_tokens", None) if u else None
             if total:
                 used = int(total)
+            model = getattr(res, "model", None)
+            if self._on_model and isinstance(model, str) and model.strip():
+                try:
+                    self._on_model(model.strip())
+                except Exception:
+                    pass  # a label for the agent card; never worth breaking a reply over
             return (res.text or "").strip()
         finally:
             self._settle(ticket, used)

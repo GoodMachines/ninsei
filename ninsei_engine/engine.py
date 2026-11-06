@@ -82,6 +82,35 @@ DEFAULT_RELAYS = ["wss://nos.lol", "wss://relay.primal.net", "wss://nostr.mom",
 
 CHATTINESS = {"quiet": 0.0, "normal": 0.12, "lively": 0.3}
 FACE_SHAPES = ["round", "soft", "tall", "wide", "drop", "bean"]
+# The rest of a face. Every list starts with its default, and ui/00_core.js keeps the same lists
+# (a test compares them). Faces are built only from these options, so a stranger can't put an
+# arbitrary image in your room.
+FACE_EYES = ["dot", "round", "sleepy", "wide", "visor"]
+FACE_MOUTHS = ["smile", "flat", "grin", "cat", "o"]
+FACE_ACCS = ["none", "antenna", "glasses", "headphones", "halo", "sprout", "horns", "bow"]
+FACE_PATTERNS = ["none", "blush", "freckles", "spots"]
+
+
+def clean_face(v) -> dict:
+    """A face from settings or the wire, reduced to known options."""
+    v = v if isinstance(v, dict) else {}
+
+    def hue(x, default):
+        try:
+            return int(x) % 360
+        except (TypeError, ValueError, OverflowError):
+            return default
+    h = hue(v.get("hue"), 28)
+    pick = lambda key, opts: v.get(key) if v.get(key) in opts else opts[0]
+    return {"hue": h, "shape": v.get("shape") if v.get("shape") in FACE_SHAPES else "round",
+            "eyes": pick("eyes", FACE_EYES), "mouth": pick("mouth", FACE_MOUTHS), "acc": pick("acc", FACE_ACCS),
+            "pattern": pick("pattern", FACE_PATTERNS), "hue2": hue(v.get("hue2"), (h + 150) % 360)}
+
+
+def _model_ok(v) -> str:
+    """A model id someone shared: short, printable, nothing else."""
+    s = re.sub(r"[^A-Za-z0-9._:/@+-]", "", str(v or ""))[:60] if isinstance(v, str) else ""
+    return s
 
 
 def room_id_for(creator_pk: str, nonce: str) -> str:
@@ -227,7 +256,7 @@ class Engine:
         self._start_error: Optional[BaseException] = None
         self._tasks: set[asyncio.Task] = set()
 
-        self.brain = Brain(llm_getter, self._reserve, self.store.settle)
+        self.brain = Brain(llm_getter, self._reserve, self.store.settle, on_model=self._note_model)
         # live, in-memory room state (rebuilt from the store + relays)
         self.events: dict[str, dict[str, dict]] = {}       # room -> id -> event
         self.presence: dict[str, dict[str, dict]] = {}     # room -> pk -> {state, budget, at}
@@ -365,7 +394,7 @@ class Engine:
             "onboarded": False, "display_name": "", "interests": [], "line": "",
             "agent_name": "", "vibe": "warm, curious, a little playful", "face": None,
             "budget_daily": 40000, "msgs_daily": MSGS_DAILY, "chattiness": "normal", "offers": True, "share_budget": False,
-            "relays": DEFAULT_RELAYS, "card_published_at": 0,
+            "card_details": False, "relays": DEFAULT_RELAYS, "card_published_at": 0,
         }
         out = {**defaults, **s}
         if not out.get("face"):
@@ -375,12 +404,12 @@ class Engine:
     def _default_face(self) -> dict:
         """Until the owner picks one, every agent gets its own face, derived from its key."""
         pk = self._identity()["agent_pk"]
-        return {"hue": int(pk[:6], 16) % 360, "shape": FACE_SHAPES[int(pk[6:8], 16) % len(FACE_SHAPES)]}
+        return clean_face({"hue": int(pk[:6], 16) % 360, "shape": FACE_SHAPES[int(pk[6:8], 16) % len(FACE_SHAPES)]})
 
     def save_settings(self, patch: dict) -> dict:
         cur = self.settings()
         allowed = {"onboarded", "display_name", "interests", "line", "agent_name", "vibe", "face",
-                   "budget_daily", "msgs_daily", "chattiness", "offers", "share_budget", "relays"}
+                   "budget_daily", "msgs_daily", "chattiness", "offers", "share_budget", "card_details", "relays"}
         for k, v in patch.items():
             if k not in allowed:
                 continue
@@ -398,11 +427,10 @@ class Engine:
             elif k == "chattiness":
                 v = v if v in CHATTINESS else "normal"
             elif k == "face":
-                v = {"hue": int((v or {}).get("hue", 28)) % 360,
-                     "shape": (v or {}).get("shape") if (v or {}).get("shape") in FACE_SHAPES else "round"}
+                v = clean_face(v)
             elif k == "relays":
                 v = [u.strip() for u in (v or []) if re.match(r"^wss?://[^\s]+$", str(u).strip())][:8] or DEFAULT_RELAYS
-            elif k in ("offers", "share_budget", "onboarded"):
+            elif k in ("offers", "share_budget", "card_details", "onboarded"):
                 v = bool(v)
             cur[k] = v
         self.store.set("settings", cur)
@@ -586,7 +614,9 @@ class Engine:
             pres[ev["pubkey"]] = {
                 "state": str(c.get("state", "activity: idle"))[:32], "budget": c.get("budget"),
                 "at": time.time(), "owner": owner, "name": name, "face": c.get("face"),
-                "build": _build_claim(c.get("build"))}
+                "build": _build_claim(c.get("build")),
+                "vibe": str(c.get("vibe"))[:200] if isinstance(c.get("vibe"), str) else "",
+                "model": _model_ok(c.get("model"))}
             self._seen_active(room, ev["pubkey"], time.time())
             self._register_name(room, ev["pubkey"], name, agent=True)
             self._note_agent_name(room, ev["pubkey"], name)
@@ -1911,6 +1941,34 @@ class Engine:
         self._bump()
         return {"hidden": len(h)}
 
+    def _note_model(self, model: str) -> None:
+        model = _model_ok(model)
+        if model and model != self.store.get("model_last"):
+            self.store.set("model_last", model)
+
+    async def profile(self, pk: str) -> dict:
+        """What someone's published interest card says (name, line, interests), for their profile card.
+        The lobby's copy if it has one, else one relay query held to the lobby's checks."""
+        if not re.fullmatch(r"[0-9a-f]{64}", str(pk or "")) or pk in self._hidden:
+            return {}
+        for p in (self.lobby or {}).get("people", []):
+            if p["pk"] == pk:
+                return {"line": p["line"], "interests": p["interests"], "at": p["at"]}
+        if pk == self._identity()["person_pk"]:
+            s = self.settings()
+            return {"line": s["line"], "interests": s["interests"], "at": s["card_published_at"]} if s["card_published_at"] else {}
+        if not self.pool:
+            return {}
+        evs = await self.pool.query([{"kinds": [KIND_META], "authors": [pk], "#d": ["ninsei/card"], "limit": 3}], timeout=3)
+        evs = [e for e in evs if nostr.check_event(e) and e["pubkey"] == pk and e["kind"] == KIND_META
+               and (nostr.tag_values(e, "d") or [""])[0] == "ninsei/card" and nostr.leading_zero_bits(e["id"]) >= 12]
+        if not evs:
+            return {}
+        ev = max(evs, key=lambda e: e["created_at"])
+        c = self._content(ev)
+        return {"line": str(c.get("line", ""))[:200],
+                "interests": [str(t)[:24] for t in nostr.tag_values(ev, "t") if t != APP_TAG][:8], "at": ev["created_at"]}
+
     def card_content(self) -> dict:
         s = self.settings()
         return {"name": s["display_name"], "line": s["line"], "interests": s["interests"],
@@ -2031,6 +2089,9 @@ class Engine:
         for room in list(self.store.rooms()):
             content = {"t": "presence", "state": self.agent_state,
                        "budget": round(bv["pct"], 2) if s["share_budget"] else None}
+            if s["card_details"]:  # the owner chose to show these on the agent's card
+                content["vibe"] = s["vibe"][:200]
+                content["model"] = self.store.get("model_last") or ""
             b = self._build_live
             if b and b["room"] == room:
                 content["build"] = {"offer": b["offer"], "step": b["step"], "wait": b["wait"]}
@@ -2093,7 +2154,8 @@ class Engine:
         for pk, p in self.presence.get(room, {}).items():
             a = agents.setdefault(pk, {"pk": pk, "name": p["name"], "owner": p["owner"], "face": p.get("face") or {},
                                        "last": 0})
-            a.update(state=p["state"], budget=p.get("budget"), seen=p["at"])
+            a.update(state=p["state"], budget=p.get("budget"), seen=p["at"], vibe=p.get("vibe", ""),
+                     model=p.get("model", ""))
             b = p.get("build")
             # a build is shown only for an offer this same agent made in this room, under its own title
             if b and offer_titles.get(b["offer"], ("",))[0] == pk:
@@ -2263,10 +2325,11 @@ class Engine:
             "version": self.version,
             "me": {"pk": ident["person_pk"], "npub": nostr.npub(ident["person_pk"]), "name": s["display_name"],
                    "agent": {"pk": ident["agent_pk"], "name": s["agent_name"], "vibe": s["vibe"], "face": s["face"],
-                             "state": self.agent_state, "note": self.agent_note}},
+                             "state": self.agent_state, "note": self.agent_note,
+                             "model": self.store.get("model_last") or ""}},
             "settings": {k: s[k] for k in ("onboarded", "display_name", "interests", "line", "agent_name", "vibe",
                                            "face", "budget_daily", "msgs_daily", "chattiness", "offers", "share_budget", "relays",
-                                           "card_published_at")},
+                                           "card_details", "card_published_at")},
             "budget": self.budget_view(),
             "model": self.brain.available(),
             "rooms": rooms,

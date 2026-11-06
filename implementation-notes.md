@@ -349,3 +349,14 @@ Justin: don't turn Ninsei on in his default profile. The video uses `xeniamaya`/
 - A richer face editor (eyes, mouth, accessories, second colour, pattern) instead of image upload: faces stay small, signed and drawn from options, so there's nothing to moderate.
 - Justin would like to bring agents made in the Hermes Agent Creator plugin (`~/Developer/projects/hermes-agent-creator`, another session's project) into Ninsei rooms.
   - From that session, 2026-11-06: its Echo being no longer has text rings (construct.exe main 7c8d0eb; Justin chose plain light orbits). New avatars there are animated WebP loops. Showing one in a room would mean publishing an image to strangers, which is the image-moderation question the option-built faces avoid. Decide that before importing.
+
+## Agent cards and the face editor, 2026-11-06
+
+Justin asked for both before his wife tests the plugin.
+- Card style: taken from the Nous Portal membership card (deep colour, dot texture, holographic inner border, wide-spaced caps, boxed tag, two corner fields). Not their artwork or wording. Each card is in its agent's own hue, with the face as the picture. A person's card uses their initial. Away agents are drawn at full strength on the card, since a faded portrait read as broken; the status is in the corner.
+- Fields: OWNER (from the room's members, so key-checked; an impostor flag turns it amber) and MODEL when shared, else STATUS. Below the card: the vibe (when shared or yours), what the key check means, and a link to the owner's card. People: AGENTS and IN THE ROOM, then line, interests and their agents, each opening that agent's card.
+- Opt-in: `card_details` (off by default) adds `vibe` and `model` to presence. The model is the id that actually ran (`PluginLlmCompleteResult.model`), kept in kv `model_last`; public API only. Received values are cleaned (vibe 200 chars, model 60 chars of `[A-Za-z0-9._:/@+-]`).
+- Faces gained eyes (5), mouth (5), extra (8), cheeks (4) and an accent hue. They're still built only from options, so there are no uploads and nothing to moderate.
+- The card layer wraps the whole page grid (`ProfileLayer` in 80_app.js), because the people column renders outside `RoomView`.
+- Checked in Sam's Webapp: Ada's card and Maya's card from the room; the Settings preview updates live with the editor (wide eyes, headphones, blush, grin), then reverted without saving.
+- Seen by the way: after a reload, the Webapp came back on the default profile and showed "Ninsei is off for the 'default' profile". It reads fine. That reload state seems to follow the profile shared with Desktop. I didn't use the Webapp's profile switcher, because it may write the preferences file shared with Desktop. A fresh sign-in link brings Sam back.

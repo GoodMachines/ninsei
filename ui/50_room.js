@@ -273,12 +273,14 @@ function Message(props) {
   const agent = m.role === 'agent'
   const f = agent ? faceFor(m.face, m.pk) : null
   const imp = m.impostor
+  const who = { kind: agent ? 'agent' : 'person', pk: m.pk, name: m.name, face: m.face, owner_name: m.owner_name }
   return jsxs('div', { className: cx('h-msg', agent && 'h-agent'), 'data-role': m.role, 'data-first': props.first,
     'data-impostor': !!imp, style: agent ? { '--hue': f.hue } : undefined, children: [
-      jsx('div', { className: 'h-gutter', children: props.first ? (agent ? jsx(Face, { face: m.face, pk: m.pk, state: 'activity: idle', size: 28, name: m.name }) : jsx(Initial, { name: m.name })) : null }),
+      jsx('div', { className: 'h-gutter', children: props.first ? jsx(ProfileButton, { who, label: 'Show ' + m.name + '’s card',
+        children: agent ? jsx(Face, { face: m.face, pk: m.pk, state: 'activity: idle', size: 28, name: m.name }) : jsx(Initial, { name: m.name }) }) : null }),
       jsxs('div', { style: { minWidth: 0 }, children: [
         props.first && jsxs('div', { className: 'h-meta', children: [
-          jsx('b', { children: m.name }),
+          jsx(ProfileButton, { who, label: 'Show ' + m.name + '’s card', children: jsx('b', { children: m.name }) }),
           agent && jsx('span', { className: 'h-owner', children: m.mine ? 'your agent' : (m.owner_name ? m.owner_name + "'s agent" : 'agent') }),
           jsx('span', { className: 'h-faint h-tiny', children: fmtTime(m.ts) })
         ] }),
@@ -583,7 +585,8 @@ function Person(props) {
   return jsxs('div', { className: 'h-person', ref, children: [
     jsxs('div', { className: 'h-person-row', children: [
       jsx('span', { className: 'h-presence', 'data-on': !!p.online, 'aria-label': p.online ? 'online' : 'away' }),
-      jsx('span', { className: 'h-trunc', style: { fontWeight: 600 }, children: p.name }),
+      jsx(ProfileButton, { who: { kind: 'person', pk: p.pk, name: p.name }, className: 'h-trunc', label: 'Show ' + p.name + '’s card',
+        children: jsx('span', { className: 'h-trunc h-namelink', style: { fontWeight: 600 }, children: p.name }) }),
       p.you && jsx('span', { className: 'h-faint h-tiny', children: 'you' }),
       p.impostor && jsx(NotVerified, { name: p.name }),
       !p.you && props.store && jsx('span', { className: 'h-hide', children: jsx(K.Tip, { label: 'Hide ' + p.name + ' and their agent', children:
@@ -592,10 +595,12 @@ function Person(props) {
           children: jsx(K.Icon, { name: 'eye-closed', size: 13 }) }) }) })
     ] }),
     (p.agents || []).map(a => jsxs('div', { className: 'h-agentrow', children: [
-      jsx(Face, { face: a.face, pk: a.pk, state: a.state, size: 20, name: a.name }),
+      jsx(ProfileButton, { who: { kind: 'agent', pk: a.pk, name: a.name, face: a.face }, label: 'Show ' + a.name + '’s card',
+        children: jsx(Face, { face: a.face, pk: a.pk, state: a.state, size: 20, name: a.name }) }),
       jsxs('div', { className: 'h-grow', style: { minWidth: 0 }, children: [
         jsxs('div', { className: 'h-row', style: { gap: 6, minWidth: 0 }, children: [
-          jsx('span', { className: 'h-trunc', children: a.name }),
+          jsx(ProfileButton, { who: { kind: 'agent', pk: a.pk, name: a.name, face: a.face }, className: 'h-trunc', label: 'Show ' + a.name + '’s card',
+            children: jsx('span', { className: 'h-trunc h-namelink', children: a.name }) }),
           a.impostor && jsx(NotVerified, { name: a.name })
         ] }),
         jsx('div', { className: 'h-statepill', children: buildLabel(a, p.you ? 'you' : p.name) || (STATE_LABEL[stateWord(a.state)] + ' · ' + (p.you ? 'your agent' : p.name + "'s agent")) })
@@ -617,7 +622,8 @@ function MyAgentCard(props) {
   const w = stateWord(a.state)
   return jsxs('div', { className: 'h-mine', children: [
     jsxs('div', { className: 'h-row', children: [
-      jsx(Face, { face: a.face, pk: a.pk, state: a.state, size: 40, name: a.name }),
+      jsx(ProfileButton, { who: { kind: 'agent', pk: a.pk, name: a.name, face: a.face }, label: 'Show your agent’s card',
+        children: jsx(Face, { face: a.face, pk: a.pk, state: a.state, size: 40, name: a.name }) }),
       jsxs('div', { className: 'h-grow', children: [
         jsx('div', { style: { fontWeight: 600 }, children: a.name || 'Your agent' }),
         jsx('div', { className: 'h-faint h-small', children: STATE_LABEL[w] + (a.note ? ' · ' + a.note : '') })

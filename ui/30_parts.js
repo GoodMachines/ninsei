@@ -51,18 +51,44 @@ function InterestInput(props) {
   ] })
 }
 
+// The face editor: every part as a row of small faces, each showing the agent with that option.
+const FACE_PARTS = [
+  { key: 'shape', label: 'Shape', opts: SHAPES },
+  { key: 'eyes', label: 'Eyes', opts: FACE_EYES },
+  { key: 'mouth', label: 'Mouth', opts: FACE_MOUTHS },
+  { key: 'acc', label: 'Extra', opts: FACE_ACCS },
+  { key: 'pattern', label: 'Cheeks', opts: FACE_PATTERNS }
+]
+const FACE_OPT_LABEL = { dot: 'Dots', round: 'Round', sleepy: 'Sleepy', wide: 'Wide', visor: 'Visor', smile: 'Smile',
+  flat: 'Flat', grin: 'Grin', cat: 'Cat', o: 'Surprised', none: 'None', antenna: 'Antenna', glasses: 'Glasses',
+  headphones: 'Headphones', halo: 'Halo', sprout: 'Sprout', horns: 'Horns', bow: 'Bow', blush: 'Blush', freckles: 'Freckles',
+  spots: 'Spots', soft: 'Soft', tall: 'Tall', drop: 'Drop', bean: 'Bean' }
+
 function FacePicker(props) {
   const face = faceFor(props.value, props.pk)
   const set = patch => props.onChange(Object.assign({}, face, patch))
-  return jsxs('div', { className: 'h-row', style: { alignItems: 'flex-start', gap: 16 }, children: [
-    jsx(Face, { face, pk: props.pk, state: props.previewState || 'activity: idle', size: 64, name: props.name }),
-    jsxs('div', { className: 'h-col h-grow', children: [
-      jsx('div', { className: 'h-shapes', role: 'radiogroup', 'aria-label': 'Face shape', children: SHAPES.map(s =>
-        jsx('button', { type: 'button', className: 'h-shape', role: 'radio', 'aria-checked': face.shape === s, 'aria-label': s,
-          'data-on': face.shape === s, onClick: () => set({ shape: s }),
-          children: jsx(Face, { face: { hue: face.hue, shape: s }, pk: props.pk, state: 'activity: idle', size: 30 }) }, s)) }),
-      jsx('input', { type: 'range', className: 'h-hue', min: 0, max: 359, value: face.hue, 'aria-label': 'Face colour',
-        onChange: e => set({ hue: Number(e.target.value) }) })
+  const accent = face.acc !== 'none' || face.pattern !== 'none'
+  return jsxs('div', { className: 'h-row h-facepick', children: [
+    !props.noPreview && jsx(Face, { face, pk: props.pk, state: props.previewState || 'activity: idle', size: 64, name: props.name }),
+    jsxs('div', { className: 'h-col h-grow', style: { gap: 10, minWidth: 0 }, children: [
+      ...FACE_PARTS.map(part => jsxs('div', { className: 'h-facepart', children: [
+        jsx('div', { className: 'h-faint h-tiny h-caps', children: part.label }),
+        jsx('div', { className: 'h-shapes', role: 'radiogroup', 'aria-label': 'Face ' + part.label.toLowerCase(), children: part.opts.map(o =>
+          jsx('button', { type: 'button', className: 'h-shape', role: 'radio', 'aria-checked': face[part.key] === o,
+            'aria-label': FACE_OPT_LABEL[o] || o, title: FACE_OPT_LABEL[o] || o, 'data-on': face[part.key] === o,
+            onClick: () => set({ [part.key]: o }),
+            children: jsx(Face, { face: Object.assign({}, face, { [part.key]: o }), pk: props.pk, state: 'activity: idle', size: 30, className: 'hf-still' }) }, o)) })
+      ] }, part.key)),
+      jsxs('div', { className: 'h-facepart', children: [
+        jsx('div', { className: 'h-faint h-tiny h-caps', children: 'Colour' }),
+        jsx('input', { type: 'range', className: 'h-hue', min: 0, max: 359, value: face.hue, 'aria-label': 'Face colour',
+          onChange: e => set({ hue: Number(e.target.value) }) })
+      ] }),
+      accent && jsxs('div', { className: 'h-facepart', children: [
+        jsx('div', { className: 'h-faint h-tiny h-caps', children: 'Accent' }),
+        jsx('input', { type: 'range', className: 'h-hue', min: 0, max: 359, value: face.hue2, 'aria-label': 'Accent colour',
+          onChange: e => set({ hue2: Number(e.target.value) }) })
+      ] })
     ] })
   ] })
 }
