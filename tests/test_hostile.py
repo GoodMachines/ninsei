@@ -696,3 +696,32 @@ def test_whos_the_agent_scoring_and_option_cap():
     opts, author = game.agent_options(answers, "seed2", preferred={"sam"})
     assert len(opts) == game.MAX_OPTIONS and "sam" in author.values()
     assert len(game.pick_prompts("s", 99)) == len(set(game.pick_prompts("s", 99)))
+
+
+async def test_migration_keeps_arrival_order_against_a_backdated_post(bare):
+    """Rebuilding an old registry in created_at order would hand a name to a backdated post that arrived after
+    the real holder. The migration keeps entries whose holder actually posted under the name."""
+    e, _ = bare()
+    sam, mal = Key("sam"), Key("mal")
+    await e._on_event(sam.person({"t": "msg", "name": "Sam", "text": "real"}), "relay")
+    await e._on_event(mal.person({"t": "msg", "name": "Sam", "text": "backdated"},
+                                 created_at=int(time.time()) - 2000), "relay")
+    old = dict(e._names_reg(ROOM))
+    assert old["p:sam"] == sam.ppk
+    e.store.set(f"names:{ROOM}", old)  # as an older Ninsei stored it
+    e.store.set(f"names_at:{ROOM}", {"p:sam": 123.0})
+    e.store.set(f"names2:{ROOM}", None); e.store.set(f"names2_at:{ROOM}", None)
+    e._names.pop(ROOM, None); e._name_count.pop(ROOM, None); e._name_at.pop(ROOM, None)
+    assert e._names_reg(ROOM)["p:sam"] == sam.ppk
+    assert e._name_at[ROOM]["p:sam"] == 123.0
+    msgs = {m["text"]: m for m in e.messages(ROOM)}
+    assert not msgs["real"].get("impostor") and msgs["backdated"]["impostor"]["real"] == sam.ppk
+
+
+async def test_migration_keeps_a_holder_whose_history_aged_out(bare):
+    e, _ = bare()
+    gone = Key("gone")
+    e.store.set(f"names:{ROOM}", {"p:zed": gone.ppk})
+    e.store.set(f"names2:{ROOM}", None)
+    e._names.pop(ROOM, None); e._name_count.pop(ROOM, None); e._name_at.pop(ROOM, None)
+    assert e._names_reg(ROOM)["p:zed"] == gone.ppk

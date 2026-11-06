@@ -637,16 +637,48 @@ class Engine:
             # times are kept with the registry, so a restart can't make a name taken after an eviction
             # look as if it had always been held; names from before times were saved count as history
             self._name_at[room] = {k: float(saved_at.get(k, 0.0)) for k in reg}
-            if not isinstance(stored, dict):  # first use: seed from history in created_at order
-                self.store.set(f"names:{room}", None)  # drop a pre-"names2" registry, if any
-                self.store.set(f"names_at:{room}", None)
+            if not isinstance(stored, dict):
+                self._migrate_names(room, reg)
+                # then seed what's still unclaimed from history in created_at order (first use of a room)
                 for e in self._sorted(room):
                     if self._content(e).get("t") == "join":
                         continue  # a bare join claims no name (see _on_event)
                     self._register_name(room, e["pubkey"], self._content(e).get("name"),
                                         agent=self.owner_of(e) is not None, save=False)
                 self.store.set(f"{NAMES_KV}:{room}", reg)
+                self.store.set(f"{NAMES_KV}_at:{room}", self._name_at[room])
+                self.store.set(f"names:{room}", None)  # the pre-"names2" registry, now carried over
+                self.store.set(f"names_at:{room}", None)
         return reg
+
+    def _migrate_names(self, room: str, reg: dict) -> None:
+        """Carry a pre-"names2" registry over, keeping its arrival order: re-sorting by created_at would let a
+        backdated post take a name its sender only reached later. Only an entry whose holder demonstrably just
+        joined under that name (a join, and no post, under it in history) is dropped; a holder whose events have
+        aged out keeps the name."""
+        old = self.store.get(f"names:{room}")
+        if not isinstance(old, dict) or not old:
+            return
+        old_at = self.store.get(f"names_at:{room}")
+        old_at = old_at if isinstance(old_at, dict) else {}
+        joined, posted = set(), set()
+        for e in self.events.get(room, {}).values():
+            c = self._content(e)
+            sk = skeleton(_name_ok(c.get("name"), ""))
+            if sk:
+                key = (("a:" if self.owner_of(e) else "p:") + sk, e["pubkey"])
+                (joined if c.get("t") == "join" else posted).add(key)
+        at = self._name_at.setdefault(room, {})
+        for k, v in old.items():
+            k, v = str(k), str(v)
+            if (k, v) in joined and (k, v) not in posted:
+                continue  # held only by a bare join, which under the current rule never claimed it
+            reg[k] = v
+            try:
+                at[k] = float(old_at.get(k, 0.0))
+            except (TypeError, ValueError):
+                at[k] = 0.0
+        self._name_count.pop(room, None)  # recounted from reg on the next registration
 
     def _register_name(self, room: str, pk: str, name, agent: bool, save: bool = True) -> None:
         sk = skeleton(_name_ok(name, ""))
