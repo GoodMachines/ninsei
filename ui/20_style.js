@@ -28,7 +28,8 @@ const CSS = TOKENS + `
 .h-center{display:flex;flex-direction:column;min-height:0;min-width:0}
 .h-grid[data-embedded]{grid-template-columns:minmax(0,1fr) 240px}
 .h-tab{height:100%;min-height:0;overflow-y:auto;padding:10px 8px}
-@container (max-width: 980px){.h-grid{grid-template-columns:200px minmax(0,1fr)}.h-grid[data-embedded]{grid-template-columns:minmax(0,1fr)}.h-right{display:none}.h-grid[data-people=open] .h-right{display:block;position:absolute;right:0;top:0;bottom:0;width:260px;z-index:5;background:var(--h-bg);box-shadow:-12px 0 24px -16px var(--h-shadow)}}
+@container (max-width: 980px){.h-grid{grid-template-columns:200px minmax(0,1fr)}.h-grid[data-embedded]{grid-template-columns:minmax(0,1fr)}.h-right{display:none}.h-grid[data-people=open] .h-right{display:block;position:absolute;right:0;top:0;bottom:0;width:260px;z-index:5;background:var(--h-bg);box-shadow:-12px 0 24px -16px var(--h-shadow)}
+.h-grid[data-people=open] .h-scrim{display:block;position:absolute;inset:0;z-index:4;background:color-mix(in srgb,var(--h-bg) 55%,transparent)}.h-grid[data-people=open] .h-right-bar{display:flex;justify-content:flex-end;margin:-6px -2px 4px}}
 @container (max-width: 680px){.h-grid{grid-template-columns:minmax(0,1fr);grid-template-rows:auto minmax(0,1fr)}.h-grid[data-embedded]{grid-template-rows:minmax(0,1fr)}
 .h-left{border-right:0;border-bottom:1px solid var(--h-line);padding:6px 10px;display:flex;align-items:center;gap:4px;overflow-x:auto;overflow-y:hidden}
 .h-left .h-brand{padding:0 6px 0 0;flex:none}.h-left .h-brand>div{display:none}
@@ -36,6 +37,7 @@ const CSS = TOKENS + `
 .h-left .h-navhead{padding:0;flex:none;order:9}.h-left .h-navhead .h-sec{display:none}
 .h-head{padding:10px 12px;flex-wrap:wrap}.h-timeline,.h-composer{padding-left:12px;padding-right:12px}}
 .h-grid{position:relative}
+.h-scrim,.h-right-bar{display:none}
 
 /* the People toggle only shows when the right rail is folded away */
 .h-peoplebtn{display:none!important}
@@ -127,6 +129,7 @@ const CSS = TOKENS + `
 @keyframes h-breathe{0%{transform:translateY(1px);opacity:.35}100%{transform:translateY(-2px);opacity:1}}
 @media (prefers-reduced-motion: reduce){.h-typing i{animation:none}}
 .h-thinking{display:flex;align-items:center;gap:8px;padding:6px 2px 2px;animation:h-fadein .3s ease-out}
+@media (prefers-reduced-motion: reduce){.h-thinking{animation:none}.hx .h-spin{animation:none!important}}
 .h-thinking .h-typing{padding:6px 9px}
 @keyframes h-fadein{from{opacity:0;transform:translateY(4px)}}
 .h-compose-box[data-private=true]{align-items:center}
@@ -146,6 +149,7 @@ const CSS = TOKENS + `
 
 /* Tall Tales */
 .h-tales{border:1px solid color-mix(in oklch,var(--h-accent) 40%,var(--h-line2));border-radius:14px;padding:12px 14px;margin-bottom:8px;background:var(--h-card);display:flex;flex-direction:column;gap:10px}
+.h-tales-bar{flex-direction:row;align-items:center;gap:8px;padding:6px 10px}
 .h-tales-q{font-size:14.5px;font-weight:600;line-height:1.35}
 .h-opts{display:grid;gap:6px}
 .h-opt{display:flex;align-items:center;gap:10px;width:100%;text-align:left;padding:8px 11px;border-radius:9px;border:1px solid var(--h-line2);background:transparent;color:var(--h-fg);cursor:pointer;font:inherit}
@@ -179,6 +183,8 @@ const CSS = TOKENS + `
 .h-field{display:flex;flex-direction:column;gap:5px}
 .h-field label,.h-field .h-label{font-size:12px;font-weight:600;color:var(--h-fg2)}
 .h-field .h-hint{font-size:11.5px;color:var(--h-fg3)}
+.h-field .h-err{color:var(--h-bad)}
+.h-sr{position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}
 .h-two{display:grid;grid-template-columns:1fr 1fr;gap:14px}
 @container (max-width: 560px){.h-two{grid-template-columns:1fr}}
 .h-shapes{display:flex;flex-wrap:wrap;gap:6px}

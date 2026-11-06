@@ -41,6 +41,29 @@ CHAT_NAME = "Ninsei · private line"
 OWNER_ID = "owner"           # the only sender this platform has
 POLL_SECONDS = 1.0           # a local, indexed SQLite read; cheap enough to keep the line feeling live
 HEARTBEAT_SECONDS = 10.0
+REPLY_CHUNK = 60000          # one stored reply holds at most 64,000 characters (store.LINE_REPLY_MAX)
+
+
+def split_reply(content: str, splitter=None, size: int = REPLY_CHUNK) -> list[str]:
+    """A long reply as several thread messages, each under the store's cap, so nothing is cut silently.
+    Uses Hermes's own `truncate_message` (it keeps code fences intact and numbers the parts) when given."""
+    content = str(content or "")
+    if len(content) <= size:
+        return [content]
+    if splitter is not None:
+        try:
+            parts = [p for p in splitter(content, size) if p]
+            if parts and all(len(p) <= size + 64 for p in parts):
+                return parts
+        except Exception:
+            pass
+    parts, rest = [], content
+    while len(rest) > size:   # fallback: break at a line end when there is one in the back half
+        cut = rest.rfind("\n", size // 2, size)
+        cut = cut + 1 if cut > 0 else size
+        parts.append(rest[:cut])
+        rest = rest[cut:]
+    return parts + ([rest] if rest else [])
 
 
 def open_store():
@@ -58,13 +81,28 @@ class NinseiAdapter(BasePlatformAdapter):
     """Private line adapter: local store in, local store out."""
 
     serial_receive_loop = True  # the poll loop hands messages over one at a time, in order
+    splits_long_messages = True  # send() cuts a long reply into thread messages itself (max_message_length is 0)
 
-    def __init__(self, config, store_factory=open_store, **_kw):
+    def __init__(self, config, store_factory=open_store, *, autopoll: bool = True, **_kw):
         super().__init__(config=config, platform=Platform(PLATFORM_NAME))
         self._store_factory = store_factory
         self._store = None
+        self._autopoll = autopoll   # False: no background loop, the caller drives poll_once (tests)
         self._task: Optional[asyncio.Task] = None
+        self._poll_lock = asyncio.Lock()   # one poll at a time, so hand-over stays serial and in order
         self._last_beat = 0.0
+        self._handler_set: Optional[bool] = None   # None until the gateway installs or withdraws its handler
+
+    def set_message_handler(self, handler) -> None:
+        """The gateway withdraws the handler (None) while it drains or restarts; then handle_message drops
+        everything silently, so this adapter stops claiming owner messages until a handler is back."""
+        self._handler_set = handler is not None
+        super().set_message_handler(handler)
+
+    def _can_dispatch(self) -> bool:
+        if self._handler_set is not None:
+            return self._handler_set
+        return getattr(self, "_message_handler", True) is not None
 
     # -- lifecycle ---------------------------------------------------------------------------------
     async def connect(self, *, is_reconnect: bool = False) -> bool:
@@ -74,9 +112,12 @@ class NinseiAdapter(BasePlatformAdapter):
             log.error("[ninsei] could not open the Ninsei store: %s", e)
             return False
         self._mark_connected()
+        # a previous run that died between claiming and handing over left messages half-way: send them again
+        await asyncio.to_thread(self._store.line_requeue)
         await asyncio.to_thread(self._store.line_heartbeat)
         self._last_beat = time.monotonic()
-        self._task = asyncio.create_task(self._poll_loop())
+        if self._autopoll:
+            self._task = asyncio.create_task(self._poll_loop())
         try:
             self._wire_plugin_handlers(None)
         except Exception:
@@ -95,6 +136,10 @@ class NinseiAdapter(BasePlatformAdapter):
             self._task = None
         if self._store is not None:
             store, self._store = self._store, None
+            try:
+                await asyncio.to_thread(store.line_requeue)   # claimed by a cancelled poll, never handed over
+            except Exception:
+                pass
             await asyncio.to_thread(store.close)
 
     async def _poll_loop(self) -> None:
@@ -108,22 +153,52 @@ class NinseiAdapter(BasePlatformAdapter):
             await asyncio.sleep(POLL_SECONDS)
 
     async def poll_once(self) -> int:
-        """Deliver every queued owner message to the gateway. Returns how many."""
+        """Deliver every queued owner message to the gateway. Returns how many. Calls never overlap: a
+        second caller waits for the first, so two batches are never handed over at the same time."""
+        async with self._poll_lock:
+            return await self._poll_locked()
+
+    async def _poll_locked(self) -> int:
         store = self._store
         if store is None:
             return 0
         if time.monotonic() - self._last_beat >= HEARTBEAT_SECONDS:
             await asyncio.to_thread(store.line_heartbeat)
             self._last_beat = time.monotonic()
-        msgs = await asyncio.to_thread(store.line_claim_owner)
-        for m in msgs:
-            event = self.build_event(m, await asyncio.to_thread(self._owner_name))
-            try:
-                await self.handle_message(event)
-            except Exception as e:
-                log.warning("[ninsei] gateway refused a private-line message: %s", e)
-                await asyncio.to_thread(store.line_set_status, m["id"], "failed")
-        return len(msgs)
+        if not self._can_dispatch():
+            return 0   # the gateway is draining: leave owner messages queued instead of dropping them
+        msgs = await asyncio.to_thread(store.line_claim_owner, 20, "claimed")
+        pending = list(msgs)
+        current = None
+        delivered = 0
+        try:
+            while pending:
+                m = pending[0]
+                if not self._can_dispatch():
+                    break
+                current = self.build_event(m, await asyncio.to_thread(self._owner_name))
+                try:
+                    await self.handle_message(current)
+                except Exception as e:
+                    log.warning("[ninsei] gateway refused a private-line message: %s", e)
+                    await asyncio.to_thread(store.line_set_status, m["id"], "failed")
+                    pending.pop(0)
+                    current = None
+                    continue
+                if not self._can_dispatch():
+                    break   # the handler went away during the call: it may have dropped the message
+                await asyncio.to_thread(store.line_set_status, m["id"], "delivered")
+                pending.pop(0)
+                current = None
+                delivered += 1
+        finally:
+            # Anything not handed over (a drain, or this task cancelled mid-batch) goes back in the queue.
+            if pending and current is not None and getattr(current, "_gateway_accepted", False) is True:
+                store.line_set_status(pending[0]["id"], "delivered")   # accepted before the cancel landed
+                pending.pop(0)
+            if pending:
+                store.line_requeue([p["id"] for p in pending])
+        return delivered
 
     # -- inbound -----------------------------------------------------------------------------------
     def _owner_name(self) -> str:
@@ -155,10 +230,13 @@ class NinseiAdapter(BasePlatformAdapter):
         if not str(content or "").strip():
             return SendResult(success=True, message_id=None)
         try:
-            row = await asyncio.to_thread(self._store.line_add_reply, content, reply_to)
+            first = None
+            for part in split_reply(content, getattr(self, "truncate_message", None)):
+                row = await asyncio.to_thread(self._store.line_add_reply, part, reply_to)
+                first = first or row
         except Exception as e:
             return SendResult(success=False, error=str(e))
-        return SendResult(success=True, message_id=row["id"])
+        return SendResult(success=True, message_id=first["id"])
 
     async def edit_message(self, chat_id: str, message_id: str, content: str, *, finalize: bool = False) -> SendResult:
         if self._store is None:
@@ -184,7 +262,10 @@ async def standalone_send(pconfig, chat_id, message, *, thread_id=None, media_fi
     try:
         store = await asyncio.to_thread(store_factory)
         try:
-            row = await asyncio.to_thread(store.line_add_reply, message)
+            row = None
+            for part in split_reply(message):
+                added = await asyncio.to_thread(store.line_add_reply, part)
+                row = row or added
         finally:
             await asyncio.to_thread(store.close)
     except Exception as e:

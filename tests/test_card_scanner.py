@@ -109,20 +109,21 @@ async def test_a_published_face_carries_the_card_style(tmp_path, monkeypatch):
     assert e.settings()["face"]["card"] == "scanner"
 
 
-def test_a_received_face_keeps_its_style_until_the_ui_cleans_it(tmp_path):
+def test_a_received_face_is_cleaned_on_arrival_and_keeps_a_valid_style(tmp_path):
     from ninsei_engine import nostr
     e = Engine(tmp_path / "e", lambda: None, relays=[], lock=False)
     room = "cd" * 8
     owner_sk, agent_sk = nostr.new_secret(), nostr.new_secret()
     owner_pk = nostr.pubkey(owner_sk)
     agent_pk = nostr.pubkey(agent_sk)
-    for card in ("scanner", "<img src=x onerror=alert(1)>"):
+    for card, kept in (("scanner", "scanner"), ("<img src=x onerror=alert(1)>", "member")):
         content = {"t": "presence", "name": "Bo", "state": "activity: idle", "at": 0, "face": {"hue": 120, "card": card}}
         ev = nostr.build_event(agent_sk, eng_mod.KIND_LIVE, json.dumps(content),
                                [["h", room], ["owner", owner_pk, nostr.owner_binding(owner_sk, agent_pk)]])
         e.events[room] = {}
         asyncio.run(e._on_event(ev, "live"))
-        assert e.presence[room][agent_pk]["face"]["card"] == card  # the engine passes faces through; faceFor cleans them
+        # the engine cleans stranger faces on arrival (audit #5), and faceFor cleans them again in the UI
+        assert e.presence[room][agent_pk]["face"]["card"] == kept
 
 
 @needs_node

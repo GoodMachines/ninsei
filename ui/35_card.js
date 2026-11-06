@@ -271,15 +271,36 @@ function findMember(room, pk) {
   return {}
 }
 
+// The first thing focused when a card opens is where focus returns when the last card closes, even
+// after name -> agent -> name chains that remove each sheet's own button.
 function ProfileLayer(props) {
   const [who, setWho] = useState(null)
-  const open = useCallback(w => setWho(w), [])
+  const opener = useRef(null)
+  const shown = useRef(false)
+  const open = useCallback(w => {
+    if (!shown.current) { shown.current = true; opener.current = typeof document !== 'undefined' ? document.activeElement : null }
+    setWho(w)
+  }, [])
+  const close = useCallback(() => { shown.current = false; setWho(null) }, [])
   return jsxs(ProfileContext.Provider, { value: open, children: [
     props.children,
     who && jsx(ProfileSheet, { who, room: props.room, snap: props.snap, store: props.store, openSettings: props.openSettings,
-      onClose: () => setWho(null), onOpen: setWho, key: who.pk })
+      opener, onClose: close, onOpen: open, key: who.pk })
   ] })
 }
+
+// Tab and Shift+Tab stay inside a modal sheet: from `active`, which of `items` gets focus next, or
+// null when the browser's own move stays inside. A focus that is outside the sheet comes back in.
+function tabTarget(items, active, shift) {
+  if (!items.length) return null
+  const i = items.indexOf(active)
+  if (i < 0) return shift ? items[items.length - 1] : items[0]
+  if (shift && i === 0) return items[items.length - 1]
+  if (!shift && i === items.length - 1) return items[0]
+  return null
+}
+
+const FOCUSABLE = 'a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])'
 
 // What the buttons under a card may do. Edit face: only on your own agent's card. Hide: only on someone
 // else's card, and it hides their person (an agent's card hides its owner, as the People column does).
@@ -306,23 +327,32 @@ function ProfileSheet(props) {
   const keepFocus = useRef(false)
   const [busy, setBusy] = useState('')
   const canCopy = useCanCopyImage()
-  const opener = useRef(typeof document !== 'undefined' ? document.activeElement : null)
   const found = findMember(room, who.pk)
   const [card, setCard] = useState(null)
   const [flipped, setFlipped] = useState(false)
   const isAgent = who.kind === 'agent' || !!found.agent
 
   useEffect(() => {
-    const esc = e => { if (e.key === 'Escape') { e.stopPropagation(); props.onClose() } }
+    const esc = e => {
+      if (e.key === 'Escape') { e.stopPropagation(); props.onClose(); return }
+      if (e.key !== 'Tab' || !sheet.current) return
+      const items = Array.from(sheet.current.querySelectorAll(FOCUSABLE)).filter(el => el.getClientRects().length > 0)
+      const next = tabTarget(items, document.activeElement, e.shiftKey)
+      if (next) { e.preventDefault(); next.focus() }
+    }
     const off = P.listen(document, 'keydown', esc)
-    if (close.current) close.current.focus()
+    const closeBtn = close.current && close.current.querySelector('button')
+    if (closeBtn) closeBtn.focus()
     const el = sheet.current
     const s = el && motion.spring({ from: 0, to: 1, k: SPRING.enter.k, c: SPRING.enter.c, onUpdate: x => {
       el.style.opacity = String(clamp(x * 1.6, 0, 1))
       el.style.transform = x === 1 ? '' : 'translateY(' + ((1 - x) * 16).toFixed(2) + 'px) scale(' + (0.94 + 0.06 * x).toFixed(4) + ')'
     } })
-    const back = opener.current
-    return () => { off(); s && s.stop(); if (!keepFocus.current && back && back.focus) try { back.focus() } catch (_) { /* gone */ } }
+    return () => {
+      off(); s && s.stop()
+      const back = props.opener && props.opener.current
+      if (!keepFocus.current && back && back.isConnected && back.focus) try { back.focus() } catch (_) { /* gone */ }
+    }
   }, [])
 
   // a person's published interest card, fetched when theirs opens
@@ -378,7 +408,7 @@ function ProfileSheet(props) {
       jsxs('div', { className: 'h-profile-head', children: [
         jsx(K.Button, { variant: 'ghost', size: 'icon', 'aria-label': 'Flip card', 'aria-pressed': flipped, onClick: () => setFlipped(v => !v),
           children: jsx(K.Icon, { name: 'refresh', size: 14 }) }),
-        jsx('span', { ref: close, tabIndex: -1, style: { outline: 'none' }, children:
+        jsx('span', { ref: close, children:
           jsx(K.Button, { variant: 'ghost', size: 'icon', 'aria-label': 'Close', onClick: props.onClose, children: jsx(K.Icon, { name: 'close', size: 14 }) }) })
       ] }),
       body.card,
@@ -427,7 +457,7 @@ function agentSheet(who, found, snap, onOpen, flip) {
       activity ? activityRow(activity) : null,
       mine && jsx('div', { className: 'h-faint h-small', children: shared
         ? 'Others see its vibe and model. Change this in Settings.'
-        : 'Only you see its vibe and model. You can show them to others in Settings.' }, 's'),
+        : 'Its card hides its vibe and model. Your agent still acts on its vibe in rooms and can repeat it, so keep it free of anything private.' }, 's'),
       !mine && found.owner && jsx('div', { children: jsx(ProfileButton, { who: { kind: 'person', pk: owner.pk, name: owner.name }, label: 'Show ' + ownerName,
         children: jsx('span', { className: 'h-small h-namelink', children: 'See ' + ownerName + '’s card' }) }) }, 'o')
     ]

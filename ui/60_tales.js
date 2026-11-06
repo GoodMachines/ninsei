@@ -16,7 +16,24 @@ function TallTales(props) {
   const [hidden, setHidden] = useState(false)
   const running = game.phase !== 'end'
   const now = useNow(250, running && game.ends_at > 0)
-  if (hidden) return null
+  // A new phase that wants something from you (an answer, a vote) brings a hidden panel back, and so does
+  // the end, once: a game hidden while it ran shows its final scores, with Close, instead of vanishing.
+  const phaseKey = game.gid + ':' + game.n + ':' + game.phase
+  const seen = useRef(phaseKey)
+  useEffect(() => {
+    if (seen.current === phaseKey) return
+    seen.current = phaseKey
+    if (game.phase === 'fakes' || game.phase === 'vote' || game.phase === 'end') setHidden(false)
+  }, [phaseKey])
+  if (hidden && !running) return null
+  if (hidden) {
+    const left = game.ends_at > 0 ? Math.max(0, Math.ceil(game.ends_at - now)) : 0
+    return jsxs('section', { className: 'h-tales h-tales-bar', 'aria-label': gameName(game.mode) + ' (hidden)', children: [
+      jsx(K.Icon, { name: 'game', size: 14 }),
+      jsx('span', { className: 'h-grow h-small h-trunc', children: gameName(game.mode) + ' is running' + (game.n ? ' · round ' + game.n + ' of ' + game.rounds : '') + (left ? ' · ' + left + ' s left' : '') }),
+      jsx(K.Button, { variant: 'secondary', size: 'sm', onClick: () => setHidden(false), children: 'Show game' })
+    ] })
+  }
 
   const hostLabel = game.you_host ? 'Your agent is hosting' : 'Hosted by ' + (game.host_name || 'an agent')
   const round = game.n ? 'Round ' + game.n + ' of ' + game.rounds : 'Getting ready'
@@ -61,11 +78,26 @@ function Countdown(props) {
     label: secs + ' seconds left', children: secs })
 }
 
+// True when moving focus to the game's answer box would take it from nothing, or from inside the game panel.
+function wantsFocus(active, box) {
+  if (!active || active === document.body || active === document.documentElement) return true
+  const panel = box && box.closest ? box.closest('.h-tales') : null
+  return !!(panel && panel.contains(active))
+}
+
 function FakePhase(props) {
   const { store, room, game } = props
   const [text, setText] = useState('')
   const [busy, setBusy] = useState(false)
   const who = game.mode === 'agent'
+  const box = useRef(null)
+  // Take focus when a round opens only if nobody is typing elsewhere (the chat composer): a late
+  // keystroke must never land in an answer that can be sent only once.
+  useEffect(() => {
+    if (props.quiet || game.my_fake) return
+    const input = box.current && box.current.querySelector('input')
+    if (input && wantsFocus(document.activeElement, box.current)) input.focus()
+  }, [])
   if (game.my_fake) {
     return jsxs('div', { className: 'h-col', style: { gap: 4 }, children: [
       jsxs('div', { children: [who ? 'Your answer is in: ' : 'Your fake is in: ', jsx('b', { children: '“' + game.my_fake + '”' })] }),
@@ -85,7 +117,7 @@ function FakePhase(props) {
       ? 'Answer as yourself. Agents answer too, and they’re trying to sound human. Or sound like a bot and fool the room.'
       : 'Write a believable fake answer. You score for everyone it fools.' }),
     jsxs('div', { className: 'h-row', children: [
-      jsx('div', { className: 'h-grow', children: jsx(K.Input, { value: text, maxLength: 80, autoFocus: !props.quiet,
+      jsx('div', { className: 'h-grow', ref: box, children: jsx(K.Input, { value: text, maxLength: 80,
         placeholder: who ? 'Your answer' : 'Your fake answer', 'aria-label': who ? 'Your answer' : 'Your fake answer',
         onChange: e => setText(e.target.value), onKeyDown: e => { if (e.key === 'Enter') { e.preventDefault(); submit() } } }) }),
       jsx(K.Button, { variant: 'primary', disabled: !text.trim() || busy, onClick: submit, children: 'Submit' })

@@ -126,8 +126,10 @@ def no_engine_no_relays(monkeypatch):
         monkeypatch.setattr(loaded, "get_engine", boom)
 
 
-def _adapter(platform, store):
-    return platform.NinseiAdapter(types.SimpleNamespace(extra={}), store_factory=lambda: store)
+def _adapter(platform, store, autopoll=False):
+    """Tests drive poll_once by hand, so the background poll loop is off unless a test asks for it:
+    with it running, a loop tick could claim the rows a test is about to poll for."""
+    return platform.NinseiAdapter(types.SimpleNamespace(extra={}), store_factory=lambda: store, autopoll=autopoll)
 
 
 # ---- store ----------------------------------------------------------------------------------------------

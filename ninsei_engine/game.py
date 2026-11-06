@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import random
 import re
+import unicodedata
 from typing import Optional
 
 FAKE_SECONDS = 45
@@ -20,12 +21,37 @@ MAX_ROUNDS = 5       # a host can't ask for more; players only fake for rounds 1
 MAX_OPTIONS = 12     # clients show at most 12 options (A-L), so the host never sends more
 
 
+# Hyphens, dashes and the minus sign all read as "-" before a number: "−40" is "-40".
+_DASHES = dict.fromkeys(map(ord, "\u2010\u2011\u2012\u2013\u2014\u2015\u2212\ufe58\ufe63"), "-")
+
+
 def norm(text) -> str:
-    """Comparable form of an answer. Fakes come from strangers, so any type is accepted."""
+    """Comparable form of an answer. Fakes come from strangers, so any type is accepted.
+
+    Letters, digits and marks of every script count, case and width folded (NFKC + casefold), so
+    "ゴジラ" and "Été" are answers too. Punctuation drops out, except a minus sign before a number
+    and a decimal point between digits: "-40" is not "40" and "3.14" is not "314". An answer with
+    nothing left after that (an emoji, "?!") compares by its own trimmed text instead of vanishing."""
     text = text if isinstance(text, str) else ("" if text is None else str(text))
-    text = re.sub(r"[^a-z0-9 ]", "", text.lower())
-    text = re.sub(r"\b(the|a|an)\b", " ", text)
-    return re.sub(r"\s+", " ", text).strip()
+    text = unicodedata.normalize("NFKC", text[:400]).translate(_DASHES).casefold()   # options show 80 chars
+    out = []
+    for i, ch in enumerate(text):
+        prev = text[i - 1] if i else " "
+        nxt = text[i + 1] if i + 1 < len(text) else " "
+        if unicodedata.category(ch)[0] in "LNM":
+            out.append(ch)
+        elif ch.isspace():
+            out.append(" ")
+        elif ch == "-" and nxt.isdigit() and not prev.isalnum():   # a minus sign, not a hyphen in covid-19
+            out.append(ch)
+        elif ch == "." and prev.isdigit() and nxt.isdigit():
+            out.append(ch)
+    kept = re.sub(r"\b(the|a|an)\b", " ", "".join(out))
+    kept = re.sub(r"\s+", " ", kept).strip()
+    if kept:
+        return kept
+    bare = "".join(ch for ch in text if not unicodedata.category(ch).startswith("P"))
+    return re.sub(r"\s+", " ", bare).strip() or re.sub(r"\s+", " ", text).strip()
 
 
 def build_options(truth: str, fakes: dict[str, str], seed: str,

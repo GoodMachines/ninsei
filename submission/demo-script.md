@@ -18,7 +18,7 @@ Format: a screen recording of Hermes Desktop (Maya's seat) and a browser tab (Sa
 2. The shader club conversation, live: Sam's question, Ada's reply, Bo silent.
 3. An offer appearing from real conversation, the Accept hand-off, a sped-up build in Hermes chat, then Share and Run on Sam's side.
 4. A full Tall Tales round, sped up between phases.
-5. The impostor attempt from a third test profile, so we don't rename Sam mid-demo.
+5. The impostor attempt from a third test profile, so we don't rename Sam mid-demo. Maya must post in the room while Sam's seat is running first: a name seen only in history from two keys is held by nobody, and both would show as not verified.
 6. The budget ring and Settings.
 
 ## Notes

@@ -6,9 +6,17 @@ import json
 import re
 
 # Applied to every toy before it renders (backend output and, again, in the UI), so a hostile peer's
-# HTML can't phone home even after the viewer presses Run. The iframe sandbox is the second layer.
+# HTML can't phone home through fetch, XHR, WebSocket, images, fonts, frames or workers even after the
+# viewer presses Run. The iframe sandbox is the second layer.
+# It does NOT stop WebRTC: no browser enforces a CSP rule for it (verified in Chrome 156: an
+# RTCPeerConnection under this policy still sends UDP to an address of the toy's choosing, which
+# reveals the viewer's IP and can carry data). `webrtc 'block'` is in the spec draft; Chrome ignores
+# it today (console: "Unrecognized Content-Security-Policy directive") and other browsers do too, so
+# it is here for the day one honours it, and is not a defence now. The only mitigation in use is
+# TOY_GUARD hiding the WebRTC constructors, best effort. The ui/platform head files carry the same
+# string and tests/test_audit_toy.py checks the three match.
 TOY_CSP = ("default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
-           "img-src data: blob:; font-src data:")
+           "img-src data: blob:; font-src data:; webrtc 'block'")
 CSP_META = f'<meta http-equiv="Content-Security-Policy" content="{TOY_CSP}">'
 
 SHARE_SERIALIZED_LIMIT = 48_000   # bytes of serialized event content; relays and peers cap near 64 KB
@@ -40,12 +48,17 @@ def inject_csp(html: str, guard: bool = False) -> str:
 # reaching any other listener. A page the toy navigates to never holds the key, so it can't pass as
 # the toy. Limit: script in the toy's own realm can still win, e.g. document.open() erases these
 # listeners before the key arrives, so a toy written to beat the check can get one page shown.
+# It also hides the WebRTC constructors (best effort, no CSP can: see TOY_CSP). A toy that makes a
+# fresh same-origin frame (document.createElement("iframe")) gets that frame's own untouched
+# RTCPeerConnection, so this stops casual and accidental use, not a toy written to get around it.
 # It lives here, not in the UI, because it is part of the guest document: the Desktop bundle
 # carries no markup.
 TOY_GUARD = (
     '<script>(function(){var F=Function.prototype,B=F.bind.bind(F.call),D=Object.getOwnPropertyDescriptor,'
     'M=MessageEvent.prototype,E=Event.prototype,src=B(D(M,"source").get),dat=B(D(M,"data").get),stop=B(E.stopImmediatePropagation),'
-    'p=parent,k=null,l=0,done=0;function go(){if(k!==null&&l&&!done){done=1;p.postMessage("ninsei-toy-loaded:"+k,"*")}}'
+    'p=parent,k=null,l=0,done=0,W=["RTCPeerConnection","webkitRTCPeerConnection","RTCDataChannel"],i;'
+    'for(i=0;i<3;i++)try{D(globalThis,W[i])&&Object.defineProperty(globalThis,W[i],{value:void 0,writable:false,configurable:false})}catch(_){}'
+    'function go(){if(k!==null&&l&&!done){done=1;p.postMessage("ninsei-toy-loaded:"+k,"*")}}'
     'addEventListener("message",function(e){if(k===null&&e.isTrusted===true&&src(e)===p){var d=dat(e);if(typeof d==="string"&&d.length===32){stop(e);k=d;go()}}},true);'
     'addEventListener("load",function(e){if(e.isTrusted===true){l=1;go()}});p.postMessage("ninsei-toy-hello","*")})()</script>'
 )

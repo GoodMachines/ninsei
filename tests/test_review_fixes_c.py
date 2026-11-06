@@ -131,7 +131,7 @@ def test_csp_goes_first_and_after_a_doctype():
     out = toy.inject_csp("<!DOCTYPE html><html>x</html>")
     assert out.startswith("<!DOCTYPE html>" + toy.CSP_META)
     assert toy.TOY_CSP == ("default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
-                           "img-src data: blob:; font-src data:")
+                           "img-src data: blob:; font-src data:; webrtc 'block'")
     assert toy.inject_csp(None).startswith(toy.CSP_META)
 
 
@@ -175,12 +175,17 @@ async def test_build_report_and_read_build_carry_csp_and_scan(engine):
     assert rep["secrets"] and rep["fits"] and rep["bytes"] == len(p.read_bytes())
 
 
+def _reviewed(engine):
+    """The hash of the bytes the owner reviewed: share_build publishes only those (audit #12)."""
+    return engine.build_report(OID)["sha256"]
+
+
 async def test_share_html_of_a_hostile_peer_gets_the_csp(engine):
     room = await _offer_with_chat(engine, [])
     p = engine.build_path(OID)
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text("<html>hi</html>")
-    out = await run(engine, engine.share_build, OID, "t")
+    out = await run(engine, engine.share_build, OID, "t", False, _reviewed(engine))
     html = engine.share_html(room, out["id"])
     assert html.startswith(toy.CSP_META)
     # the published file is the owner's file, not the CSP-wrapped one
@@ -195,9 +200,9 @@ async def test_share_with_a_secret_is_refused_unless_confirmed(engine):
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text("<html><!-- ghp_" + "a" * 36 + " --></html>")
     with pytest.raises(ValueError, match="looks like it contains"):
-        await run(engine, engine.share_build, OID, "t")
+        await run(engine, engine.share_build, OID, "t", False, _reviewed(engine))
     assert (engine.store.get("offers") or {})[OID]["status"] == "open"
-    out = await run(engine, engine.share_build, OID, "t", True)
+    out = await run(engine, engine.share_build, OID, "t", True, _reviewed(engine))
     assert out["id"] in engine.events[room]
 
 
@@ -209,7 +214,7 @@ async def test_oversize_share_raises_instead_of_vanishing(engine):
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text('"\n' * 30_000)        # 60 KB raw, about 2x once JSON-escaped
     with pytest.raises(ValueError, match="once packed"):
-        await run(engine, engine.share_build, OID, "t")
+        await run(engine, engine.share_build, OID, "t", False, _reviewed(engine))
     assert (engine.store.get("offers") or {})[OID]["status"] == "open"
     assert not engine.build_report(OID)["fits"]
 
@@ -220,7 +225,7 @@ async def test_non_ascii_share_is_not_inflated_and_arrives(engine):
     p.parent.mkdir(parents=True, exist_ok=True)
     body = "<html>" + "猫🐈" * 4000 + "</html>"   # ~19 KB of UTF-8, 6x that as \uXXXX escapes
     p.write_text(body)
-    out = await run(engine, engine.share_build, OID, "t")
+    out = await run(engine, engine.share_build, OID, "t", False, _reviewed(engine))
     ev = engine.events[room][out["id"]]
     assert "\\u" not in ev["content"] and len(ev["content"].encode()) < SHARE_SERIALIZED_LIMIT
     assert json.loads(ev["content"])["html"] == body

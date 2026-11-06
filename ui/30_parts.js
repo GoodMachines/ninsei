@@ -6,6 +6,7 @@ function Field(props) {
   return jsxs('div', { className: 'h-field', children: [
     props.label && jsx('label', { htmlFor: props.id, children: props.label }),
     props.children,
+    props.error && jsx('div', { className: 'h-hint h-err', id: props.id ? props.id + '-err' : undefined, role: 'alert', children: props.error }),
     props.hint && jsx('div', { className: 'h-hint', children: props.hint })
   ] })
 }

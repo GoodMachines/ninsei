@@ -45,6 +45,7 @@ CREATE TABLE IF NOT EXISTS build_progress (
 # private line limits: one owner message, one stored reply
 LINE_OWNER_MAX = 8000
 LINE_REPLY_MAX = 64000
+LINE_CUT_NOTE = "\n\n[Ninsei cut this reply here: it is longer than 64,000 characters.]"
 LINE_GATEWAY_FRESH = 45   # seconds: the adapter heartbeats every 10
 LINE_TYPING_FRESH = 12    # seconds: the gateway re-sends typing every few seconds while it works
 
@@ -53,6 +54,15 @@ LINE_TYPING_FRESH = 12    # seconds: the gateway re-sends typing every few secon
 EVENT_HISTORY_DAYS = 3
 EVENT_ROOM_CAP = 1500
 EVENT_PRUNE_EVERY = 100   # adds between cheap prune passes
+
+
+def cap_reply(text: str) -> str:
+    """A stored reply is at most LINE_REPLY_MAX characters. A longer one is cut with a visible note, so a
+    reader never mistakes the cut for the end. (The gateway adapter splits long replies before they get here.)"""
+    text = str(text or "")
+    if len(text) <= LINE_REPLY_MAX:
+        return text
+    return text[:LINE_REPLY_MAX - len(LINE_CUT_NOTE)] + LINE_CUT_NOTE
 
 
 def today() -> str:
@@ -77,6 +87,12 @@ class Store:
             if f.exists():
                 os.chmod(f, 0o600)
         self._db.executescript(SCHEMA)
+        cols = {r[1] for r in self._db.execute("PRAGMA table_info(events)")}
+        if "arrived_at" not in cols:  # databases from before arrival times were kept
+            try:
+                self._db.execute("ALTER TABLE events ADD COLUMN arrived_at REAL")
+            except sqlite3.OperationalError:  # another process (ninsei_say) added it first
+                pass
         self._db.commit()
         self.event_history_days = EVENT_HISTORY_DAYS
         self.event_room_cap = EVENT_ROOM_CAP
@@ -100,11 +116,13 @@ class Store:
             self._db.commit()
 
     # --- events -----------------------------------------------------------------------------------
-    def add_event(self, room: str, ev: dict) -> bool:
+    def add_event(self, room: str, ev: dict, arrived_at: Optional[float] = None) -> bool:
+        """Store a room event. `arrived_at` is when it reached us live (None for a history pull, which has no
+        real arrival time): the engine ranks games and name holders by it, so it has to survive a restart."""
         with self._lock:
             cur = self._db.execute(
-                "INSERT OR IGNORE INTO events(id,room,kind,pubkey,created_at,json) VALUES(?,?,?,?,?,?)",
-                (ev["id"], room, ev["kind"], ev["pubkey"], ev["created_at"], json.dumps(ev)))
+                "INSERT OR IGNORE INTO events(id,room,kind,pubkey,created_at,json,arrived_at) VALUES(?,?,?,?,?,?,?)",
+                (ev["id"], room, ev["kind"], ev["pubkey"], ev["created_at"], json.dumps(ev), arrived_at))
             self._db.commit()
             added = cur.rowcount > 0
             if added:
@@ -133,6 +151,15 @@ class Store:
         with self._lock:
             self._db.executemany("DELETE FROM events WHERE id=?", [(i,) for i in ids])
             self._db.commit()
+
+    def room_arrivals(self, room: str, limit: int = 400) -> dict[str, float]:
+        """event id -> when it reached us live, for the same newest `limit` events `room_events` returns.
+        Events stored without one (a history pull, or rows from before arrival times were kept) are absent."""
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT id, arrived_at FROM events WHERE room=? ORDER BY created_at DESC, id DESC LIMIT ?",
+                (room, limit)).fetchall()
+        return {r[0]: float(r[1]) for r in reversed(rows) if r[1] is not None}
 
     def room_events(self, room: str, limit: int = 400) -> list[dict]:
         with self._lock:
@@ -243,6 +270,14 @@ class Store:
                 "SELECT json, created_at FROM event_outbox WHERE status='pending' ORDER BY created_at").fetchall()
         return [(json.loads(r[0]), r[1]) for r in rows]
 
+    def event_outbox_drop(self, ids: list[str]) -> None:
+        """Delete rows outright (an accepted event needs none: unknown ids read as sent)."""
+        if not ids:
+            return
+        with self._lock:
+            self._db.executemany("DELETE FROM event_outbox WHERE id=?", [(i,) for i in ids])
+            self._db.commit()
+
     def event_outbox_prune(self, older_than: float) -> None:
         """Forget finished (sent/failed) rows older than `older_than` seconds."""
         with self._lock:
@@ -269,8 +304,10 @@ class Store:
             self._db.commit()
         return self._line_row(row)
 
-    def line_claim_owner(self, limit: int = 20) -> list[dict]:
-        """Atomically take queued owner messages (queued -> delivered), oldest first."""
+    def line_claim_owner(self, limit: int = 20, to: str = "delivered") -> list[dict]:
+        """Atomically take queued owner messages (queued -> `to`), oldest first. The gateway adapter claims
+        into "claimed" and marks a message "delivered" only once the gateway accepted it; `line_requeue`
+        puts a claimed one back."""
         with self._lock:
             rows = self._db.execute(
                 "SELECT id,role,text,status,reply_to,created_at,updated_at FROM private_line "
@@ -278,12 +315,29 @@ class Store:
             out = []
             now = time.time()
             for r in rows:
-                cur = self._db.execute("UPDATE private_line SET status='delivered', updated_at=? "
-                                       "WHERE id=? AND status='queued'", (now, r[0]))
+                cur = self._db.execute("UPDATE private_line SET status=?, updated_at=? "
+                                       "WHERE id=? AND status='queued'", (to, now, r[0]))
                 if cur.rowcount:
-                    out.append({**self._line_row(r), "status": "delivered", "updated_at": now})
+                    out.append({**self._line_row(r), "status": to, "updated_at": now})
             self._db.commit()
         return out
+
+    def line_requeue(self, ids: Optional[list[str]] = None) -> int:
+        """Put claimed-but-undispatched owner messages back in the queue (all of them when `ids` is None,
+        for a restarted adapter whose previous run died mid-batch). Returns how many went back."""
+        with self._lock:
+            if ids is None:
+                cur = self._db.execute("UPDATE private_line SET status='queued', updated_at=? "
+                                       "WHERE role='owner' AND status='claimed'", (time.time(),))
+                n = cur.rowcount
+            else:
+                n = 0
+                for mid in ids:
+                    n += self._db.execute("UPDATE private_line SET status='queued', updated_at=? "
+                                          "WHERE id=? AND role='owner' AND status='claimed'",
+                                          (time.time(), mid)).rowcount
+            self._db.commit()
+        return n
 
     def line_set_status(self, mid: str, status: str) -> None:
         with self._lock:
@@ -293,7 +347,7 @@ class Store:
     def line_add_reply(self, text: str, reply_to: Optional[str] = None) -> dict:
         """A message from the owner's Hermes, written by the gateway adapter. Private: never published."""
         now = time.time()
-        row = (uuid.uuid4().hex[:16], "hermes", str(text or "")[:LINE_REPLY_MAX], "new", reply_to, now, now)
+        row = (uuid.uuid4().hex[:16], "hermes", cap_reply(text), "new", reply_to, now, now)
         with self._lock:
             self._db.execute("INSERT INTO private_line(id,role,text,status,reply_to,created_at,updated_at) "
                              "VALUES(?,?,?,?,?,?,?)", row)
@@ -304,7 +358,7 @@ class Store:
     def line_edit_reply(self, mid: str, text: str) -> bool:
         with self._lock:
             cur = self._db.execute("UPDATE private_line SET text=?, updated_at=? WHERE id=? AND role='hermes'",
-                                   (str(text or "")[:LINE_REPLY_MAX], time.time(), mid))
+                                   (cap_reply(text), time.time(), mid))
             self._db.commit()
             return cur.rowcount > 0
 

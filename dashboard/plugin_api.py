@@ -39,7 +39,7 @@ async def _run(fn, *args, **kwargs) -> Any:
         # engine's work finishes. Otherwise a game start would die after its questions were paid for.
         return await asyncio.shield(asyncio.wrap_future(eng.call(fn, *args, **kwargs)))
     except (ValueError, KeyError) as e:
-        raise HTTPException(status_code=400, detail=str(e).strip("'\""))
+        raise _http(e)
 
 
 async def _sync(fn, *args) -> Any:
@@ -51,7 +51,14 @@ async def _sync(fn, *args) -> Any:
     try:
         return await asyncio.wrap_future(eng.call(wrap))
     except (ValueError, KeyError) as e:
-        raise HTTPException(status_code=400, detail=str(e).strip("'\""))
+        raise _http(e)
+
+
+def _http(e: Exception) -> HTTPException:
+    """An engine refusal as an HTTP error: 400, unless the error names its own status (a share whose file
+    changed since the owner reviewed it is a 409, so the UI knows to fetch the build again)."""
+    status = getattr(e, "http_status", 400)
+    return HTTPException(status_code=status if status in (400, 409) else 400, detail=str(e).strip("'\""))
 
 
 router = APIRouter()
@@ -99,6 +106,7 @@ class ShareIn(BaseModel):
     offer: str
     title: str = ""
     confirm_secrets: bool = False
+    sha256: str = ""  # build_report's hash of the file the owner reviewed; a missing or stale one is a 409
 
 
 class FakeIn(BaseModel):
@@ -224,7 +232,7 @@ async def offer_build(offer: str):
 @router.post("/offers/share")
 async def offer_share(body: ShareIn):
     eng = await _engine()
-    return await _run(eng.share_build, body.offer, body.title, body.confirm_secrets)
+    return await _run(eng.share_build, body.offer, body.title, body.confirm_secrets, body.sha256)
 
 
 @router.get("/profile")

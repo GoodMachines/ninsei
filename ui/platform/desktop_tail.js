@@ -11,8 +11,9 @@ const K = {
     return jsx(sdk.Button, p)
   },
   Input: sdk.Input,
+  // The SDK's spinner isn't known to honour reduced motion, so it isn't asked to spin when that's on.
   Icon(props) {
-    return jsx(sdk.Codicon, { name: props.name, size: props.size || 14, spinning: props.spinning, 'aria-hidden': true })
+    return jsx(sdk.Codicon, { name: props.name, size: props.size || 14, spinning: !!props.spinning && !motion.reduced(), 'aria-hidden': true })
   },
   Tip(props) {
     return sdk.Tip ? jsx(sdk.Tip, { label: props.label, children: props.children }) : props.children

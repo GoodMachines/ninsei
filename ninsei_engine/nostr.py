@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import secrets
 import time
 from functools import lru_cache
@@ -99,6 +100,16 @@ def _lift_x(x: int) -> Point:
     return (x, y if y % 2 == 0 else P - y)
 
 
+_HEX = re.compile(r"[0-9a-f]*")
+
+
+def is_hex(value: Any, nbytes: int) -> bool:
+    """Is value canonical NIP-01 hex: lowercase, exactly nbytes long, nothing else? Keys, ids and signatures
+    from strangers must pass this before anything compares them: bytes.fromhex also takes uppercase and
+    spaces, so a lenient parse would let one key arrive under many spellings (and slip past Hide)."""
+    return isinstance(value, str) and len(value) == 2 * nbytes and _HEX.fullmatch(value) is not None
+
+
 def _tagged(tag: str, msg: bytes) -> bytes:
     th = hashlib.sha256(tag.encode()).digest()
     return hashlib.sha256(th + th + msg).digest()
@@ -139,12 +150,9 @@ def sign(sk_hex: str, msg: bytes, aux: Optional[bytes] = None) -> bytes:
 
 
 def verify(pk_hex: str, msg: bytes, sig: bytes) -> bool:
-    try:
-        pk = bytes.fromhex(pk_hex)
-    except ValueError:
+    if not is_hex(pk_hex, 32) or not isinstance(sig, (bytes, bytearray)) or len(sig) != 64:
         return False
-    if len(pk) != 32 or len(sig) != 64:
-        return False
+    pk = bytes.fromhex(pk_hex)
     pt = _lift_x(_i(pk))
     r, s = _i(sig[:32]), _i(sig[32:])
     if pt is None or r >= P or s >= N:
@@ -208,6 +216,8 @@ def check_event(ev: Any) -> bool:
             return False
         if any(not isinstance(t, list) or not all(isinstance(x, str) for x in t) for t in ev["tags"]):
             return False
+        if not (is_hex(ev.get("id"), 32) and is_hex(ev.get("pubkey"), 32) and is_hex(ev.get("sig"), 64)):
+            return False   # one canonical spelling per key, or a hidden person comes back in capitals
         if event_id(ev) != ev.get("id"):
             return False
         return verify(ev["pubkey"], bytes.fromhex(ev["id"]), bytes.fromhex(ev["sig"]))
@@ -241,8 +251,8 @@ def owner_binding(owner_sk: str, agent_pk: str) -> str:
 
 def check_binding(owner_pk: str, agent_pk: str, sig_hex: str) -> bool:
     """Is sig_hex the owner's signature binding this agent key? Inputs come from strangers' tags."""
-    if not all(isinstance(x, str) and len(x) <= 256 for x in (owner_pk, agent_pk, sig_hex)):
-        return False
+    if not (is_hex(owner_pk, 32) and is_hex(agent_pk, 32) and is_hex(sig_hex, 64)):
+        return False   # an owner key in another spelling would bind the agent to a key nobody compares equal
     return _check_binding_cached(owner_pk, agent_pk, sig_hex)
 
 

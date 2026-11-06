@@ -9,6 +9,12 @@ function byActivity(a, b) {
     (b.talkers || 0) - (a.talkers || 0) || (b.msgs || 0) - (a.msgs || 0) || (b.at || 0) - (a.at || 0)
 }
 
+// Open a room you're in: pick it and switch to the room view (the Lobby and Welcome stay up until the view changes).
+function openRoom(store, id) {
+  store.setRoom(id)
+  nav().set('room')
+}
+
 // After setup and whenever no room is open: the rooms most worth joining for you right now.
 function picksFor(snap) {
   return lobbyRooms(snap).filter(r => !r.joined && (r.live || (r.overlap || []).length)).slice(0, 3)
@@ -37,7 +43,7 @@ function Lobby(props) {
 
   const join = async r => {
     setJoining(r.id)
-    try { await store.post('/rooms/join', { room: r.id }, 'Joined ' + r.name); store.setRoom(r.id) } catch (_) { /* toasted */ }
+    try { await store.post('/rooms/join', { room: r.id }, 'Joined ' + r.name); openRoom(store, r.id) } catch (_) { /* toasted */ }
     setJoining('')
   }
 
@@ -61,7 +67,7 @@ function Lobby(props) {
         lobby.at ? jsx('span', { className: 'h-faint h-small', children: 'updated ' + fmtAgo(lobby.at) }) : null
       ] }),
       rooms.length === 0 ? jsx('div', { className: 'h-faint', children: busy ? 'Asking the relays…' : 'No public rooms found yet. Start one and it shows up here for others.' })
-        : jsx('div', { className: 'h-list', children: rooms.map(r => jsx(LobbyRoom, { r, joining: joining === r.id, onJoin: () => join(r), onOpen: () => store.setRoom(r.id) }, r.id)) })
+        : jsx('div', { className: 'h-list', children: rooms.map(r => jsx(LobbyRoom, { r, joining: joining === r.id, onJoin: () => join(r), onOpen: () => openRoom(store, r.id) }, r.id)) })
     ] }),
     jsxs('section', { className: 'h-col', style: { gap: 10 }, children: [
       jsx('h3', { children: 'People' }),
@@ -142,6 +148,7 @@ function CardSection(props) {
     setBusy(false)
   }
   const published = s.card_published_at > 0
+  const noInterests = !(s.interests || []).length
   const c = preview || { name: s.display_name, line: s.line, interests: s.interests, agent: { name: s.agent_name, face: s.face, pk: snap.me.agent.pk } }
   return jsxs('section', { className: 'h-col', style: { gap: 10 }, children: [
     jsxs('div', { className: 'h-row', children: [
@@ -159,8 +166,12 @@ function CardSection(props) {
     raw && jsx('pre', { className: 'h-pre', children: JSON.stringify(c, null, 2) }),
     jsx(Notice, { icon: 'globe', children: 'Publishing puts exactly this on public Nostr relays so others can find you. Anyone can read it. Publish again after you change it.' }),
     jsxs('div', { className: 'h-actions', children: [
-      jsx(K.Button, { variant: 'primary', size: 'sm', disabled: busy || !(s.interests || []).length, onClick: publish, children: busy ? 'Publishing…' : published ? 'Publish again' : 'Publish my card' }),
+      jsx(K.Button, { variant: 'primary', size: 'sm', disabled: busy || noInterests, 'aria-describedby': noInterests ? 'h-card-hint' : undefined, onClick: publish, children: busy ? 'Publishing…' : published ? 'Publish again' : 'Publish my card' }),
       jsx(K.Button, { variant: 'ghost', size: 'sm', onClick: () => setRaw(!raw), children: raw ? 'Hide exact data' : 'Show exact data' })
+    ] }),
+    noInterests && jsxs('div', { className: 'h-faint h-small h-row', id: 'h-card-hint', style: { gap: 6, flexWrap: 'wrap' }, children: [
+      'Add at least one interest to publish your card. People find you through them.',
+      jsx(K.Button, { variant: 'ghost', size: 'sm', onClick: () => { if (P.kind === 'dashboard') nav().set('settings'); else P.openSettings() }, children: 'Open Settings' })
     ] })
   ] })
 }

@@ -228,7 +228,8 @@ async def test_offer_build_share_loop(world, tmp_path):
     p.write_text("<html><body>toy</body></html>")
     assert await wait_for(lambda: (read(owner_engine, owner_engine.store.get, "offers") or {})[offer["id"]]["status"]
                           == "ready")
-    await run(owner_engine, owner_engine.share_build, offer["id"], "Pixel sorter")
+    reviewed = read(owner_engine, owner_engine.build_report, offer["id"])["sha256"]
+    await run(owner_engine, owner_engine.share_build, offer["id"], "Pixel sorter", sha256=reviewed)
     assert await wait_for(lambda: any(m["t"] == "share" for m in read(other, other.messages, room)))
     share = [m for m in read(other, other.messages, room) if m["t"] == "share"][0]
     shared = read(other, other.share_html, room, share["id"])

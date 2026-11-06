@@ -28,7 +28,8 @@
 
   // Every toy renders under this policy, added here as well as by the backend so it holds even for HTML
   // that came straight from a stranger. It goes first (after a doctype, which keeps standards mode).
-  const TOY_CSP = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:"
+  // Same string as toy.TOY_CSP (tests/test_audit_toy.py). webrtc 'block' is ignored by today's browsers; see toy.py.
+  const TOY_CSP = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; webrtc 'block'"
   function withCsp(html) {
     const src = String(html == null ? '' : html)
     const meta = '<meta http-equiv="Content-Security-Policy" content="' + TOY_CSP + '">'
@@ -682,7 +683,8 @@ const CSS = TOKENS + `
 .h-center{display:flex;flex-direction:column;min-height:0;min-width:0}
 .h-grid[data-embedded]{grid-template-columns:minmax(0,1fr) 240px}
 .h-tab{height:100%;min-height:0;overflow-y:auto;padding:10px 8px}
-@container (max-width: 980px){.h-grid{grid-template-columns:200px minmax(0,1fr)}.h-grid[data-embedded]{grid-template-columns:minmax(0,1fr)}.h-right{display:none}.h-grid[data-people=open] .h-right{display:block;position:absolute;right:0;top:0;bottom:0;width:260px;z-index:5;background:var(--h-bg);box-shadow:-12px 0 24px -16px var(--h-shadow)}}
+@container (max-width: 980px){.h-grid{grid-template-columns:200px minmax(0,1fr)}.h-grid[data-embedded]{grid-template-columns:minmax(0,1fr)}.h-right{display:none}.h-grid[data-people=open] .h-right{display:block;position:absolute;right:0;top:0;bottom:0;width:260px;z-index:5;background:var(--h-bg);box-shadow:-12px 0 24px -16px var(--h-shadow)}
+.h-grid[data-people=open] .h-scrim{display:block;position:absolute;inset:0;z-index:4;background:color-mix(in srgb,var(--h-bg) 55%,transparent)}.h-grid[data-people=open] .h-right-bar{display:flex;justify-content:flex-end;margin:-6px -2px 4px}}
 @container (max-width: 680px){.h-grid{grid-template-columns:minmax(0,1fr);grid-template-rows:auto minmax(0,1fr)}.h-grid[data-embedded]{grid-template-rows:minmax(0,1fr)}
 .h-left{border-right:0;border-bottom:1px solid var(--h-line);padding:6px 10px;display:flex;align-items:center;gap:4px;overflow-x:auto;overflow-y:hidden}
 .h-left .h-brand{padding:0 6px 0 0;flex:none}.h-left .h-brand>div{display:none}
@@ -690,6 +692,7 @@ const CSS = TOKENS + `
 .h-left .h-navhead{padding:0;flex:none;order:9}.h-left .h-navhead .h-sec{display:none}
 .h-head{padding:10px 12px;flex-wrap:wrap}.h-timeline,.h-composer{padding-left:12px;padding-right:12px}}
 .h-grid{position:relative}
+.h-scrim,.h-right-bar{display:none}
 
 /* the People toggle only shows when the right rail is folded away */
 .h-peoplebtn{display:none!important}
@@ -781,6 +784,7 @@ const CSS = TOKENS + `
 @keyframes h-breathe{0%{transform:translateY(1px);opacity:.35}100%{transform:translateY(-2px);opacity:1}}
 @media (prefers-reduced-motion: reduce){.h-typing i{animation:none}}
 .h-thinking{display:flex;align-items:center;gap:8px;padding:6px 2px 2px;animation:h-fadein .3s ease-out}
+@media (prefers-reduced-motion: reduce){.h-thinking{animation:none}.hx .h-spin{animation:none!important}}
 .h-thinking .h-typing{padding:6px 9px}
 @keyframes h-fadein{from{opacity:0;transform:translateY(4px)}}
 .h-compose-box[data-private=true]{align-items:center}
@@ -800,6 +804,7 @@ const CSS = TOKENS + `
 
 /* Tall Tales */
 .h-tales{border:1px solid color-mix(in oklch,var(--h-accent) 40%,var(--h-line2));border-radius:14px;padding:12px 14px;margin-bottom:8px;background:var(--h-card);display:flex;flex-direction:column;gap:10px}
+.h-tales-bar{flex-direction:row;align-items:center;gap:8px;padding:6px 10px}
 .h-tales-q{font-size:14.5px;font-weight:600;line-height:1.35}
 .h-opts{display:grid;gap:6px}
 .h-opt{display:flex;align-items:center;gap:10px;width:100%;text-align:left;padding:8px 11px;border-radius:9px;border:1px solid var(--h-line2);background:transparent;color:var(--h-fg);cursor:pointer;font:inherit}
@@ -833,6 +838,8 @@ const CSS = TOKENS + `
 .h-field{display:flex;flex-direction:column;gap:5px}
 .h-field label,.h-field .h-label{font-size:12px;font-weight:600;color:var(--h-fg2)}
 .h-field .h-hint{font-size:11.5px;color:var(--h-fg3)}
+.h-field .h-err{color:var(--h-bad)}
+.h-sr{position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}
 .h-two{display:grid;grid-template-columns:1fr 1fr;gap:14px}
 @container (max-width: 560px){.h-two{grid-template-columns:1fr}}
 .h-shapes{display:flex;flex-wrap:wrap;gap:6px}
@@ -1094,6 +1101,7 @@ function Field(props) {
   return jsxs('div', { className: 'h-field', children: [
     props.label && jsx('label', { htmlFor: props.id, children: props.label }),
     props.children,
+    props.error && jsx('div', { className: 'h-hint h-err', id: props.id ? props.id + '-err' : undefined, role: 'alert', children: props.error }),
     props.hint && jsx('div', { className: 'h-hint', children: props.hint })
   ] })
 }
@@ -2248,15 +2256,36 @@ function findMember(room, pk) {
   return {}
 }
 
+// The first thing focused when a card opens is where focus returns when the last card closes, even
+// after name -> agent -> name chains that remove each sheet's own button.
 function ProfileLayer(props) {
   const [who, setWho] = useState(null)
-  const open = useCallback(w => setWho(w), [])
+  const opener = useRef(null)
+  const shown = useRef(false)
+  const open = useCallback(w => {
+    if (!shown.current) { shown.current = true; opener.current = typeof document !== 'undefined' ? document.activeElement : null }
+    setWho(w)
+  }, [])
+  const close = useCallback(() => { shown.current = false; setWho(null) }, [])
   return jsxs(ProfileContext.Provider, { value: open, children: [
     props.children,
     who && jsx(ProfileSheet, { who, room: props.room, snap: props.snap, store: props.store, openSettings: props.openSettings,
-      onClose: () => setWho(null), onOpen: setWho, key: who.pk })
+      opener, onClose: close, onOpen: open, key: who.pk })
   ] })
 }
+
+// Tab and Shift+Tab stay inside a modal sheet: from `active`, which of `items` gets focus next, or
+// null when the browser's own move stays inside. A focus that is outside the sheet comes back in.
+function tabTarget(items, active, shift) {
+  if (!items.length) return null
+  const i = items.indexOf(active)
+  if (i < 0) return shift ? items[items.length - 1] : items[0]
+  if (shift && i === 0) return items[items.length - 1]
+  if (!shift && i === items.length - 1) return items[0]
+  return null
+}
+
+const FOCUSABLE = 'a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])'
 
 // What the buttons under a card may do. Edit face: only on your own agent's card. Hide: only on someone
 // else's card, and it hides their person (an agent's card hides its owner, as the People column does).
@@ -2283,23 +2312,32 @@ function ProfileSheet(props) {
   const keepFocus = useRef(false)
   const [busy, setBusy] = useState('')
   const canCopy = useCanCopyImage()
-  const opener = useRef(typeof document !== 'undefined' ? document.activeElement : null)
   const found = findMember(room, who.pk)
   const [card, setCard] = useState(null)
   const [flipped, setFlipped] = useState(false)
   const isAgent = who.kind === 'agent' || !!found.agent
 
   useEffect(() => {
-    const esc = e => { if (e.key === 'Escape') { e.stopPropagation(); props.onClose() } }
+    const esc = e => {
+      if (e.key === 'Escape') { e.stopPropagation(); props.onClose(); return }
+      if (e.key !== 'Tab' || !sheet.current) return
+      const items = Array.from(sheet.current.querySelectorAll(FOCUSABLE)).filter(el => el.getClientRects().length > 0)
+      const next = tabTarget(items, document.activeElement, e.shiftKey)
+      if (next) { e.preventDefault(); next.focus() }
+    }
     const off = P.listen(document, 'keydown', esc)
-    if (close.current) close.current.focus()
+    const closeBtn = close.current && close.current.querySelector('button')
+    if (closeBtn) closeBtn.focus()
     const el = sheet.current
     const s = el && motion.spring({ from: 0, to: 1, k: SPRING.enter.k, c: SPRING.enter.c, onUpdate: x => {
       el.style.opacity = String(clamp(x * 1.6, 0, 1))
       el.style.transform = x === 1 ? '' : 'translateY(' + ((1 - x) * 16).toFixed(2) + 'px) scale(' + (0.94 + 0.06 * x).toFixed(4) + ')'
     } })
-    const back = opener.current
-    return () => { off(); s && s.stop(); if (!keepFocus.current && back && back.focus) try { back.focus() } catch (_) { /* gone */ } }
+    return () => {
+      off(); s && s.stop()
+      const back = props.opener && props.opener.current
+      if (!keepFocus.current && back && back.isConnected && back.focus) try { back.focus() } catch (_) { /* gone */ }
+    }
   }, [])
 
   // a person's published interest card, fetched when theirs opens
@@ -2355,7 +2393,7 @@ function ProfileSheet(props) {
       jsxs('div', { className: 'h-profile-head', children: [
         jsx(K.Button, { variant: 'ghost', size: 'icon', 'aria-label': 'Flip card', 'aria-pressed': flipped, onClick: () => setFlipped(v => !v),
           children: jsx(K.Icon, { name: 'refresh', size: 14 }) }),
-        jsx('span', { ref: close, tabIndex: -1, style: { outline: 'none' }, children:
+        jsx('span', { ref: close, children:
           jsx(K.Button, { variant: 'ghost', size: 'icon', 'aria-label': 'Close', onClick: props.onClose, children: jsx(K.Icon, { name: 'close', size: 14 }) }) })
       ] }),
       body.card,
@@ -2404,7 +2442,7 @@ function agentSheet(who, found, snap, onOpen, flip) {
       activity ? activityRow(activity) : null,
       mine && jsx('div', { className: 'h-faint h-small', children: shared
         ? 'Others see its vibe and model. Change this in Settings.'
-        : 'Only you see its vibe and model. You can show them to others in Settings.' }, 's'),
+        : 'Its card hides its vibe and model. Your agent still acts on its vibe in rooms and can repeat it, so keep it free of anything private.' }, 's'),
       !mine && found.owner && jsx('div', { children: jsx(ProfileButton, { who: { kind: 'person', pk: owner.pk, name: owner.name }, label: 'Show ' + ownerName,
         children: jsx('span', { className: 'h-small h-namelink', children: 'See ' + ownerName + '’s card' }) }) }, 'o')
     ]
@@ -2953,6 +2991,20 @@ function useCanCopyImage() {
 // onboarding (first run) and settings (Desktop: Settings > Plugins > Ninsei; dashboard: a view)
 // ---------------------------------------------------------------------------------------------
 
+// A whole number typed into a limit field, or null when it is empty or not a number (never a silent 0).
+function parseCount(v) {
+  const t = String(v == null ? '' : v).trim()
+  return /^\d{1,9}$/.test(t) ? parseInt(t, 10) : null
+}
+const BUDGET_MAX = 5000000   // the engine's own caps
+const MSGS_MAX = 2000
+function limitError(v, max, unit, example) {
+  const n = parseCount(v)
+  if (n === null) return 'Enter a whole number of ' + unit + ', like ' + example + '.'
+  if (n > max) return 'The most is ' + max.toLocaleString('en-US') + ' ' + unit + '.'
+  return ''
+}
+
 function Onboarding(props) {
   const store = props.store
   const snap = props.snap
@@ -2990,7 +3042,7 @@ function Onboarding(props) {
       jsx(Field, { label: "Your agent's name", id: 'h-on-agent', children: jsx(K.Input, { id: 'h-on-agent', value: form.agent_name, maxLength: 32,
         placeholder: 'Ada', onChange: e => set({ agent_name: e.target.value }) }) })
     ] }),
-    jsx(Field, { label: 'Its vibe, in one line', id: 'h-on-vibe', hint: 'This is the whole persona your agent brings into rooms. It never sees your files or chats.',
+    jsx(Field, { label: 'Its vibe, in one line', id: 'h-on-vibe', hint: 'This is the whole persona your agent brings into rooms, and it can repeat it there, so keep it free of anything private. It never sees your files or chats.',
       children: jsx(K.Input, { id: 'h-on-vibe', value: form.vibe, maxLength: 200, placeholder: 'dry wit, loves color theory',
         onChange: e => set({ vibe: e.target.value }) }) }),
     jsx(Field, { label: 'Its face', children: jsxs('div', { className: 'h-col', style: { gap: 14 }, children: [
@@ -2998,11 +3050,13 @@ function Onboarding(props) {
         fields: [['Owner', form.display_name || 'You'], ['Status', 'New']] }) }),
       jsx(FacePicker, { value: form.face, pk: agentPk, name: form.agent_name, noPreview: true, onChange: face => set({ face }) })
     ] }) }),
-    jsx(Field, { label: 'What are you into?', id: 'h-on-int', hint: 'Used to find rooms and people. Nothing is published until you choose to in the Lobby.',
+    jsx(Field, { label: 'What are you into?', id: 'h-on-int', hint: 'Used to find rooms and people. Your interest card is published only if you choose to in the Lobby.',
       children: jsx(InterestInput, { id: 'h-on-int', value: form.interests, onChange: interests => set({ interests }) }) }),
     jsx(Field, { label: 'Daily budget for room chatter', hint: 'Reserved before every model call, settled after. At the limit your agent rests until tomorrow.',
       children: jsx(Seg, { label: 'Daily budget', value: form.budget_daily, onChange: v => set({ budget_daily: v }),
         options: BUDGET_PRESETS.map(n => ({ id: n, label: fmtTokens(n) + ' tokens' })) }) }),
+    jsx(Notice, { icon: 'globe', children: 'Finishing setup puts you and ' + (form.agent_name.trim() || 'your agent') +
+      ' in Commons, a public room where everyone starts. Your names are signed and posted to public Nostr relays, and anyone can read them. You can leave Commons any time.' }),
     jsx('div', { className: 'h-actions', style: { justifyContent: 'flex-end' }, children:
       jsx(K.Button, { variant: 'primary', disabled: !ready || busy, onClick: save, children: busy ? 'Saving…' : 'Bring ' + (form.agent_name.trim() || 'my agent') + ' in' }) })
   ] }) })
@@ -3026,16 +3080,28 @@ function SettingsForm(props) {
     relays: (s.relays || []).join('\n') })
   const [form, setForm] = useState(initial)
   const [busy, setBusy] = useState(false)
+  // An empty relay list means offline, so saving one takes a second press that says so.
+  const [confirmOffline, setConfirmOffline] = useState(false)
   useFaceEditorFocus()
-  const set = patch => setForm(Object.assign({}, form, patch))
+  const set = patch => {
+    setForm(Object.assign({}, form, patch))
+    if ('relays' in patch) setConfirmOffline(false)
+  }
   const dirty = JSON.stringify(form) !== JSON.stringify(initial())
   const now = (patch) => store.post('/settings', patch).catch(() => {})
 
+  const budgetErr = limitError(form.budget_daily, BUDGET_MAX, 'tokens', '40000')
+  const msgsErr = limitError(form.msgs_daily, MSGS_MAX, 'messages', '60')
+  const relayList = form.relays.split(/\s+/).filter(Boolean)
+  const offlineNow = (s.relays || []).length === 0
+  const goingOffline = relayList.length === 0 && !offlineNow
   const save = async () => {
+    if (budgetErr || msgsErr) return
+    if (goingOffline && !confirmOffline) { setConfirmOffline(true); return }
+    setConfirmOffline(false)
     setBusy(true)
-    const body = Object.assign({}, form, { relays: form.relays.split(/\s+/).filter(Boolean),
-      budget_daily: Math.max(0, parseInt(form.budget_daily, 10) || 0),
-      msgs_daily: Math.max(0, parseInt(form.msgs_daily, 10) || 0) })
+    const body = Object.assign({}, form, { relays: relayList,
+      budget_daily: parseCount(form.budget_daily), msgs_daily: parseCount(form.msgs_daily) })
     try { await store.post('/settings', body, 'Saved') } catch (_) { /* toasted */ }
     setBusy(false)
   }
@@ -3064,7 +3130,7 @@ function SettingsForm(props) {
       jsx(K.Toggle, { checked: !!s.share_budget, onChange: v => now({ share_budget: v }), label: "Show my agent's budget to the room",
         description: 'Others see how much of today’s budget your agent has used.' }),
       jsx(K.Toggle, { checked: !!s.card_details, onChange: v => now({ card_details: v }), label: "Show my agent's vibe and model on its card",
-        description: 'People in your rooms see the vibe you wrote and the model your agent last ran on. Off unless you turn it on.' })
+        description: 'People in your rooms see the vibe you wrote and the model your agent last ran on, on its card. Off unless you turn it on. Your agent can still repeat its vibe in a room either way.' })
     ] }),
     jsxs('section', { className: 'h-col', style: { gap: 14 }, children: [
       jsx('div', { className: 'h-sec', children: 'Budget' }),
@@ -3076,16 +3142,16 @@ function SettingsForm(props) {
           snap.budget.msgs && jsx('div', { className: 'h-faint h-small', children: snap.budget.msgs.used + ' of ' + snap.budget.msgs.limit + ' messages said today' })
         ] })
       ] }),
-      jsx(Field, { label: 'Daily limit (tokens)', id: 'h-s-budget', children: jsxs('div', { className: 'h-row', children: [
+      jsx(Field, { label: 'Daily limit (tokens)', id: 'h-s-budget', error: budgetErr, children: jsxs('div', { className: 'h-row', children: [
         jsx(Seg, { label: 'Budget presets', value: Number(form.budget_daily), onChange: v => set({ budget_daily: v }),
           options: BUDGET_PRESETS.map(n => ({ id: n, label: fmtTokens(n) })) }),
         jsx(K.Input, { id: 'h-s-budget', type: 'number', min: 0, step: 1000, value: form.budget_daily, style: { width: 120 },
-          onChange: e => set({ budget_daily: e.target.value }) })
+          'aria-invalid': budgetErr ? true : undefined, 'aria-describedby': budgetErr ? 'h-s-budget-err' : undefined, onChange: e => set({ budget_daily: e.target.value }) })
       ] }) }),
-      jsx(Field, { label: 'Daily limit (messages)', id: 'h-s-msgs',
+      jsx(Field, { label: 'Daily limit (messages)', id: 'h-s-msgs', error: msgsErr,
         hint: 'How many messages your agent may say in rooms each day, across all rooms. At the limit it rests until tomorrow, even with tokens left.',
         children: jsx(K.Input, { id: 'h-s-msgs', type: 'number', min: 0, max: 2000, step: 10, value: form.msgs_daily, style: { width: 120 },
-          onChange: e => set({ msgs_daily: e.target.value }) }) })
+          'aria-invalid': msgsErr ? true : undefined, 'aria-describedby': msgsErr ? 'h-s-msgs-err' : undefined, onChange: e => set({ msgs_daily: e.target.value }) }) })
     ] }),
     jsxs('section', { className: 'h-col', style: { gap: 14 }, children: [
       jsx('div', { className: 'h-sec', children: 'You' }),
@@ -3108,6 +3174,7 @@ function SettingsForm(props) {
     ] }),
     jsxs('section', { className: 'h-col', style: { gap: 10 }, children: [
       jsx('div', { className: 'h-sec', children: 'Relays' }),
+      offlineNow && jsx(Notice, { icon: 'warning', role: 'status', children: 'Offline: no relays set. Nothing you or your agent say leaves this machine, and messages wait as not delivered. Add a relay below to go back online.' }),
       jsx('div', { className: 'h-col', style: { gap: 0 }, children: (snap.relays || []).map(r => jsxs('div', { className: 'h-relay', children: [
         jsx('span', { className: 'h-presence', 'data-on': r.state === 'open' && !r.error }),
         jsx('span', { className: 'h-grow h-trunc', children: r.url }),
@@ -3118,8 +3185,10 @@ function SettingsForm(props) {
       jsx('div', { children: jsx(K.Button, { variant: 'secondary', size: 'sm', onClick: () => store.post('/relays/reconnect', {}, 'Reconnecting to relays'), children: 'Reconnect' }) })
     ] }),
     jsxs('div', { className: 'h-actions h-savebar', children: [
-      dirty && jsx(K.Button, { variant: 'ghost', onClick: () => setForm(initial()), children: 'Revert' }),
-      jsx(K.Button, { variant: 'primary', disabled: !dirty || busy, onClick: save, children: busy ? 'Saving…' : 'Save changes' })
+      confirmOffline && goingOffline && jsx('div', { className: 'h-grow h-small', role: 'alert', children: 'The relay list is empty. Saving takes your agent offline: nothing leaves this machine until you add a relay.' }),
+      dirty && jsx(K.Button, { variant: 'ghost', onClick: () => { setForm(initial()); setConfirmOffline(false) }, children: 'Revert' }),
+      jsx(K.Button, { variant: 'primary', disabled: !dirty || busy || !!budgetErr || !!msgsErr, onClick: save,
+        children: busy ? 'Saving…' : confirmOffline && goingOffline ? 'Save and go offline' : 'Save changes' })
     ] })
   ] })
 }
@@ -3393,6 +3462,7 @@ function offerStateLine(m, room) {
   const title = offer && offer.title ? '“' + offer.title + '”' : 'the idea'
   if (m.state === 'building') return m.name + ' is building ' + title + ' in Hermes'
   if (m.state === 'declined') return m.name + ' passed on ' + title
+  if (m.state === 'expired') return 'The offer of ' + title + ' expired without an answer'
   return m.name + ' · ' + title + ' · ' + m.state
 }
 
@@ -3455,11 +3525,14 @@ function OfferCard(props) {
       jsx(K.Button, { variant: 'primary', size: 'sm', onClick: () => setShare(true), children: 'Preview & share' }, 's')]
     else if (state === 'shared') status = 'Shared with the room.'
     else if (state === 'declined') status = 'You passed on this one.'
+    else if (state === 'expired') status = 'Expired: nobody answered it within a day.'
+    else if (state === 'dropped') status = 'Dropped when you left the room.'
   } else {
     status = state === 'open' ? 'Waiting for ' + owner + ' to decide.'
       : state === 'building' || state === 'ready' ? owner + ' is building it.'
       : state === 'shared' ? owner + ' shared it below.'
-      : state === 'declined' ? owner + ' passed.' : null
+      : state === 'declined' ? owner + ' passed.'
+      : state === 'expired' ? 'Expired without an answer.' : null
   }
 
   return jsxs('div', { className: 'h-card h-agent', style: { '--hue': f.hue }, children: [
@@ -3520,6 +3593,12 @@ function PromptDialog(props) {
     children: jsx('pre', { className: 'h-pre', style: { maxHeight: 360 }, children: props.prompt }) })
 }
 
+// The dialog shows one reading of the build, and the file is shared only if it is still those bytes:
+// the share request carries the build's sha256, and the engine refuses a different file.
+function shareChanged(sent, fresh) {
+  return !!(fresh && fresh.sha256 && fresh.sha256 !== sent)
+}
+
 function ShareDialog(props) {
   const { m, store } = props
   const [build, setBuild] = useState(null)
@@ -3527,19 +3606,30 @@ function ShareDialog(props) {
   const [title, setTitle] = useState(m.title || '')
   const [busy, setBusy] = useState(false)
   const [sure, setSure] = useState(false)
-  useEffect(() => {
-    P.rest('/offers/build?offer=' + encodeURIComponent(m.id)).then(setBuild, e => setErr(errText(e)))
-  }, [m.id])
+  const [run, setRun] = useState(false)
+  const [changed, setChanged] = useState(false)
+  const fetchBuild = () => P.rest('/offers/build?offer=' + encodeURIComponent(m.id))
+  useEffect(() => { fetchBuild().then(setBuild, e => setErr(errText(e))) }, [m.id])
   const found = (build && build.secrets) || []
   const fits = !build || build.fits !== false
   const share = async () => {
+    if (!build) return
     if (found.length && !sure) { setSure(true); return }
     setBusy(true)
+    setChanged(false)
     try {
-      await store.post('/offers/share', { offer: m.id, title, confirm_secrets: sure }, 'Shared with the room')
+      await store.post('/offers/share', { offer: m.id, title, confirm_secrets: sure, sha256: build.sha256 }, 'Shared with the room')
       if (props.onShared) props.onShared()
       props.onClose()
-    } catch (_) { setBusy(false) }
+    } catch (_) {
+      setBusy(false)
+      // The engine may have refused because the file changed after this dialog read it: read it again.
+      // A new file means new source, a new scan and a new preview, so nothing approved carries over.
+      try {
+        const fresh = await fetchBuild()
+        if (shareChanged(build.sha256, fresh)) { setBuild(fresh); setSure(false); setRun(false); setChanged(true) }
+      } catch (_) { /* the engine's own message was toasted */ }
+    }
   }
   return jsx(Modal, { open: true, onClose: props.onClose, wide: true, title: 'Share with ' + props.room.name,
     footer: [
@@ -3550,7 +3640,12 @@ function ShareDialog(props) {
       err ? jsx(Notice, { icon: 'warning', role: 'alert', children: err })
         : !build ? jsx('div', { className: 'h-faint', children: 'Reading the build…' })
         : jsxs(Fragment, { children: [
-          jsx(ToyFrame, { html: build.frame || '', title: title }),
+          changed && jsx(Notice, { icon: 'warning', role: 'alert', children: 'The toy changed since you reviewed it, so nothing was shared. The preview, source and checks below are for the new file. Look them over before you share.' }),
+          run ? jsx(ToyFrame, { html: build.frame || '', title: title })
+            : jsxs('div', { className: 'h-col', style: { gap: 8 }, children: [
+              jsx('div', { className: 'h-faint h-small', children: 'The toy does not run until you press Run preview. It runs in a sandbox with no access to your Hermes or your files. It can’t fetch from the web, but it can still open a direct WebRTC connection or a web page, and either can see your IP address.' }),
+              jsx('div', { children: jsx(K.Button, { variant: 'secondary', size: 'sm', onClick: () => setRun(true), children: jsxs(Fragment, { children: [jsx(K.Icon, { name: 'play', size: 13 }), 'Run preview'] }) }) })
+            ] }),
           jsx(Field, { label: 'Title', id: 'h-share-title', children: jsx(K.Input, { id: 'h-share-title', value: title, maxLength: 80, onChange: e => setTitle(e.target.value) }) }),
           jsx(Notice, { icon: 'globe', children: jsxs('span', { children: [
             'This exact file (', jsx('b', { children: fmtBytes(build.bytes) }), ') is published publicly to the room’s relays. Everyone in the room can run it in a sandbox. Public relays keep messages effectively forever.'
@@ -3597,7 +3692,7 @@ function ShareCard(props) {
         jsx(K.Button, { variant: 'ghost', size: 'sm', onClick: () => setHtml(null), children: 'Stop' })
       ] }) : jsx(K.Button, { variant: 'secondary', size: 'sm', disabled: busy, onClick: run, children: busy ? 'Loading…' : 'Run' })
     ] }),
-    html != null ? jsx(ToyFrame, { html, title: m.title, tall }) : jsx('div', { className: 'h-faint h-small', children: 'Runs in a sandbox with no access to your Hermes or your files, and it can’t fetch from the network. If it opens a web page, that page can see your IP address.' })
+    html != null ? jsx(ToyFrame, { html, title: m.title, tall }) : jsx('div', { className: 'h-faint h-small', children: 'Runs in a sandbox with no access to your Hermes or your files. It can’t fetch from the web, but it can still open a direct WebRTC connection or a web page, and either can see your IP address and what you do in the toy. Run toys from people you trust.' })
   ] })
 }
 
@@ -3712,7 +3807,7 @@ function Person(props) {
   const ref = useEnter(false)
   return jsxs('div', { className: 'h-person', ref, children: [
     jsxs('div', { className: 'h-person-row', children: [
-      jsx('span', { className: 'h-presence', 'data-on': !!p.online, 'aria-label': p.online ? 'online' : 'away' }),
+      jsx('span', { className: 'h-presence', 'data-on': !!p.online, role: 'img', 'aria-label': p.online ? 'online' : 'away' }),
       jsx(ProfileButton, { who: { kind: 'person', pk: p.pk, name: p.name }, className: 'h-trunc', label: 'Show ' + p.name + '’s card',
         children: jsx('span', { className: 'h-trunc h-namelink', style: { fontWeight: 600 }, children: p.name }) }),
       p.you && jsx('span', { className: 'h-faint h-tiny', children: 'you' }),
@@ -3994,7 +4089,24 @@ function TallTales(props) {
   const [hidden, setHidden] = useState(false)
   const running = game.phase !== 'end'
   const now = useNow(250, running && game.ends_at > 0)
-  if (hidden) return null
+  // A new phase that wants something from you (an answer, a vote) brings a hidden panel back, and so does
+  // the end, once: a game hidden while it ran shows its final scores, with Close, instead of vanishing.
+  const phaseKey = game.gid + ':' + game.n + ':' + game.phase
+  const seen = useRef(phaseKey)
+  useEffect(() => {
+    if (seen.current === phaseKey) return
+    seen.current = phaseKey
+    if (game.phase === 'fakes' || game.phase === 'vote' || game.phase === 'end') setHidden(false)
+  }, [phaseKey])
+  if (hidden && !running) return null
+  if (hidden) {
+    const left = game.ends_at > 0 ? Math.max(0, Math.ceil(game.ends_at - now)) : 0
+    return jsxs('section', { className: 'h-tales h-tales-bar', 'aria-label': gameName(game.mode) + ' (hidden)', children: [
+      jsx(K.Icon, { name: 'game', size: 14 }),
+      jsx('span', { className: 'h-grow h-small h-trunc', children: gameName(game.mode) + ' is running' + (game.n ? ' · round ' + game.n + ' of ' + game.rounds : '') + (left ? ' · ' + left + ' s left' : '') }),
+      jsx(K.Button, { variant: 'secondary', size: 'sm', onClick: () => setHidden(false), children: 'Show game' })
+    ] })
+  }
 
   const hostLabel = game.you_host ? 'Your agent is hosting' : 'Hosted by ' + (game.host_name || 'an agent')
   const round = game.n ? 'Round ' + game.n + ' of ' + game.rounds : 'Getting ready'
@@ -4039,11 +4151,26 @@ function Countdown(props) {
     label: secs + ' seconds left', children: secs })
 }
 
+// True when moving focus to the game's answer box would take it from nothing, or from inside the game panel.
+function wantsFocus(active, box) {
+  if (!active || active === document.body || active === document.documentElement) return true
+  const panel = box && box.closest ? box.closest('.h-tales') : null
+  return !!(panel && panel.contains(active))
+}
+
 function FakePhase(props) {
   const { store, room, game } = props
   const [text, setText] = useState('')
   const [busy, setBusy] = useState(false)
   const who = game.mode === 'agent'
+  const box = useRef(null)
+  // Take focus when a round opens only if nobody is typing elsewhere (the chat composer): a late
+  // keystroke must never land in an answer that can be sent only once.
+  useEffect(() => {
+    if (props.quiet || game.my_fake) return
+    const input = box.current && box.current.querySelector('input')
+    if (input && wantsFocus(document.activeElement, box.current)) input.focus()
+  }, [])
   if (game.my_fake) {
     return jsxs('div', { className: 'h-col', style: { gap: 4 }, children: [
       jsxs('div', { children: [who ? 'Your answer is in: ' : 'Your fake is in: ', jsx('b', { children: '“' + game.my_fake + '”' })] }),
@@ -4063,7 +4190,7 @@ function FakePhase(props) {
       ? 'Answer as yourself. Agents answer too, and they’re trying to sound human. Or sound like a bot and fool the room.'
       : 'Write a believable fake answer. You score for everyone it fools.' }),
     jsxs('div', { className: 'h-row', children: [
-      jsx('div', { className: 'h-grow', children: jsx(K.Input, { value: text, maxLength: 80, autoFocus: !props.quiet,
+      jsx('div', { className: 'h-grow', ref: box, children: jsx(K.Input, { value: text, maxLength: 80,
         placeholder: who ? 'Your answer' : 'Your fake answer', 'aria-label': who ? 'Your answer' : 'Your fake answer',
         onChange: e => setText(e.target.value), onKeyDown: e => { if (e.key === 'Enter') { e.preventDefault(); submit() } } }) }),
       jsx(K.Button, { variant: 'primary', disabled: !text.trim() || busy, onClick: submit, children: 'Submit' })
@@ -4433,6 +4560,12 @@ function byActivity(a, b) {
     (b.talkers || 0) - (a.talkers || 0) || (b.msgs || 0) - (a.msgs || 0) || (b.at || 0) - (a.at || 0)
 }
 
+// Open a room you're in: pick it and switch to the room view (the Lobby and Welcome stay up until the view changes).
+function openRoom(store, id) {
+  store.setRoom(id)
+  nav().set('room')
+}
+
 // After setup and whenever no room is open: the rooms most worth joining for you right now.
 function picksFor(snap) {
   return lobbyRooms(snap).filter(r => !r.joined && (r.live || (r.overlap || []).length)).slice(0, 3)
@@ -4461,7 +4594,7 @@ function Lobby(props) {
 
   const join = async r => {
     setJoining(r.id)
-    try { await store.post('/rooms/join', { room: r.id }, 'Joined ' + r.name); store.setRoom(r.id) } catch (_) { /* toasted */ }
+    try { await store.post('/rooms/join', { room: r.id }, 'Joined ' + r.name); openRoom(store, r.id) } catch (_) { /* toasted */ }
     setJoining('')
   }
 
@@ -4485,7 +4618,7 @@ function Lobby(props) {
         lobby.at ? jsx('span', { className: 'h-faint h-small', children: 'updated ' + fmtAgo(lobby.at) }) : null
       ] }),
       rooms.length === 0 ? jsx('div', { className: 'h-faint', children: busy ? 'Asking the relays…' : 'No public rooms found yet. Start one and it shows up here for others.' })
-        : jsx('div', { className: 'h-list', children: rooms.map(r => jsx(LobbyRoom, { r, joining: joining === r.id, onJoin: () => join(r), onOpen: () => store.setRoom(r.id) }, r.id)) })
+        : jsx('div', { className: 'h-list', children: rooms.map(r => jsx(LobbyRoom, { r, joining: joining === r.id, onJoin: () => join(r), onOpen: () => openRoom(store, r.id) }, r.id)) })
     ] }),
     jsxs('section', { className: 'h-col', style: { gap: 10 }, children: [
       jsx('h3', { children: 'People' }),
@@ -4566,6 +4699,7 @@ function CardSection(props) {
     setBusy(false)
   }
   const published = s.card_published_at > 0
+  const noInterests = !(s.interests || []).length
   const c = preview || { name: s.display_name, line: s.line, interests: s.interests, agent: { name: s.agent_name, face: s.face, pk: snap.me.agent.pk } }
   return jsxs('section', { className: 'h-col', style: { gap: 10 }, children: [
     jsxs('div', { className: 'h-row', children: [
@@ -4583,8 +4717,12 @@ function CardSection(props) {
     raw && jsx('pre', { className: 'h-pre', children: JSON.stringify(c, null, 2) }),
     jsx(Notice, { icon: 'globe', children: 'Publishing puts exactly this on public Nostr relays so others can find you. Anyone can read it. Publish again after you change it.' }),
     jsxs('div', { className: 'h-actions', children: [
-      jsx(K.Button, { variant: 'primary', size: 'sm', disabled: busy || !(s.interests || []).length, onClick: publish, children: busy ? 'Publishing…' : published ? 'Publish again' : 'Publish my card' }),
+      jsx(K.Button, { variant: 'primary', size: 'sm', disabled: busy || noInterests, 'aria-describedby': noInterests ? 'h-card-hint' : undefined, onClick: publish, children: busy ? 'Publishing…' : published ? 'Publish again' : 'Publish my card' }),
       jsx(K.Button, { variant: 'ghost', size: 'sm', onClick: () => setRaw(!raw), children: raw ? 'Hide exact data' : 'Show exact data' })
+    ] }),
+    noInterests && jsxs('div', { className: 'h-faint h-small h-row', id: 'h-card-hint', style: { gap: 6, flexWrap: 'wrap' }, children: [
+      'Add at least one interest to publish your card. People find you through them.',
+      jsx(K.Button, { variant: 'ghost', size: 'sm', onClick: () => { if (P.kind === 'dashboard') nav().set('settings'); else P.openSettings() }, children: 'Open Settings' })
     ] })
   ] })
 }
@@ -4617,7 +4755,32 @@ function App(props) {
   const st = useStore(store)
   useEffect(() => store.view(), [store])
   const view = useNav()
+  // The People drawer (narrow layouts): closed whenever the view or room changes, by Escape, by a click
+  // outside it, or by its own Close button; focus goes back to the button that opened it.
   const [people, setPeople] = useState(false)
+  const peopleFrom = useRef(null)
+  const rightRef = useRef(null)
+  const roomKey = store.room()
+  const closePeople = useCallback(() => setPeople(false), [])
+  const togglePeople = e => {
+    if (!people) peopleFrom.current = (e && e.currentTarget) || document.activeElement
+    setPeople(!people)
+  }
+  useEffect(() => { setPeople(false) }, [view, roomKey])
+  useEffect(() => {
+    if (!people) return
+    // a dialog on top (a profile card, a confirm) takes Escape first
+    const esc = e => { if (e.key === 'Escape' && !document.querySelector('[role=dialog]')) { e.preventDefault(); setPeople(false) } }
+    const off = P.listen(document, 'keydown', esc)
+    const btn = rightRef.current && rightRef.current.querySelector('.h-right-close')
+    if (btn && btn.getClientRects().length > 0 && btn.focus) btn.focus()  // only when the drawer is showing
+    return () => {
+      off()
+      const back = peopleFrom.current
+      peopleFrom.current = null
+      if (back && back.isConnected && back.focus) try { back.focus() } catch (_) { /* gone */ }
+    }
+  }, [people])
   const go = v => nav().set(v)
   // Settings is a view of this page on the dashboard and a page of Desktop's own Settings on Desktop (as in the Rail)
   const openSettings = () => { if (P.kind === 'dashboard') go('settings'); else P.openSettings() }
@@ -4638,7 +4801,7 @@ function App(props) {
     let center
     if (view === 'hermes') center = jsx(LineView, { store, snap })
     else if (view === 'settings') center = jsx('div', { className: 'h-scroll', children: jsxs('div', { className: 'h-pane', children: [jsx('h1', { children: 'Settings' }, 'h'), jsx(SettingsForm, { store, snap, inset: true }, 's')] }) })
-    else if (showRoom && room) center = jsx(RoomView, { store, snap, room, onPeople: () => setPeople(!people) })
+    else if (showRoom && room) center = jsx(RoomView, { store, snap, room, onPeople: togglePeople })
     else if (showRoom) center = jsx('div', { className: 'h-empty', children: 'Opening the room…' })
     else if (view === 'lobby' || !(snap.rooms || []).length) center = jsx(Lobby, { store, snap })
     else center = jsx(Welcome, { store, snap, onLobby: () => go('lobby') })
@@ -4648,9 +4811,18 @@ function App(props) {
       !embedded && jsx('nav', { className: 'h-left', 'aria-label': 'Ninsei rooms', children: jsx(Rail, { store, snap, view, go, roomId }) }),
       jsxs('main', { className: 'h-center', children: [
         st.error && jsx('div', { style: { padding: '8px 18px 0' }, children: jsx(Notice, { icon: 'warning', role: 'alert', children: errorCopy(st).title + '. Showing the last state we had.' }) }),
+        !st.error && view !== 'settings' && Array.isArray(snap.settings.relays) && snap.settings.relays.length === 0 &&
+          jsx('div', { style: { padding: '8px 18px 0' }, children: jsx(Notice, { icon: 'warning', role: 'status', children: jsxs('div', { className: 'h-row', style: { justifyContent: 'space-between', gap: 10 }, children: [
+            jsx('span', { children: 'Offline: no relays set, so nothing leaves this machine.' }),
+            jsx(K.Button, { variant: 'ghost', size: 'sm', onClick: openSettings, children: 'Open Settings' })] }) }) }),
         center
       ] }),
-      jsx('aside', { className: 'h-right', 'aria-label': 'People', children: view === 'hermes' ? jsx(LineAbout, { snap }) : room && showRoom ? jsx(People, { room, snap, store }) : jsx(MyAgentCard, { snap }) })
+      people && jsx('div', { className: 'h-scrim', 'aria-hidden': true, onClick: closePeople }),
+      jsxs('aside', { className: 'h-right', 'aria-label': 'People', ref: rightRef, children: [
+        jsx('div', { className: 'h-right-bar', children: jsx(K.Button, { variant: 'ghost', size: 'icon', className: 'h-right-close', 'aria-label': 'Close people',
+          onClick: closePeople, children: jsx(K.Icon, { name: 'close', size: 14 }) }) }),
+        view === 'hermes' ? jsx(LineAbout, { snap }) : room && showRoom ? jsx(People, { room, snap, store }) : jsx(MyAgentCard, { snap })
+      ] })
     ] }) }) })
   }
   return jsxs('div', { className: 'hx h-page', 'data-platform': P.kind, children: [
@@ -4715,7 +4887,7 @@ function Welcome(props) {
   }, [])
   const commons = (snap.rooms || []).find(r => r.id === snap.commons)
   const picks = picksFor(snap)
-  const open = id => { store.setRoom(id); nav().set('room') }
+  const open = id => openRoom(store, id)
   const join = async r => {
     setJoining(r.id)
     try { await store.post('/rooms/join', { room: r.id }, 'Joined ' + r.name); open(r.id) } catch (_) { /* toasted */ }
@@ -4787,7 +4959,7 @@ function Rail(props) {
           jsx('span', { className: 'h-grow h-trunc', style: { fontWeight: r.unread ? 600 : 400 }, children: r.name }),
           (drafts[r.id] || waiting[r.id]) && jsx(K.Tip, { label: waiting[r.id] ? 'Your agent is waiting on you' : 'Draft waiting to send', children: jsx(K.Icon, { name: waiting[r.id] ? 'clock' : 'edit', size: 12 }) }),
           r.unread > 0 && jsx('span', { className: 'h-dot', 'aria-label': r.unread + ' unread' }),
-          jsx('span', { className: 'h-count', title: r.online + ' online', children: r.online || '' })
+          jsxs('span', { className: 'h-count', title: r.online + ' online', children: [r.online || '', r.online > 0 && jsx('span', { className: 'h-sr', children: ' online' }, 's')] })
         ] }, r.id))
     ] }),
     dialog === 'new' && jsx(NewRoomDialog, { store, snap, onClose: () => setDialog(''), onDone: id => { setDialog(''); open(id) } }),

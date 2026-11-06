@@ -265,6 +265,7 @@ function offerStateLine(m, room) {
   const title = offer && offer.title ? '“' + offer.title + '”' : 'the idea'
   if (m.state === 'building') return m.name + ' is building ' + title + ' in Hermes'
   if (m.state === 'declined') return m.name + ' passed on ' + title
+  if (m.state === 'expired') return 'The offer of ' + title + ' expired without an answer'
   return m.name + ' · ' + title + ' · ' + m.state
 }
 
@@ -327,11 +328,14 @@ function OfferCard(props) {
       jsx(K.Button, { variant: 'primary', size: 'sm', onClick: () => setShare(true), children: 'Preview & share' }, 's')]
     else if (state === 'shared') status = 'Shared with the room.'
     else if (state === 'declined') status = 'You passed on this one.'
+    else if (state === 'expired') status = 'Expired: nobody answered it within a day.'
+    else if (state === 'dropped') status = 'Dropped when you left the room.'
   } else {
     status = state === 'open' ? 'Waiting for ' + owner + ' to decide.'
       : state === 'building' || state === 'ready' ? owner + ' is building it.'
       : state === 'shared' ? owner + ' shared it below.'
-      : state === 'declined' ? owner + ' passed.' : null
+      : state === 'declined' ? owner + ' passed.'
+      : state === 'expired' ? 'Expired without an answer.' : null
   }
 
   return jsxs('div', { className: 'h-card h-agent', style: { '--hue': f.hue }, children: [
@@ -392,6 +396,12 @@ function PromptDialog(props) {
     children: jsx('pre', { className: 'h-pre', style: { maxHeight: 360 }, children: props.prompt }) })
 }
 
+// The dialog shows one reading of the build, and the file is shared only if it is still those bytes:
+// the share request carries the build's sha256, and the engine refuses a different file.
+function shareChanged(sent, fresh) {
+  return !!(fresh && fresh.sha256 && fresh.sha256 !== sent)
+}
+
 function ShareDialog(props) {
   const { m, store } = props
   const [build, setBuild] = useState(null)
@@ -399,19 +409,30 @@ function ShareDialog(props) {
   const [title, setTitle] = useState(m.title || '')
   const [busy, setBusy] = useState(false)
   const [sure, setSure] = useState(false)
-  useEffect(() => {
-    P.rest('/offers/build?offer=' + encodeURIComponent(m.id)).then(setBuild, e => setErr(errText(e)))
-  }, [m.id])
+  const [run, setRun] = useState(false)
+  const [changed, setChanged] = useState(false)
+  const fetchBuild = () => P.rest('/offers/build?offer=' + encodeURIComponent(m.id))
+  useEffect(() => { fetchBuild().then(setBuild, e => setErr(errText(e))) }, [m.id])
   const found = (build && build.secrets) || []
   const fits = !build || build.fits !== false
   const share = async () => {
+    if (!build) return
     if (found.length && !sure) { setSure(true); return }
     setBusy(true)
+    setChanged(false)
     try {
-      await store.post('/offers/share', { offer: m.id, title, confirm_secrets: sure }, 'Shared with the room')
+      await store.post('/offers/share', { offer: m.id, title, confirm_secrets: sure, sha256: build.sha256 }, 'Shared with the room')
       if (props.onShared) props.onShared()
       props.onClose()
-    } catch (_) { setBusy(false) }
+    } catch (_) {
+      setBusy(false)
+      // The engine may have refused because the file changed after this dialog read it: read it again.
+      // A new file means new source, a new scan and a new preview, so nothing approved carries over.
+      try {
+        const fresh = await fetchBuild()
+        if (shareChanged(build.sha256, fresh)) { setBuild(fresh); setSure(false); setRun(false); setChanged(true) }
+      } catch (_) { /* the engine's own message was toasted */ }
+    }
   }
   return jsx(Modal, { open: true, onClose: props.onClose, wide: true, title: 'Share with ' + props.room.name,
     footer: [
@@ -422,7 +443,12 @@ function ShareDialog(props) {
       err ? jsx(Notice, { icon: 'warning', role: 'alert', children: err })
         : !build ? jsx('div', { className: 'h-faint', children: 'Reading the build…' })
         : jsxs(Fragment, { children: [
-          jsx(ToyFrame, { html: build.frame || '', title: title }),
+          changed && jsx(Notice, { icon: 'warning', role: 'alert', children: 'The toy changed since you reviewed it, so nothing was shared. The preview, source and checks below are for the new file. Look them over before you share.' }),
+          run ? jsx(ToyFrame, { html: build.frame || '', title: title })
+            : jsxs('div', { className: 'h-col', style: { gap: 8 }, children: [
+              jsx('div', { className: 'h-faint h-small', children: 'The toy does not run until you press Run preview. It runs in a sandbox with no access to your Hermes or your files. It can’t fetch from the web, but it can still open a direct WebRTC connection or a web page, and either can see your IP address.' }),
+              jsx('div', { children: jsx(K.Button, { variant: 'secondary', size: 'sm', onClick: () => setRun(true), children: jsxs(Fragment, { children: [jsx(K.Icon, { name: 'play', size: 13 }), 'Run preview'] }) }) })
+            ] }),
           jsx(Field, { label: 'Title', id: 'h-share-title', children: jsx(K.Input, { id: 'h-share-title', value: title, maxLength: 80, onChange: e => setTitle(e.target.value) }) }),
           jsx(Notice, { icon: 'globe', children: jsxs('span', { children: [
             'This exact file (', jsx('b', { children: fmtBytes(build.bytes) }), ') is published publicly to the room’s relays. Everyone in the room can run it in a sandbox. Public relays keep messages effectively forever.'
@@ -469,7 +495,7 @@ function ShareCard(props) {
         jsx(K.Button, { variant: 'ghost', size: 'sm', onClick: () => setHtml(null), children: 'Stop' })
       ] }) : jsx(K.Button, { variant: 'secondary', size: 'sm', disabled: busy, onClick: run, children: busy ? 'Loading…' : 'Run' })
     ] }),
-    html != null ? jsx(ToyFrame, { html, title: m.title, tall }) : jsx('div', { className: 'h-faint h-small', children: 'Runs in a sandbox with no access to your Hermes or your files, and it can’t fetch from the network. If it opens a web page, that page can see your IP address.' })
+    html != null ? jsx(ToyFrame, { html, title: m.title, tall }) : jsx('div', { className: 'h-faint h-small', children: 'Runs in a sandbox with no access to your Hermes or your files. It can’t fetch from the web, but it can still open a direct WebRTC connection or a web page, and either can see your IP address and what you do in the toy. Run toys from people you trust.' })
   ] })
 }
 
@@ -584,7 +610,7 @@ function Person(props) {
   const ref = useEnter(false)
   return jsxs('div', { className: 'h-person', ref, children: [
     jsxs('div', { className: 'h-person-row', children: [
-      jsx('span', { className: 'h-presence', 'data-on': !!p.online, 'aria-label': p.online ? 'online' : 'away' }),
+      jsx('span', { className: 'h-presence', 'data-on': !!p.online, role: 'img', 'aria-label': p.online ? 'online' : 'away' }),
       jsx(ProfileButton, { who: { kind: 'person', pk: p.pk, name: p.name }, className: 'h-trunc', label: 'Show ' + p.name + '’s card',
         children: jsx('span', { className: 'h-trunc h-namelink', style: { fontWeight: 600 }, children: p.name }) }),
       p.you && jsx('span', { className: 'h-faint h-tiny', children: 'you' }),

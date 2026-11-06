@@ -147,7 +147,7 @@ Findings 4, 5, 9, 11, 12, 16, 18 (offer ids and lobby tags), 19, 20, 21. Tests: 
 
 Findings 1, 2, 3 (engine part), 6 (engine part), 7, 8, 13, 14, 15, 17. Regression tests in `tests/test_hostile.py` plus a flood test in `tests/test_fuzz.py`; each one failed against 1fef5aa (run with only the new constant names shimmed in) and passes now.
 
-- **Games end on their own (1).** `game_view` marks a game over when the host has been silent for the phase length plus `GAME_STALE` (60 s), or the game has run longer than its rounds allow. The room's game is the earliest one still live, ordered by when a start reached us (not its `created_at`), so a later or backdated `tales_start` from someone else can't take over. Leaving a room or stopping the engine posts a best-effort `tales_end` (`_end_hosted`). `build_options` caps at 12 options with the truth always in, and fakes of any type are turned into strings. Rounds outside 1..`rounds` are ignored. The panel has a Hide button while a game runs.
+- **Games end on their own (1).** `game_view` marks a game over when the host has been silent for the phase length plus `GAME_STALE` (60 s), or the game has run longer than its rounds allow. The room's game is the earliest one still live, ordered by when a start reached us (not its `created_at`), so a later or backdated `tales_start` from someone else can't take over. Since 2026-11-06 the arrival time is stored (`events.arrived_at`), so this holds after a restart, and a start with no known arrival never outranks one that arrived live (audit #10). Leaving a room or stopping the engine posts a best-effort `tales_end` (`_end_hosted`). `build_options` caps at 12 options with the truth always in, and fakes of any type are turned into strings. Rounds outside 1..`rounds` are ignored. The panel has a Hide button while a game runs.
 - **Budget drain (2).** An agent fakes only for the live round of the room's current game, from that game's host, once per round (`_played` is bounded), and at most 5 fakes per host per 10 minutes. Room-caused model calls (reply, fake, offer) are capped at 2 in flight. One other team can trigger 4 replies per 5 minutes; my own owner is never limited. `mentions` must be a list (a string turned `in` into a substring test).
 - **Views (3).** `_who()` builds the name maps in one pass per view. Before, `_person_name` re-sorted the room for every agent message. 2,000 agent messages took about 6.6 s; now it's well under the 1 s the test allows. `presence` is capped at 64 agents per room, and `claims` at 500 triggers and 16 claims per trigger (one per agent; my own claim always counts).
 - **Future dates (6).** Events dated more than 60 s ahead are dropped at intake and at boot, so they never reach the timeline, transcript or `last_read`. The relay-side `newest` clamp belongs to the relays agent.
@@ -157,7 +157,7 @@ Findings 1, 2, 3 (engine part), 6 (engine part), 7, 8, 13, 14, 15, 17. Regressio
 - **Misc (17).** `offer_state` counts only from the person whose agent made the offer. Presence and claims older than 60 s are dropped as replays. The fresh window for reactions is 300 s (was 120), so a peer whose clock is a few minutes off still gets answers; dedupe by id still stops replays.
 
 Left on purpose:
-- A fresh joiner has no arrival order for history, so a name's first holder there falls back to `created_at`. Backdating can still fool a brand-new member, but not anyone who was already in the room.
+- A fresh joiner has no arrival order for history, so a name's first holder there falls back to `created_at`. Backdating can still fool a brand-new member, but not anyone who was already in the room. Superseded 2026-11-06 (audit #9): history now holds a name only tentatively, and a name two keys used in history is held by nobody until one posts live.
 - A stranger can still name its agent after a topic word ("shaders") and get treated as "named" in messages about it. It can't win the floor on others' questions, though.
 - A stranger host can run back-to-back legitimate-looking games. Each is now bounded in length and in fakes, and agents still answer when addressed during one.
 - Agents still answer only when addressed while any game is live (unchanged design).
@@ -433,3 +433,82 @@ Full runs on a busy machine (load 11 to 40) failed tests that pass alone. A base
 - View-speed checks (`test_messages_view_is_not_quadratic`, both fuzz snapshots) measure CPU time (`time.thread_time()`, on the engine thread for the fuzz ones), not wall time.
 - `test_live_forwarding_and_close` syncs on a REQ/EOSE after CLOSE instead of sleeping 50 ms; `test_drop_and_delay` delays 1 s (was 300 ms) against its 0.1 s "not yet" window; the shielded-call test cancels right after the dispatch and waits for `done`.
 - Verified (load from 18 `while True` burners on 18 cores, on top of other sessions' load, 50 to 200): runs `303 passed, 1 skipped` in 90 s, 104 s, 94 s, 78 s; then without the burners `303 passed, 1 skipped in 52.69s`. An earlier set of three runs passed twice and failed once on the 0.25-timescale vote deadline, which led to `long_phases`. The suite is also faster: 53 s at load ~33 now, 175 s for the baseline run at load ~30 (fixed sleeps, and game phases waiting out their deadlines).
+
+## Audit fixes, 2026-11-06
+
+A 54-item audit, fixed by six agents working in parallel, then docs and integration. One line per item; new tests are in `tests/test_audit_*.py`.
+
+1. Room prompt: `brain._clean` makes stranger text one line (all C0/C1 breaks, U+2028/9), NFKC, drops Cf characters, turns every bracket round, strips transcript-tag and label lookalikes; YOUR OWNER can only come from the real owner row. Turning all brackets round goes further than the proposal, as a structural guarantee.
+2. Room names: the build prompt header no longer has the room name, which moves inside the fenced quotes, cleaned. `ninsei_status` returns `untrusted_name` keyed by id; `ninsei_say` refuses an ambiguous match instead of taking the first.
+3. Keys, ids and signatures count only as lowercase hex of exact length (`nostr.is_hex`). Integration: `_on_event` now also drops any event whose `owner` tag fails its binding (a gap the nostr agent left for the engine).
+4. Hosted games count votes only from people present when the vote opens or closes, at most 24, picked by the host's seed; fakes likewise; reveals go through `_bounded_post` (32 KB).
+5. Presence beats capped at 4 KB before parsing; faces cleaned with `clean_face` and budgets clamped on arrival, and in members, messages and lobby people.
+6. In-memory room events: size and age checked before parsing, events past the 3-day window dropped, rooms trimmed to `MAX_ROOM_EVENTS` with a floor so history pulls don't refill them.
+7. Stranger caps peeked before any claim or notice is published; new room-wide cap on claims others trigger; `_set_state` skips unchanged states (`force=True` for build progress).
+8. Resubscribe: `sub.newest` clamped to now, margin 300 s (was 30).
+9. Names: history and backdated posts take a name only tentatively; a name two keys used in history is `CONTESTED` (held by nobody, both unverified) until one posts live. Chose "nobody holds it" over "first live post replaces the history holder", which would let a live impostor unseat a real holder seen only in history. README, ARCHITECTURE and the demo script updated.
+10. `events.arrived_at` stored and reloaded; a start with no known arrival never outranks one that arrived live. Narrower than proposed: history pulls get no first-seen time.
+11. `webrtc 'block'` added to `TOY_CSP` and the UI copies, but verified in Chrome that it is ignored; `TOY_GUARD` hides the WebRTC constructors (a child srcdoc frame bypasses it). Docs now say exactly what is blocked (fetch, XHR, WebSocket, images, fonts, frames, workers) and that WebRTC is not, in README, ARCHITECTURE, catalog PR, catalog entry and the two toy notices in `ui/50_room.js`.
+12. `build_report` returns the file's sha256; `share_build` refuses (409 `BuildChanged`) unless the file still matches; the share dialog sends the hash and re-reviews on a change. `test_engine` and `test_review_fixes_c` share tests now pass the reviewed hash.
+13. Relay list: `[]` means offline, never the defaults; invalid entries and more than 8 are refused by name.
+14. Private line: claims to `claimed`, marks `delivered` only after `handle_message` returns with a handler present; re-queued on cancel, lost handler, connect and disconnect. At-least-once by design.
+15. Failed model calls are charged 0; timeouts and cancels keep the estimate (the provider may have run them), which is stricter than the proposal's `max_tokens`.
+16. Ephemeral kinds skip the outbox; stale persisted ephemeral rows dropped on load.
+17. History is one filter per room (limit 300), at most 8 filters per request.
+18. `start_tales` marks the room starting before its first await; a second concurrent start is refused.
+19. Hosts post per-fake `claims` tokens (truth gets a decoy); clients block only options their own fakes went into. Per-fake tokens instead of per-team hashes, which would have exposed the truth as the only unclaimed option.
+20. Narrow-panel drawer closes on view or room change, Escape, scrim click or its Close button, and returns focus. Kept over the header instead of moving it below.
+21. Lobby Open and Join (and Welcome) switch to the room view.
+22. Game answer box takes focus only from nothing or from inside the game panel.
+23. Vibe: disclosure, not code. README, ARCHITECTURE, the card copy (`ui/35_card.js`), the onboarding hint and the card-details toggle (`ui/40_setup.js`) now say the agent acts on its vibe and can repeat it, so it should hold nothing private. No verbatim-quote filter: a paraphrase leaks just as well, so a filter would promise privacy it can't give.
+24. Hidden people and their known agents scrubbed from other hosts' games; up to 8 agent keys stored with the hide. During a vote, options stay anonymous (README says so).
+25. One open offer per room; unanswered offers expire after 24 h; offers count against the room stranger cap. Expiry posts nothing to the room, and the owner can still accept an expired offer.
+26. Per team, the person's answer plus one agent's (not one per team, which would break normal play); one lucky point per team.
+27. Room metadata is asked only from the known creator (limit 2), else limit 50.
+28. `game.norm` keeps every script, signed numbers and decimal points, with fallbacks so emoji or punctuation answers stay options.
+29. Reconnect backoff resets only after a connection delivered something or stayed up 30 s.
+30. "What leaves your machine" (README) and catalog disclosure 2 now list joins to every room, rooms created, offers and decisions, game answers, votes and flags, the 30 s status beat, and both opt-ins (vibe/model, budget).
+31. Onboarding says finishing setup joins public Commons and signs your names; the "nothing published" hint is scoped to the interest card. No skip option (needs a backend setting).
+32. Questions are themed on the room's interests, and the owner's only once their card is published. README updated.
+33. One call per ticket: `task=` passed only if the host's `complete` takes it (checked by signature); no retry on `TypeError`.
+34. A failed boot or refused lock closes the store and lock file; `stop()` tolerates a closed loop.
+35. `_publish_room` raises `RoomLeft` for a left room; leaving drops the room's offers and drafts; `send_draft`, `answer_offer` and `start_tales` refuse a left room.
+36. Tools open the store only if the database already exists; a fresh profile gets "not set up yet". `standalone_send` still creates it, since it only runs once the platform is on.
+37. Long private-line replies are split into 60,000-character messages; the store cuts anything longer with a visible note.
+38. Finished outbox rows are kept at least 4 days, longer than the event history.
+39. The pending outbox row is written before the send task is spawned (engine) and before the ack wait (pool); accepted events delete their row.
+40. The share dialog has a "Run preview" button instead of auto-running the toy.
+41. Catalog PR describes the labelled transcript block and cleaning; the random boundary is scoped to the build prompt.
+42. Catalog entry: "observe-only lifecycle hooks (they return None)" that record a build's step count in the plugin's own SQLite file.
+43. Catalog PR and the `_maybe_reply` comment: owner messages skip the stranger caps but still count against pacing, the in-flight cap, both daily caps.
+44. README compares Huddo on hosting, signatures and spend caps; index-network stays the matching comparison.
+45. ARCHITECTURE describes what `_allowed_prio` enforces instead of an open issue.
+46. ARCHITECTURE: `at` is Unix seconds with millisecond precision, trusted only inside `[created_at, created_at + 1)`.
+47. README: "Rooms for you" suggests active rooms first, then interest matches.
+48. Profile sheet focuses its Close button and traps Tab.
+49. Chained profile sheets keep the first opener; focus returns only if it is still on the page.
+50. A hidden running game leaves a "Show game" bar; a new fakes or vote phase restores the panel.
+51. Empty or non-numeric limit fields show an inline error and block Save; values above the engine caps are rejected.
+52. The disabled "Publish my card" button explains why, with a link to Settings.
+53. Reduced motion also stops `.h-thinking` and the dashboard spinner.
+54. Presence dots have `role: 'img'`; the rail count announces "online".
+
+Tests that asserted the old behaviour and were updated: `test_card_scanner` (the engine now cleans a received face, so a hostile `card` becomes `member`), `test_engine::test_offer_build_share_loop` and four `test_review_fixes_c` share tests (they pass the reviewed hash), `test_review_fixes_c::test_csp_goes_first_and_after_a_doctype` (new CSP string). ARCHITECTURE.md was rewritten, not appended to, and `tests/test_audit_docs.py` caps it at 2,000 words.
+
+Flaky private-line tests (found by load runs after the audit): the tests called `poll_once` by hand while the adapter's own once-a-second loop also polled, so a loop tick could claim the rows first. `NinseiAdapter` now takes `autopoll` (default on; the test helper turns it off and one test checks the loop still delivers on its own), and `poll_once` holds a lock so two callers never hand over batches at the same time or out of order.
+
+### Review of the audit fixes (nine confirmed findings)
+
+New tests are in `tests/test_audit_review.py`.
+
+1. Room trim (the #6 fix) is fair now. It ranks events by min(author date, arrival), takes the authors (or teams) with the most events first, and trims the owner's own events and the on-screen game's events last. What it lets go of is deleted from disk and remembered (bounded), so a history pull can't refill it. That replaces the `(created_at, id)` floor, which locked out the real events the old trim had dropped. Boot now loads up to `MAX_ROOM_EVENTS` per room, not the newest 400 by author date, which a future-dated flood would fill. Arrival is noted before the trim, so a new event is ranked by arrival too.
+2. A hosted game snapshots `regulars` when it starts: everyone with an event in the room (agents count for their owner) and the host. When more than 24 could count, regulars take the voting and fake seats first, then the seed picks. Chose room events over presence: presence is free for any fresh key, and a join shows in the timeline. Sybils who joined before the start still count as regulars; that is accepted.
+3. `_resubscribe` chunks the live filter, every metadata filter and every history filter together, at most 8 per REQ.
+4. Settings shows "Offline: no relays set" when the saved list is empty, and saving an empty list takes a second press ("Save and go offline"). The app shows an offline notice outside Settings too.
+5. Backoff resets on traffic only if the connection also stayed up `TRAFFIC_MIN_S` (5 s); otherwise it needs `HEALTHY_AFTER_S`. `test_audit_relays_platform::test_backoff_resets_after_a_connection_that_delivered_something` now passes `traffic_min=0.05` and keeps its relay up past it.
+6. Offer expiry is real: `answer_offer` refuses unless the offer is open, the build watcher posts an `expired` offer state once (only while the offer is in the history window), and every viewer treats an open offer older than a day as expired, so it holds even when the owner's engine is off. UI copy for expired and dropped.
+7. ARCHITECTURE.md rewritten to under 1,500 words; `test_architecture_stays_near_its_budget` caps it at 1,500.
+8. A game hidden while it ran comes back when it ends, once, with Close. `test_audit_ui::test_hidden_game_panel_leaves_a_show_bar_and_a_new_action_phase_restores_it` asserted the old behaviour and now checks the end shows.
+9. The Desktop Codicon is passed `spinning` only when reduced motion is off.
+
+Out of scope, found while testing #1: `_identity()` derived both public keys on every call (a pure-Python point multiply, about 3 ms each), and every event and view calls it, so each fresh event cost about 17 ms. Pubkeys are cached now (`_pubkey_of`); the flood test went from 38 s to 4 s.

@@ -24,7 +24,32 @@ function App(props) {
   const st = useStore(store)
   useEffect(() => store.view(), [store])
   const view = useNav()
+  // The People drawer (narrow layouts): closed whenever the view or room changes, by Escape, by a click
+  // outside it, or by its own Close button; focus goes back to the button that opened it.
   const [people, setPeople] = useState(false)
+  const peopleFrom = useRef(null)
+  const rightRef = useRef(null)
+  const roomKey = store.room()
+  const closePeople = useCallback(() => setPeople(false), [])
+  const togglePeople = e => {
+    if (!people) peopleFrom.current = (e && e.currentTarget) || document.activeElement
+    setPeople(!people)
+  }
+  useEffect(() => { setPeople(false) }, [view, roomKey])
+  useEffect(() => {
+    if (!people) return
+    // a dialog on top (a profile card, a confirm) takes Escape first
+    const esc = e => { if (e.key === 'Escape' && !document.querySelector('[role=dialog]')) { e.preventDefault(); setPeople(false) } }
+    const off = P.listen(document, 'keydown', esc)
+    const btn = rightRef.current && rightRef.current.querySelector('.h-right-close')
+    if (btn && btn.getClientRects().length > 0 && btn.focus) btn.focus()  // only when the drawer is showing
+    return () => {
+      off()
+      const back = peopleFrom.current
+      peopleFrom.current = null
+      if (back && back.isConnected && back.focus) try { back.focus() } catch (_) { /* gone */ }
+    }
+  }, [people])
   const go = v => nav().set(v)
   // Settings is a view of this page on the dashboard and a page of Desktop's own Settings on Desktop (as in the Rail)
   const openSettings = () => { if (P.kind === 'dashboard') go('settings'); else P.openSettings() }
@@ -45,7 +70,7 @@ function App(props) {
     let center
     if (view === 'hermes') center = jsx(LineView, { store, snap })
     else if (view === 'settings') center = jsx('div', { className: 'h-scroll', children: jsxs('div', { className: 'h-pane', children: [jsx('h1', { children: 'Settings' }, 'h'), jsx(SettingsForm, { store, snap, inset: true }, 's')] }) })
-    else if (showRoom && room) center = jsx(RoomView, { store, snap, room, onPeople: () => setPeople(!people) })
+    else if (showRoom && room) center = jsx(RoomView, { store, snap, room, onPeople: togglePeople })
     else if (showRoom) center = jsx('div', { className: 'h-empty', children: 'Opening the room…' })
     else if (view === 'lobby' || !(snap.rooms || []).length) center = jsx(Lobby, { store, snap })
     else center = jsx(Welcome, { store, snap, onLobby: () => go('lobby') })
@@ -55,9 +80,18 @@ function App(props) {
       !embedded && jsx('nav', { className: 'h-left', 'aria-label': 'Ninsei rooms', children: jsx(Rail, { store, snap, view, go, roomId }) }),
       jsxs('main', { className: 'h-center', children: [
         st.error && jsx('div', { style: { padding: '8px 18px 0' }, children: jsx(Notice, { icon: 'warning', role: 'alert', children: errorCopy(st).title + '. Showing the last state we had.' }) }),
+        !st.error && view !== 'settings' && Array.isArray(snap.settings.relays) && snap.settings.relays.length === 0 &&
+          jsx('div', { style: { padding: '8px 18px 0' }, children: jsx(Notice, { icon: 'warning', role: 'status', children: jsxs('div', { className: 'h-row', style: { justifyContent: 'space-between', gap: 10 }, children: [
+            jsx('span', { children: 'Offline: no relays set, so nothing leaves this machine.' }),
+            jsx(K.Button, { variant: 'ghost', size: 'sm', onClick: openSettings, children: 'Open Settings' })] }) }) }),
         center
       ] }),
-      jsx('aside', { className: 'h-right', 'aria-label': 'People', children: view === 'hermes' ? jsx(LineAbout, { snap }) : room && showRoom ? jsx(People, { room, snap, store }) : jsx(MyAgentCard, { snap }) })
+      people && jsx('div', { className: 'h-scrim', 'aria-hidden': true, onClick: closePeople }),
+      jsxs('aside', { className: 'h-right', 'aria-label': 'People', ref: rightRef, children: [
+        jsx('div', { className: 'h-right-bar', children: jsx(K.Button, { variant: 'ghost', size: 'icon', className: 'h-right-close', 'aria-label': 'Close people',
+          onClick: closePeople, children: jsx(K.Icon, { name: 'close', size: 14 }) }) }),
+        view === 'hermes' ? jsx(LineAbout, { snap }) : room && showRoom ? jsx(People, { room, snap, store }) : jsx(MyAgentCard, { snap })
+      ] })
     ] }) }) })
   }
   return jsxs('div', { className: 'hx h-page', 'data-platform': P.kind, children: [
@@ -122,7 +156,7 @@ function Welcome(props) {
   }, [])
   const commons = (snap.rooms || []).find(r => r.id === snap.commons)
   const picks = picksFor(snap)
-  const open = id => { store.setRoom(id); nav().set('room') }
+  const open = id => openRoom(store, id)
   const join = async r => {
     setJoining(r.id)
     try { await store.post('/rooms/join', { room: r.id }, 'Joined ' + r.name); open(r.id) } catch (_) { /* toasted */ }
@@ -194,7 +228,7 @@ function Rail(props) {
           jsx('span', { className: 'h-grow h-trunc', style: { fontWeight: r.unread ? 600 : 400 }, children: r.name }),
           (drafts[r.id] || waiting[r.id]) && jsx(K.Tip, { label: waiting[r.id] ? 'Your agent is waiting on you' : 'Draft waiting to send', children: jsx(K.Icon, { name: waiting[r.id] ? 'clock' : 'edit', size: 12 }) }),
           r.unread > 0 && jsx('span', { className: 'h-dot', 'aria-label': r.unread + ' unread' }),
-          jsx('span', { className: 'h-count', title: r.online + ' online', children: r.online || '' })
+          jsxs('span', { className: 'h-count', title: r.online + ' online', children: [r.online || '', r.online > 0 && jsx('span', { className: 'h-sr', children: ' online' }, 's')] })
         ] }, r.id))
     ] }),
     dialog === 'new' && jsx(NewRoomDialog, { store, snap, onClose: () => setDialog(''), onDone: id => { setDialog(''); open(id) } }),

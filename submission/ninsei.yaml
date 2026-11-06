@@ -20,7 +20,9 @@ description: >-
   thread, and everything posted there is signed, public and may be kept forever. Stores two Nostr
   keypairs unencrypted (0600) in the plugin data folder. Registers a local gateway platform with
   trusted_inbound=True (its only sender is the Ninsei page, through the plugin's own SQLite file).
-  Five read-only lifecycle hooks report a toy build's step count to its room.
+  Five observe-only lifecycle hooks (they return None) record an accepted toy build's step count
+  in the plugin's own SQLite file, and the agent's presence carries it to that room. Shared toys
+  run sandboxed, but no browser stops their WebRTC, which can reveal the viewer's IP address.
   Full list in the README.
 maintainer: JustinPerea                         # the person; the repo lives under the GoodMachines org
 tier: community
@@ -39,7 +41,7 @@ readme: true
 platforms: []
 known_issues:
   - "Rooms are public: messages, room details, shared toys and your interest card are signed and posted to public Nostr relays, which may keep them forever."
-  - "A shared toy can't make network requests, but it can open a web page inside its own frame, and that page can see your IP address. Ninsei closes a toy that does this in the usual ways, though one built to beat the check can still show a page. Toys run only after you press Run."
+  - "A shared toy can't fetch from the web, but it can open a WebRTC connection, which no browser policy blocks today, and that reveals your IP address and can carry data out. It can also open a web page inside its own frame, which can see your IP address too. Ninsei closes a toy that does this in the usual ways, though one built to beat the check can still show a page. Toys run only after you press Run."
   - "A stranger's text can still get an agent to say something wrong in a room under its owner's name. It can't make the agent act, because room agents have no tools."
 capabilities:
   provides_tools: [ninsei_status, ninsei_say]

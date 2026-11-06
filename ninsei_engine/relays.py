@@ -30,7 +30,20 @@ BAD_WINDOW_S = 10.0
 BAD_MUTE_S = 30.0           # ... and we ignore that relay's events for this long
 OUTBOX_MAX = 200            # unacknowledged events kept for resend
 OUTBOX_TTL_S = 24 * 3600    # after this an undelivered event is "failed"
+FAILED_KEEP_S = 4 * 24 * 3600   # a failed row outlives the 3-day event history, or the message would read "sent"
+RESUME_MARGIN_S = 300       # a resubscribe asks for this much before the newest event (relays' clocks drift,
+                            # and `_seen` already dedupes what comes twice)
+BACKOFF_BASE_S = 1.0        # reconnect delay: doubles from here to BACKOFF_MAX_S ...
+BACKOFF_MAX_S = 30.0
+HEALTHY_AFTER_S = 30.0      # ... and resets only after a connection stayed this long, or delivered an EVENT/EOSE
+TRAFFIC_MIN_S = 5.0         # and stayed at least this long (an EOSE then a close is the same hot loop as no reply)
 SYNTH = "ninsei:"            # prefix on locally made (not relay-sent) OK results
+
+
+def _ephemeral(ev: dict) -> bool:
+    """Kinds 20000-29999 are never stored by relays and are stale in a minute, so they never go in the outbox."""
+    kind = ev.get("kind")
+    return isinstance(kind, int) and 20000 <= kind < 30000
 
 
 def _now() -> float:
@@ -56,12 +69,20 @@ class RelayStatus:
     ok: int = 0
     rejected: int = 0
     last_reject: str = ""
+    backoff: float = 0.0   # seconds the next reconnect waits (before jitter)
 
 
 class RelayPool:
     def __init__(self, urls: list[str], *, max_seen: int = 20000, outbox=None,
-                 outbox_max: int = OUTBOX_MAX, outbox_ttl: float = OUTBOX_TTL_S):
+                 outbox_max: int = OUTBOX_MAX, outbox_ttl: float = OUTBOX_TTL_S,
+                 backoff_base: float = BACKOFF_BASE_S, backoff_max: float = BACKOFF_MAX_S,
+                 healthy_after: float = HEALTHY_AFTER_S, traffic_min: float = TRAFFIC_MIN_S):
         """`outbox` is an optional Store; with it, unacknowledged events survive a restart."""
+        self._backoff_base = backoff_base
+        self._backoff_max = backoff_max
+        self._healthy_after = healthy_after
+        self._traffic_min = traffic_min
+        self._got_traffic: dict[str, bool] = {}
         self.urls = list(dict.fromkeys(u.strip() for u in urls if u.strip()))
         self.status = {u: RelayStatus(u) for u in self.urls}
         self._ws: dict[str, object] = {}
@@ -81,12 +102,20 @@ class RelayPool:
         self._outbox: dict[str, tuple[dict, float]] = {}   # id -> (event, first queued at)
         self._delivery: dict[str, str] = {}
         self._flush_tasks: set[asyncio.Task] = set()
+        self._inflight: dict[str, int] = {}   # ids waiting on their first relay answers (shown as sent, not pending)
         if self._store is not None:
             try:
-                self._store.event_outbox_prune(self._outbox_ttl)
+                keep = max(self._outbox_ttl, getattr(self._store, "event_history_days", 3) * 86400, FAILED_KEEP_S)
+                self._store.event_outbox_prune(keep)
+                stale = []
                 for ev, ts in self._store.event_outbox_pending():
+                    if _ephemeral(ev):   # beats and claims an older version queued: useless now
+                        stale.append(ev["id"])
+                        continue
                     self._outbox[ev["id"]] = (ev, ts)
                     self._delivery[ev["id"]] = "pending"
+                if stale:
+                    self._store.event_outbox_drop(stale)
             except Exception:
                 log.exception("ninsei: could not load the event outbox")
 
@@ -122,16 +151,18 @@ class RelayPool:
         return self.open_count() > 0
 
     async def _run(self, url: str) -> None:
-        delay = 1.0
+        delay = self._backoff_base
         st = self.status[url]
         while not self._stopped:
             st.state = "connecting"
+            opened = None
             try:
                 async with websockets.connect(url, open_timeout=8, ping_interval=25, ping_timeout=20,
                                               max_size=2 ** 20) as ws:
                     self._ws[url] = ws
                     st.state, st.last_error = "open", ""
-                    delay = 1.0
+                    opened = time.monotonic()
+                    self._got_traffic[url] = False   # the delay resets later, once this connection proves useful
                     for sub in list(self._subs.values()):
                         await self._send_req(url, ws, sub)
                     self._spawn_flush(url, ws)
@@ -148,9 +179,15 @@ class RelayPool:
                         fut.set_result((False, SYNTH + "disconnected"))
             if self._stopped:
                 break
-            st.state = "backoff"
+            up = time.monotonic() - opened if opened is not None else 0.0
+            if opened is not None and (up >= self._healthy_after
+                                       or (self._got_traffic.get(url) and up >= self._traffic_min)):
+                # a connection that worked: reconnect promptly. Traffic alone isn't enough: a relay that
+                # answers EOSE and drops the socket at once would reset the delay on every round.
+                delay = self._backoff_base
+            st.state, st.backoff = "backoff", delay
             await asyncio.sleep(delay * (0.7 + random.random() * 0.6))
-            delay = min(delay * 2, 30.0)
+            delay = min(delay * 2, self._backoff_max)
 
     # --- inbound --------------------------------------------------------------------------------
     async def _on_message(self, url: str, raw) -> None:
@@ -161,6 +198,8 @@ class RelayPool:
         if not isinstance(msg, list) or not msg:
             return
         typ = msg[0]
+        if typ in ("EVENT", "EOSE"):
+            self._got_traffic[url] = True
         if typ == "EVENT" and len(msg) >= 3:
             sub = self._subs.get(msg[1])
             ev = msg[2]
@@ -182,7 +221,7 @@ class RelayPool:
                 sub.seen_ids.add(eid)
             if sub.dedupe:
                 self._remember(eid)
-            sub.newest = max(sub.newest, created)
+            sub.newest = max(sub.newest, min(created, int(_now())))   # a future-dated event must not push `since` ahead
             try:
                 res = sub.handler(ev, url)
                 if asyncio.iscoroutine(res):
@@ -254,8 +293,8 @@ class RelayPool:
         filters = []
         for f in sub.filters:
             f2 = dict(f)
-            if sub.newest and "since" in f2:  # resume where we left off (minus a little for clock skew)
-                f2["since"] = max(int(f2["since"]), sub.newest - 30)
+            if sub.newest and "since" in f2:  # resume where we left off, with room for clock skew
+                f2["since"] = min(max(int(f2["since"]), sub.newest - RESUME_MARGIN_S), int(_now()))
             filters.append(f2)
         try:
             await ws.send(json.dumps(["REQ", sub.sub_id, *filters]))
@@ -287,9 +326,20 @@ class RelayPool:
     # --- publish --------------------------------------------------------------------------------
     async def publish(self, ev: dict, *, wait: float = 4.0) -> dict[str, tuple[bool, str]]:
         """Send to every open relay; return {url: (accepted, message)} for the ones that answered.
-        If no relay accepts it (none open, no answer), the event goes in the outbox and is resent when a
-        relay (re)connects; see `delivery`."""
-        out = await self._send_all(ev, wait)
+        A durable event gets its pending outbox row BEFORE the wait for relay answers, so quitting (or a
+        cancelled task) inside that wait still leaves it to be resent on the next start. If no relay accepts
+        it (none open, no answer), it stays queued and is resent when a relay (re)connects; see `delivery`.
+        Ephemeral kinds (presence, claims) are fire and forget and never queued."""
+        self._queue(ev)
+        self._inflight[ev["id"]] = self._inflight.get(ev["id"], 0) + 1
+        try:
+            out = await self._send_all(ev, wait)
+        finally:
+            n = self._inflight.get(ev["id"], 1) - 1
+            if n > 0:
+                self._inflight[ev["id"]] = n
+            else:
+                self._inflight.pop(ev["id"], None)
         self._settle(ev, out)
         return out
 
@@ -322,6 +372,8 @@ class RelayPool:
         """"sent" (a relay accepted it), "pending" (queued, will be resent) or "failed" (rejected by the
         relays that answered, expired, or pushed out of a full outbox). Unknown ids report "sent": only
         events this pool failed to deliver are ever tracked as anything else."""
+        if event_id in self._inflight:
+            return "sent"   # still inside the first ack wait: not yet a reason to alarm the owner
         st = self._delivery.get(event_id)
         if st is None and self._store is not None:
             st = self._store.event_outbox_status(event_id)
@@ -338,33 +390,51 @@ class RelayPool:
             except Exception:
                 log.exception("ninsei: outbox write failed")
 
+    def _queue(self, ev: dict) -> None:
+        """Record a durable event as pending (memory and disk) before it is first sent. Idempotent."""
+        eid = ev["id"]
+        if _ephemeral(ev) or eid in self._outbox:
+            return
+        self._outbox[eid] = (ev, _now())
+        self._delivery[eid] = "pending"
+        if self._store is not None:
+            try:
+                self._store.event_outbox_put(ev, "pending")
+            except Exception:
+                log.exception("ninsei: outbox write failed")
+        while len(self._outbox) > self._outbox_max:   # full: the oldest gives way
+            old = next(iter(self._outbox))
+            self._outbox.pop(old)
+            self._set_delivery(old, "failed")
+
     def _settle(self, ev: dict, out: dict[str, tuple[bool, str]]) -> None:
         eid = ev["id"]
+        if _ephemeral(ev):
+            return
         if any(ok for ok, _ in out.values()):
-            if eid in self._outbox or eid in self._delivery:
-                self._outbox.pop(eid, None)
-                self._set_delivery(eid, "sent")
+            self._outbox.pop(eid, None)
+            self._delivery[eid] = "sent"
+            self._store_call("event_outbox_drop", [eid])   # unknown ids read as "sent": no row to keep
             return
         # nobody accepted it. A real rejection from a relay is final; silence or a dead socket is retried.
         answered = [msg for _, msg in out.values() if not msg.startswith(SYNTH)]
         if answered:
             self._outbox.pop(eid, None)
             self._delivery[eid] = "failed"
-            if self._store is not None:
-                self._store.event_outbox_put(ev, "failed")
+            self._store_call("event_outbox_put", ev, "failed")
             return
-        if eid not in self._outbox:
-            self._outbox[eid] = (ev, _now())
-            if self._store is not None:
-                try:
-                    self._store.event_outbox_put(ev, "pending")
-                except Exception:
-                    log.exception("ninsei: outbox write failed")
-            while len(self._outbox) > self._outbox_max:   # full: the oldest gives way
-                old = next(iter(self._outbox))
-                self._outbox.pop(old)
-                self._set_delivery(old, "failed")
-        self._delivery[eid] = "pending"
+        if eid not in self._outbox and self._delivery.get(eid) != "failed":
+            self._queue(ev)   # a path that skipped publish (a flush of an evicted event stays failed)
+        if eid in self._outbox:
+            self._delivery[eid] = "pending"
+
+    def _store_call(self, name: str, *args) -> None:
+        if self._store is None:
+            return
+        try:
+            getattr(self._store, name)(*args)
+        except Exception:
+            log.exception("ninsei: outbox write failed")
 
     def _spawn_flush(self, url: str, ws) -> None:
         if not self._outbox:
