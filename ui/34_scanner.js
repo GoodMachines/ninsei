@@ -1,9 +1,9 @@
 // ---------------------------------------------------------------------------------------------
-// the Scanner card style: the card as an old monitor in a gunmetal bezel. The screen shows a pixel
-// nebula grown from the agent's key (so each agent's is its own and never changes), in the agent's
-// colours, drifting very slowly. Cyan grid bands, brackets and glowing readouts sit on the glass; every
-// readout is the same data the Member card shows. A strip under the screen holds knobs and one LED:
-// green when online, amber when away, red when the key check failed.
+// the Scanner card style: the card is an old monitor's screen, edge to edge, with no bezel around it. It
+// shows a pixel nebula grown from the agent's key (so each agent's is its own and never changes), in the
+// agent's colours, drifting very slowly. Cyan grid bands, brackets and glowing readouts sit on the glass;
+// every readout is the same data the Member card shows. A small status light sits by the Status (or "In
+// the room") readout: green when online, amber when away, red when the key check failed.
 //
 // The field is a small grid of numbers (nebulaField, pure, runs in node for the tests), coloured through a
 // lookup table and put on a canvas a few cells wide that CSS scales up with hard pixel edges. A blurred
@@ -11,14 +11,17 @@
 // while the card is on screen and the page is visible, and never with reduced motion.
 // ---------------------------------------------------------------------------------------------
 
-// The field's size in cells: about the screen's own aspect (93.2 x 48.7 card widths), so cells stay square.
+// The field's size in cells: the card's own 1.6:1 (the screen is the whole card), so cells stay square.
 const SCAN_W = 48
-const SCAN_H = 25
-// Bezel sizes in % of the card's width (cqw), kept in step with the .h-scan rules in 20_style.js.
-const SCAN_INSET = 3.4
-const SCAN_STRIP = 10.4
-// The hero's bracket box, in % of the screen: right edge, top, width (it is square).
-const SCAN_BOX = { right: 4.5, top: 15, size: 28 }
+const SCAN_H = 30
+// Layout in % of the card, kept in step with the .h-scan rules in 20_style.js (the export reads these):
+// the side inset of the readouts, the grid bands' height, and the hero's bracket box (right edge and width in
+// % of the card's width, top in % of its height; it is square).
+const SCAN_PAD = 7.5
+const SCAN_BAND = 10
+const SCAN_BOX = { right: 7.5, top: 17, size: 30 }
+// The status light's colours, shared by the card (CSS --led) and the export.
+const SCAN_LEDS = { green: [0.86, 0.21, 145], amber: [0.83, 0.16, 75], red: [0.66, 0.24, 27] }
 
 // ---- the field ---------------------------------------------------------------------------------
 
@@ -304,16 +307,14 @@ function scanLed(props) {
   return stateWord(props.state) === 'absent' ? 'amber' : 'green'
 }
 
-// The bezel's lower strip: an LED, the maker's name and four knobs (turned by the key, for variety).
-function scanStrip(pk) {
-  const s = scanSeed(pk)
-  return jsxs('div', { className: 'h-scan-strip', children: [
-    jsx('span', { className: 'h-scan-led' }),
-    jsx('span', { className: 'h-scan-brand', children: 'Ninsei' }),
-    jsx('span', { className: 'h-scan-vent' }),
-    jsx('span', { className: 'h-scan-knobs', children: [0, 1, 2, 3].map(i =>
-      jsx('span', { className: 'h-scan-knob', 'data-i': i, style: { '--r': Math.round(scanHash(i, 41, s) * 270 - 135) + 'deg' } }, i)) })
-  ] })
+// Which readout the status light sits by: the Status field (agents) or In the room (people). -1 when the card
+// shows neither (an agent card showing its model instead), and the light then sits by the tag.
+function scanLightAt(fields) {
+  return (fields || []).findIndex(x => x && (x[0] === 'Status' || x[0] === 'In the room'))
+}
+
+function scanLight() {
+  return jsx('span', { className: 'h-scan-led' }, 'led')
 }
 
 function scanBands() {
@@ -323,6 +324,7 @@ function scanBands() {
 // The front: the picture in its bracket box, the readouts in the corners.
 function scannerFront(model, props, hero) {
   const { f, warn, fields, name, serial } = model
+  const at = scanLightAt(fields)
   return jsxs('div', { className: 'h-idcard h-idcard-front', ref: props.cardRef, 'data-card': 'scanner', 'data-warn': warn, 'data-led': model.led,
     style: { '--hue': f.hue, '--hue2': f.hue2 }, role: props.interactive ? undefined : 'img', 'aria-label': props.interactive ? undefined : props.label,
     children: [
@@ -334,21 +336,20 @@ function scannerFront(model, props, hero) {
         jsx('div', { className: 'h-scan-box', 'data-hero': true, children: jsx('div', { className: 'h-idcard-hero', children: hero }) }),
         jsxs('div', { className: 'h-scan-top', children: [
           jsx('div', { className: 'h-scan-name', 'data-size': nameSize(name), children: name }),
-          jsx('span', { className: 'h-scan-tag', children: model.tag })
+          jsxs('div', { className: 'h-scan-read', children: [jsx('span', { className: 'h-scan-tag', children: model.tag }, 'tag'), at < 0 ? scanLight() : null] })
         ] }),
         serial ? jsx('div', { className: 'h-scan-id', children: 'ID ' + serial }) : null,
-        jsx('div', { className: 'h-scan-foot', children: fields.map(x => jsxs('div', { className: 'h-scan-field', children: [
+        jsx('div', { className: 'h-scan-foot', children: fields.map((x, i) => jsxs('div', { className: 'h-scan-field', children: [
           jsx('span', { className: 'h-scan-label', children: x[0] }),
-          jsx('span', { className: 'h-scan-value', 'data-warn': !!x[2], children: x[1] })
+          jsxs('div', { className: 'h-scan-read', children: [i === at ? scanLight() : null, jsx('span', { className: 'h-scan-value', 'data-warn': !!x[2], children: x[1] }, 'v')] })
         ] }, x[0])) }),
         jsx('div', { className: 'h-scan-glass' })
       ] }),
-      scanStrip(props.pk),
       jsx('div', { className: 'h-idcard-shine' })
     ] })
 }
 
-// The back: the same monitor, the screen dimmed and still, the key and the rest as terminal lines.
+// The back: the same screen, dimmed and still, the key and the rest as terminal lines.
 function scannerBack(model, props, back) {
   const { f, warn } = model
   return jsxs('div', { className: 'h-idcard h-idcard-back', 'aria-hidden': true, 'data-card': 'scanner', 'data-warn': warn, 'data-led': model.led,
@@ -370,7 +371,6 @@ function scannerBack(model, props, back) {
         ] }, x[0])) }),
         jsx('div', { className: 'h-scan-glass' })
       ] }),
-      scanStrip(props.pk),
       jsx('div', { className: 'h-idcard-shine' })
     ] })
 }
@@ -443,7 +443,7 @@ function scanPngOk(s) {
 }
 
 // The Scanner front as a standalone SVG string, 1200 x 750, like cardSvg (same options, plus `led` and
-// `nebula`, a PNG data URL from scanNebulaPng). Text is escaped the same way; faces go through faceMarkup.
+// `nebula`, a PNG data URL from scanNebulaPng, the size of the whole card). Text is escaped the same way; faces go through faceMarkup.
 function scannerSvg(o) {
   o = o || {}
   const W = CARD_W
@@ -466,23 +466,16 @@ function scannerSvg(o) {
     (a.anchor ? ' text-anchor="' + a.anchor + '"' : '') + (a.opacity != null ? ' fill-opacity="' + a.opacity + '"' : '') +
     (a.glow === false ? '' : ' filter="url(#nsglow)"') + '>' + xmlEsc(str) + '</text>'
 
-  // the screen, in image pixels
-  const sx = SCAN_INSET * U
-  const sy = SCAN_INSET * U
-  const sw = W - 2 * sx
-  const sh = H - sy - SCAN_STRIP * U
-  const px = (x, y) => [sx + x / 100 * sw, sy + y / 100 * sh]
+  // the screen is the whole card
+  const R = 70 // the card's corner radius at this size (the Member export's too)
+  const px = (x, y) => [x / 100 * W, y / 100 * H]
 
   const defs = []
   const out = []
-  defs.push('<linearGradient id="nsmetal" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#5b626b"/><stop offset="0.08" stop-color="#3c4249"/>' +
-    '<stop offset="0.55" stop-color="#2b3036"/><stop offset="0.9" stop-color="#22262b"/><stop offset="1" stop-color="#3a3f46"/></linearGradient>')
-  defs.push('<pattern id="nsbrush" width="6" height="750" patternUnits="userSpaceOnUse"><rect width="2" height="750" fill="#fff" fill-opacity="0.025"/></pattern>')
-  defs.push('<clipPath id="nscard"><rect width="' + W + '" height="' + H + '" rx="70"/></clipPath>')
-  defs.push('<clipPath id="nsscreen"><rect x="' + num(sx) + '" y="' + num(sy) + '" width="' + num(sw) + '" height="' + num(sh) + '" rx="' + num(2.4 * U) + '"/></clipPath>')
+  defs.push('<clipPath id="nscard"><rect width="' + W + '" height="' + H + '" rx="' + R + '"/></clipPath>')
   defs.push('<pattern id="nsscan" width="8" height="5" patternUnits="userSpaceOnUse"><rect y="3" width="8" height="2" fill="#000" fill-opacity="0.26"/></pattern>')
   const cell = 1.55 * U
-  defs.push('<pattern id="nsgrid" x="' + num(sx) + '" y="' + num(sy) + '" width="' + num(cell) + '" height="' + num(cell) + '" patternUnits="userSpaceOnUse">' +
+  defs.push('<pattern id="nsgrid" width="' + num(cell) + '" height="' + num(cell) + '" patternUnits="userSpaceOnUse">' +
     '<path d="M0 0.75H' + num(cell) + 'M0.75 0V' + num(cell) + '" stroke="' + ui + '" stroke-width="1.5" stroke-opacity="0.34" fill="none"/></pattern>')
   defs.push('<radialGradient id="nsvig" cx="0.5" cy="0.5" r="0.75"><stop offset="0.55" stop-color="#000" stop-opacity="0"/><stop offset="1" stop-color="#000" stop-opacity="0.72"/></radialGradient>')
   defs.push('<linearGradient id="nsglare" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#fff" stop-opacity="0.13"/><stop offset="0.36" stop-color="#fff" stop-opacity="0.03"/>' +
@@ -498,39 +491,33 @@ function scannerSvg(o) {
     (warn ? hx(0.65, 0.22, 27) : hx(0.8, 0.14, 215)) + '" flood-opacity="0.75"/></filter>')
   defs.push('<filter id="nsdim" x="-40%" y="-40%" width="180%" height="180%" color-interpolation-filters="sRGB">' +
     '<feComponentTransfer><feFuncR type="linear" slope="0.7"/><feFuncG type="linear" slope="0.7"/><feFuncB type="linear" slope="0.7"/></feComponentTransfer></filter>')
-  defs.push('<radialGradient id="nsknob" cx="0.36" cy="0.3" r="0.8"><stop offset="0" stop-color="#9aa1aa"/><stop offset="0.45" stop-color="#4a5058"/><stop offset="1" stop-color="#1c1f23"/></radialGradient>')
-  const led = { green: [0.86, 0.21, 145], amber: [0.83, 0.16, 75], red: [0.66, 0.24, 27] }[o.led] || [0.86, 0.21, 145]
-  defs.push('<radialGradient id="nsled" cx="0.5" cy="0.5" r="0.5"><stop offset="0" stop-color="' + hx(led[0], led[1], led[2]) + '" stop-opacity="0.75"/>' +
-    '<stop offset="1" stop-color="' + hx(led[0], led[1], led[2]) + '" stop-opacity="0"/></radialGradient>')
+  // the status light: red whenever the key check failed, whatever was asked for
+  const led = SCAN_LEDS[warn ? 'red' : Object.prototype.hasOwnProperty.call(SCAN_LEDS, o.led) ? o.led : 'green']
+  const ledHex = hx(led[0], led[1], led[2])
+  defs.push('<radialGradient id="nsled" cx="0.5" cy="0.5" r="0.5"><stop offset="0" stop-color="' + ledHex + '" stop-opacity="0.75"/>' +
+    '<stop offset="1" stop-color="' + ledHex + '" stop-opacity="0"/></radialGradient>')
+  // the glass edge: a soft dark falloff just inside the rim
+  defs.push('<filter id="nsedge" x="-5%" y="-8%" width="110%" height="116%"><feGaussianBlur stdDeviation="14"/></filter>')
 
-  // the bezel
   out.push('<g clip-path="url(#nscard)">')
-  out.push('<rect width="' + W + '" height="' + H + '" fill="url(#nsmetal)"/>')
-  out.push('<rect width="' + W + '" height="' + H + '" fill="url(#nsbrush)"/>')
-  out.push('<rect x="' + num(sx - 4) + '" y="' + num(sy - 4) + '" width="' + num(sw + 8) + '" height="' + num(sh + 8) + '" rx="' + num(2.4 * U + 4) + '" fill="#0b0d10"/>')
-  out.push('<rect x="' + num(sx - 4) + '" y="' + num(sy + sh + 2) + '" width="' + num(sw + 8) + '" height="3" fill="#fff" fill-opacity="0.09"/>')
-
-  // the screen
-  out.push('<g clip-path="url(#nsscreen)">')
-  out.push('<rect x="' + num(sx) + '" y="' + num(sy) + '" width="' + num(sw) + '" height="' + num(sh) + '" fill="' + hx(0.1, 0.035, 262) + '"/>')
+  out.push('<rect width="' + W + '" height="' + H + '" fill="' + hx(0.1, 0.035, 262) + '"/>')
   if (scanPngOk(o.nebula)) {
-    out.push('<image x="' + num(sx) + '" y="' + num(sy) + '" width="' + num(sw) + '" height="' + num(sh) + '" preserveAspectRatio="none" href="' + o.nebula + '"/>')
+    out.push('<image width="' + W + '" height="' + H + '" preserveAspectRatio="none" href="' + o.nebula + '"/>')
   }
-  const band = sh * 0.1
-  out.push('<rect x="' + num(sx) + '" y="' + num(sy) + '" width="' + num(sw) + '" height="' + num(band) + '" fill="url(#nsgrid)"/>')
-  out.push('<rect x="' + num(sx) + '" y="' + num(sy + sh - band) + '" width="' + num(sw) + '" height="' + num(band) + '" fill="url(#nsgrid)"/>')
-  out.push('<path d="M' + num(sx) + ' ' + num(sy + band) + 'H' + num(sx + sw) + 'M' + num(sx) + ' ' + num(sy + sh - band) + 'H' + num(sx + sw) +
-    '" stroke="' + ui + '" stroke-width="2" stroke-opacity="0.7" fill="none"/>')
+  const band = H * SCAN_BAND / 100
+  out.push('<rect width="' + W + '" height="' + num(band) + '" fill="url(#nsgrid)"/>')
+  out.push('<rect y="' + num(H - band) + '" width="' + W + '" height="' + num(band) + '" fill="url(#nsgrid)"/>')
+  out.push('<path d="M0 ' + num(band) + 'H' + W + 'M0 ' + num(H - band) + 'H' + W + '" stroke="' + ui + '" stroke-width="2" stroke-opacity="0.7" fill="none"/>')
 
   // a soft dark scrim under the name block and the two fields, so a bright core never washes the text out
   // (the .h-scan-scrim layer: the same stops)
-  out.push('<rect x="' + num(sx) + '" y="' + num(sy + sh * 0.64) + '" width="' + num(sw) + '" height="' + num(sh * 0.36) + '" fill="url(#nsscrim)"/>')
-  out.push('<ellipse cx="' + num(sx + sw * 0.28) + '" cy="' + num(sy + sh * 0.3) + '" rx="' + num(sw * 0.4) + '" ry="' + num(sh * 0.26) + '" fill="url(#nsscrimn)"/>')
+  out.push('<rect y="' + num(H * 0.64) + '" width="' + W + '" height="' + num(H * 0.36) + '" fill="url(#nsscrim)"/>')
+  out.push('<ellipse cx="' + num(W * 0.3) + '" cy="' + num(H * 0.32) + '" rx="' + num(W * 0.4) + '" ry="' + num(H * 0.26) + '" fill="url(#nsscrimn)"/>')
 
   // the hero's bracket box, the picture inside it
-  const bs = SCAN_BOX.size / 100 * sw
-  const bx = sx + sw * (1 - SCAN_BOX.right / 100) - bs
-  const by = sy + SCAN_BOX.top / 100 * sh
+  const bs = SCAN_BOX.size / 100 * W
+  const bx = W * (1 - SCAN_BOX.right / 100) - bs
+  const by = SCAN_BOX.top / 100 * H
   out.push('<rect x="' + num(bx) + '" y="' + num(by) + '" width="' + num(bs) + '" height="' + num(bs) + '" fill="url(#nsdark)"/>')
   out.push('<rect x="' + num(bx + 1) + '" y="' + num(by + 1) + '" width="' + num(bs - 2) + '" height="' + num(bs - 2) + '" fill="none" stroke="' + ui + '" stroke-width="2" stroke-opacity="0.38"/>')
   const arm = bs * 0.12
@@ -555,29 +542,42 @@ function scannerSvg(o) {
   }
   out.push('</g>')
 
+  // the status light: a lit dot and its halo, centred on (x, y)
+  const lr = (warn ? 0.9 : 0.75) * U
+  const light = (x, y) => {
+    out.push('<circle cx="' + num(x) + '" cy="' + num(y) + '" r="' + num(3.2 * lr) + '" fill="url(#nsled)"/>')
+    out.push('<circle cx="' + num(x) + '" cy="' + num(y) + '" r="' + num(lr) + '" fill="' + ledHex + '"/>')
+  }
+  const lightGap = 1.2 * U
+  const fields = (Array.isArray(o.fields) ? o.fields : []).filter(Boolean).slice(0, 2)
+  const at = scanLightAt(fields)
+
   // the name (two lines at most) and the tag under it
   const size = nameSize(o.name)
   const npx = { l: 5.9, m: 4.8, s: 3.6 }[size] * U
   const nls = npx * 0.06
   const lh = npx * 1.14
-  const [nx, ny] = px(4.5, 16)
-  const lines = wrapLines(up(o.name), sw * 0.575, 2, s => width(s, npx, nls))
+  const [nx, ny] = px(SCAN_PAD, 17)
+  const lines = wrapLines(up(o.name), W * (1 - SCAN_PAD / 100 - 0.4), 2, s => width(s, npx, nls))
   lines.forEach((ln, i) => out.push(text(nx, ny + i * lh + npx * 0.86, ln, { size: npx, ls: nls })))
   const tagPx = 2.25 * U
   const tagLs = tagPx * 0.18
   const tagText = up(o.tag || '')
+  const ty = ny + lines.length * lh + 1.3 * U
+  const th = tagPx * 1.75
+  let tagEnd = nx
   if (tagText) {
     const tw = width(tagText, tagPx, tagLs) + 1.8 * U
-    const ty = ny + lines.length * lh + 1.3 * U
-    const th = tagPx * 1.75
     out.push('<rect x="' + num(nx + 1) + '" y="' + num(ty) + '" width="' + num(tw) + '" height="' + num(th) + '" fill="' + (warn ? ui : hx(0.1, 0.04, 255)) + '" fill-opacity="' + (warn ? 0.92 : 0.6) +
       '" stroke="' + ui + '" stroke-width="2.4"/>')
     out.push(text(nx + 1 + 0.9 * U + tagLs / 2, ty + th / 2 + tagPx * 0.36, tagText, { size: tagPx, ls: tagLs, fill: warn ? '#1a0606' : ink, glow: !warn }))
+    tagEnd = nx + 1 + tw + lightGap
   }
+  if (at < 0) light(tagEnd + lr, ty + th / 2)
 
-  // the card number, top right, on the grid
+  // the card number, top right, in the grid band
   if (o.serial) {
-    const [ix, iy] = px(95.5, 6.4)
+    const [ix, iy] = px(100 - SCAN_PAD, SCAN_BAND / 2)
     const idPx = 1.9 * U
     const idLs = idPx * 0.14
     const idText = 'ID ' + o.serial
@@ -589,65 +589,46 @@ function scannerSvg(o) {
     out.push(text(ix, iy + idPx * 0.36, idText, { size: idPx, ls: idLs, anchor: 'end', fill: warn ? hx(0.95, 0.05, 25) : ink }))
   }
 
-  // the two fields, bottom corners
-  const fields = (Array.isArray(o.fields) ? o.fields : []).filter(Boolean).slice(0, 2)
+  // the two fields, bottom corners; the light (when it is here) takes room before its value
   const vpx = 3.3 * U
   const vls = vpx * 0.04
   const lpx = 1.85 * U
   const lls = lpx * 0.2
-  const base = sy + sh * (1 - 0.13)
-  const rowW = sw * 0.91
+  const base = H * (1 - 0.13)
+  const rowW = W * (1 - 2 * SCAN_PAD / 100)
+  const lightW = 2 * lr + lightGap
   const shown = fields.map(() => '')
   for (const i of fields.map((_, n) => n).reverse()) {
-    const room = i === 1 ? rowW * 0.45 : Math.min(rowW * 0.52, shown[1] ? rowW - width(shown[1], vpx, vls) - 3 * U : rowW)
+    const own = i === at ? lightW : 0
+    const room = (i === 1 ? rowW * 0.45 : Math.min(rowW * 0.52, shown[1] ? rowW - width(shown[1], vpx, vls) - (at === 1 ? lightW : 0) - 3 * U : rowW)) - own
     shown[i] = fitText(up(fields[i][1]), room, s => width(s, vpx, vls))
   }
   fields.forEach((fl, i) => {
-    const x = i === 0 ? nx : sx + sw * 0.955
+    const right = W * (1 - SCAN_PAD / 100)
+    const x = i === 0 ? nx : right
     const anchor = i === 0 ? 'start' : 'end'
     out.push(text(x, base - vpx * 1.02, up(fl[0]), { size: lpx, ls: lls, anchor, fill: ui }))
-    out.push(text(x, base, shown[i], { size: vpx, ls: vls, anchor, fill: fl[2] ? hx(0.86, 0.14, 70) : ink }))
+    let vx = x
+    if (i === at) {
+      const cy = base - vpx * 0.36
+      if (i === 0) { light(x + lr, cy); vx = x + lightW } else light(x - width(shown[i], vpx, vls) - lightGap - lr, cy)
+    }
+    out.push(text(vx, base, shown[i], { size: vpx, ls: vls, anchor, fill: fl[2] ? hx(0.86, 0.14, 70) : ink }))
   })
 
-  // the glass: scanlines, vignette, glare, and a red edge when the key check failed
-  out.push('<rect x="' + num(sx) + '" y="' + num(sy) + '" width="' + num(sw) + '" height="' + num(sh) + '" fill="url(#nsscan)"/>')
-  out.push('<rect x="' + num(sx) + '" y="' + num(sy) + '" width="' + num(sw) + '" height="' + num(sh) + '" fill="url(#nsvig)"/>')
+  // the glass: scanlines, vignette, glare, a red inner glow when the key check failed, then the edge: a soft
+  // dark falloff and a thin light rim (glass catching the light, not a frame)
+  out.push('<rect width="' + W + '" height="' + H + '" fill="url(#nsscan)"/>')
+  out.push('<rect width="' + W + '" height="' + H + '" fill="url(#nsvig)"/>')
   if (warn) {
-    out.push('<rect x="' + num(sx + 6) + '" y="' + num(sy + 6) + '" width="' + num(sw - 12) + '" height="' + num(sh - 12) + '" rx="' + num(2.4 * U) + '" fill="none" stroke="' + ui +
+    out.push('<rect x="6" y="6" width="' + (W - 12) + '" height="' + (H - 12) + '" rx="' + (R - 6) + '" fill="none" stroke="' + ui +
       '" stroke-width="12" stroke-opacity="0.35" filter="url(#nsglow)"/>')
   }
-  out.push('<rect x="' + num(sx) + '" y="' + num(sy) + '" width="' + num(sw) + '" height="' + num(sh) + '" fill="url(#nsglare)"/>')
+  out.push('<rect width="' + W + '" height="' + H + '" fill="url(#nsglare)"/>')
+  out.push('<rect width="' + W + '" height="' + H + '" rx="' + R + '" fill="none" stroke="#000" stroke-opacity="0.6" stroke-width="40" filter="url(#nsedge)"/>')
   out.push('</g>')
-
-  // the strip: LED, maker's name, vent and knobs
-  const cy = H - SCAN_STRIP * U / 2 + 0.3 * U
-  const lx = sx + 2.6 * U
-  out.push('<circle cx="' + num(lx) + '" cy="' + num(cy) + '" r="' + num(2.6 * U) + '" fill="url(#nsled)"/>')
-  out.push('<circle cx="' + num(lx) + '" cy="' + num(cy) + '" r="' + num(1.05 * U) + '" fill="#111316"/>')
-  out.push('<circle cx="' + num(lx) + '" cy="' + num(cy) + '" r="' + num(0.72 * U) + '" fill="' + hx(led[0], led[1], led[2]) + '"/>')
-  // an engraving: the letters in a lighter metal with a dark edge one pixel (on a 400px card) below
-  out.push(text(lx + 2.6 * U, cy + 1.6 * U * 0.36 + 3, 'NINSEI', { size: 1.6 * U, ls: 1.6 * U * 0.4, fill: '#101215', sans: true, weight: 600, glow: false }))
-  out.push(text(lx + 2.6 * U, cy + 1.6 * U * 0.36, 'NINSEI', { size: 1.6 * U, ls: 1.6 * U * 0.4, fill: '#5b626b', sans: true, weight: 600, glow: false }))
-  const vx = sx + sw * 0.36
-  for (let i = 0; i < 6; i++) {
-    out.push('<rect x="' + num(vx + i * 1.3 * U) + '" y="' + num(cy - 1.3 * U) + '" width="' + num(0.45 * U) + '" height="' + num(2.6 * U) + '" rx="' + num(0.22 * U) + '" fill="#101215"/>')
-  }
-  const seed = scanSeed(o.pk)
-  const knobs = [[4.6, 0], [4.6, 1], [3.6, 2], [3.6, 3]]
-  let kx = sx + sw - 2.4 * U
-  for (let i = knobs.length - 1; i >= 0; i--) {
-    const d = knobs[i][0] * U
-    const r = d / 2
-    const cx0 = kx - r
-    const ang = (scanHash(knobs[i][1], 41, seed) * 270 - 135) * Math.PI / 180
-    out.push('<circle cx="' + num(cx0) + '" cy="' + num(cy) + '" r="' + num(r + 3) + '" fill="#121417"/>')
-    out.push('<circle cx="' + num(cx0) + '" cy="' + num(cy) + '" r="' + num(r) + '" fill="url(#nsknob)"/>')
-    out.push('<path d="M' + num(cx0 + Math.sin(ang) * r * 0.35) + ' ' + num(cy - Math.cos(ang) * r * 0.35) + 'L' + num(cx0 + Math.sin(ang) * r * 0.85) + ' ' + num(cy - Math.cos(ang) * r * 0.85) +
-      '" stroke="#e8ecef" stroke-opacity="0.8" stroke-width="3" stroke-linecap="round"/>')
-    kx -= d + 2.2 * U
-  }
-  out.push('</g>')
-  out.push('<rect x="1.5" y="1.5" width="' + (W - 3) + '" height="' + (H - 3) + '" rx="69" fill="none" stroke="#fff" stroke-opacity="0.14" stroke-width="3"/>')
+  out.push('<rect x="1.5" y="1.5" width="' + (W - 3) + '" height="' + (H - 3) + '" rx="' + (R - 1.5) + '" fill="none" stroke="#fff" stroke-opacity="' + (warn ? 0 : 0.16) + '" stroke-width="3"/>')
+  if (warn) out.push('<rect x="1.5" y="1.5" width="' + (W - 3) + '" height="' + (H - 3) + '" rx="' + (R - 1.5) + '" fill="none" stroke="' + ui + '" stroke-opacity="0.5" stroke-width="3"/>')
 
   return '<svg xmlns="http://www.w3.org/2000/svg" width="' + W + '" height="' + H + '" viewBox="0 0 ' + W + ' ' + H + '"><defs>' + defs.join('') + '</defs>' + out.join('') + '</svg>'
 }

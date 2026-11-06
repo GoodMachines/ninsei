@@ -122,7 +122,7 @@ const SPRING = {
   pop: { k: 520, c: 22 },      // a face reacting to a new state
   tilt: { k: 240, c: 27 },     // a card leaning after the pointer: near critical (z 0.87), so it follows without wobble
   flip: { k: 200, c: 20 },     // a card turning over: z 0.71, a slight overshoot (about 7 degrees on a half turn)
-  power: { k: 300, c: 34 }     // the Scanner's screen switching on: z 0.98, opens from a line without bulging past the bezel
+  power: { k: 300, c: 34 }     // the Scanner's screen switching on: z 0.98, opens from a line without bulging past the card
 }
 
 const motion = (function () {

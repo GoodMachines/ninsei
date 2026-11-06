@@ -152,12 +152,12 @@ console.log(JSON.stringify([scanLed({ kind: 'agent', state: 'activity: idle' }),
 def test_the_nebula_is_the_keys_own_and_never_changes():
     a, b = "3f2a9c1b77e0" * 5 + "abcd", "5a17be02" * 8
     out = _run(f"""
-const f = (pk, t) => {{ const r = nebulaField(pk, 48, 25, t); return {{ w: r.w, h: r.h, d: Array.from(r.d), m: Array.from(r.m) }} }}
+const f = (pk, t) => {{ const r = nebulaField(pk, 48, 30, t); return {{ w: r.w, h: r.h, d: Array.from(r.d), m: Array.from(r.m) }} }}
 console.log(JSON.stringify([f('{a}', 0), f('{a}', 0), f('{b}', 0), f('{a}', 30), f(null, 0), f(42, 0), f({{}}, NaN),
   nebulaField('{a}', 0, -3, 0).d.length, nebulaField('{a}', 1e9, 'x', 0).d.length]))""")
     first, again, other, later, none, number, obj, small, big = out
     assert first == again  # deterministic for a key
-    assert first["w"] == 48 and first["h"] == 25 and len(first["d"]) == len(first["m"]) == 48 * 25
+    assert first["w"] == 48 and first["h"] == 30 and len(first["d"]) == len(first["m"]) == 48 * 30
     for f in (first, other, later, none, number, obj):
         assert all(0 <= x <= 1 for x in f["d"] + f["m"])
     diff = sum(abs(x - y) for x, y in zip(first["d"], other["d"])) / len(first["d"])
@@ -166,7 +166,7 @@ console.log(JSON.stringify([f('{a}', 0), f('{a}', 0), f('{b}', 0), f('{a}', 30),
     assert 0 < drift < diff  # time moves it, gently
     # it has both dark space and bright cores, not a flat wash
     assert min(first["d"]) < 0.05 and max(first["d"]) > 0.6
-    assert small == 48 and big == 256 * 25  # 0 is the default width, -3 rows is one row
+    assert small == 48 and big == 256 * 30  # 0 is the default width, -3 rows is one row, junk is the default height
 
 
 @needs_node
@@ -390,7 +390,7 @@ def test_scanner_text_never_drops_below_a_readable_pixel_size():
             seen += 1
             floor = re.match(r"(?:max|clamp)\(([\d.]+)px,", size)
             assert floor and float(floor.group(1)) >= 7.5, (selector, size)
-    assert seen == 7  # labels, ID, tag, brand, back key, about, back value
+    assert seen == 6  # labels, ID, tag, back key, about, back value
 
 
 def _luminance(hex_color: str) -> float:
@@ -404,14 +404,118 @@ def _contrast(a: str, b: str) -> float:
     return (la + 0.05) / (lb + 0.05)
 
 
-def test_the_bezel_brand_is_a_visible_engraving_in_both_renderers():
-    metal = "#2b3036"  # the strip's middle stop, in the CSS and in scannerSvg
-    css = next(body for sel, body in _css_rules(".h-scan-brand") if sel == ".h-scan-brand")
-    ink = re.search(r"color:(#[0-9a-f]{6})", css).group(1)
-    assert _contrast(ink, metal) >= 2.0, ink
-    assert re.search(r"text-shadow:0 1px 0 #[0-9a-f]{6}", css)  # a dark edge one pixel down
-    svg = re.search(r"out\.push\(text\(lx \+ 2\.6 \* U, cy \+ 1\.6 \* U \* 0\.36, 'NINSEI', \{[^}]*fill: '(#[0-9a-f]{6})'", SCANNER)
-    assert svg and _contrast(svg.group(1), metal) >= 2.0 and "opacity" not in svg.group(0)
+BEZEL = ("h-scan-strip", "h-scan-brand", "h-scan-vent", "h-scan-knob", "nsmetal", "nsbrush", "nsknob", "nsscreen", "Ninsei", "NINSEI")
+
+
+def test_the_screen_is_the_whole_card_with_no_bezel():
+    # Justin: "no bezel at all". No strip, knobs, vent or maker's name, in the markup, the style sheet or the export
+    for needle in BEZEL:
+        assert needle not in SCANNER, needle
+        if needle.lower() != "ninsei":  # the style sheet's header names the app
+            assert needle not in STYLE, needle
+    screen = next(body for sel, body in _css_rules(".h-scan-screen") if sel == ".h-scan-screen")
+    assert "inset:0" in screen and "border-radius:inherit" in screen  # edge to edge, the card's own corners
+    card = next(body for sel, body in _css_rules("[data-card=scanner]") if sel == ".h-idcard[data-card=scanner]")
+    assert "#5b626b" not in card and "gradient" not in card  # no gunmetal
+    # the edge is glass: a faint light rim and a soft inner shadow, both inside the screen
+    glass = next(body for sel, body in _css_rules(".h-scan-glass") if sel == ".h-scan-glass")
+    assert re.search(r"inset 0 0 0 1px oklch\(1 0 0 / \.1\d\)", glass) and re.search(r"inset 0 0 [\d.]+cqw oklch\(0 0 0 / \.\d+\)", glass)
+    # the export and the swatch fill the card too
+    assert "nebula: scanNebulaPng(props.pk, m.f.hue, m.f.hue2, t, CARD_W, CARD_H)" in _fn(IMAGE, "cardImage")
+    swatch = next(body for sel, body in _css_rules(".h-cardswatch-screen") if sel == ".h-cardswatch-screen")
+    assert "inset:0" in swatch
+    # the nebula's cells stay square on a 1.6:1 screen
+    assert re.search(r"const SCAN_W = (\d+)", SCANNER).group(1) == "48" and re.search(r"const SCAN_H = (\d+)", SCANNER).group(1) == "30"
+    assert "calc(100% / 30)" in STYLE
+
+
+# jsx stand-ins: the card's markup as a plain tree
+TREE = """
+const jsx = (type, props, key) => ({ type: typeof type === 'string' ? type : 'Comp', props: props || {}, key })
+const jsxs = jsx
+const useRef = v => ({ current: v }), useEffect = () => {}
+const ScanScreenStub = 0
+const walk = (n, fn, up) => { if (!n || typeof n !== 'object') return; if (Array.isArray(n)) return n.forEach(c => walk(c, fn, up))
+  fn(n, up || []); walk(n.props && n.props.children, fn, (up || []).concat([n])) }
+const cls = n => (n.props && n.props.className) || ''
+const textOf = n => { let t = ''; walk(n, x => { if (typeof x.props.children === 'string') t += x.props.children }); return t }
+function lightInfo(model) {
+  const card = scannerFront(model, { pk: 'ab'.repeat(32) }, null)
+  const found = []
+  walk(card, (n, up) => { if (cls(n) === 'h-scan-led') {
+    const field = up.find(u => cls(u) === 'h-scan-field'), top = up.find(u => cls(u) === 'h-scan-top')
+    const read = up[up.length - 1]
+    found.push({ where: field ? textOf(field.props.children[0]) : top ? 'tag' : '?', withValue: textOf(read) })
+  } })
+  const all = []; walk(card, n => all.push(cls(n)))
+  return { led: card.props['data-led'], warn: card.props['data-warn'], found, bezel: all.filter(c => /strip|knob|brand|vent/.test(c)) }
+}
+const m = (fields, led, warn) => ({ f: { hue: 255, hue2: 40 }, warn: !!warn, name: 'Ada', tag: warn ? 'Check key' : 'Agent', serial: '3F2A', fields, led })
+"""
+
+
+@needs_node
+def test_the_status_light_sits_by_the_status_readout_inside_the_screen():
+    out = _run(TREE + """
+console.log(JSON.stringify([
+  lightInfo(m([['Owner', 'Jo'], ['Status', 'Idle']], 'green')),
+  lightInfo(m([['Agents', 'Ada, Bo'], ['In the room', 'Away']], 'amber')),
+  lightInfo(m([['Owner', 'Jo'], ['Model', 'opus']], 'green')),
+  lightInfo(m([['Owner', 'Jo', true], ['Status', 'Idle']], 'red', true)),
+  lightInfo(m([['Owner', 'Jo', true], ['Model', 'opus']], 'red', true)),
+  lightInfo(m([], 'amber'))]))""")
+    status, person, model, warn, warn_model, empty = out
+    for card in out:
+        assert len(card["found"]) == 1 and card["bezel"] == []  # one light, never a strip
+    assert status["found"][0] == {"where": "Status", "withValue": "Idle"} and status["led"] == "green"
+    assert person["found"][0] == {"where": "In the room", "withValue": "Away"} and person["led"] == "amber"
+    # no Status readout (the model is shown instead): the light sits by the tag
+    assert model["found"][0]["where"] == "tag" and model["found"][0]["withValue"] == "Agent"
+    assert warn["found"][0]["where"] == "Status" and warn["led"] == "red" and warn["warn"] is True
+    assert warn_model["found"][0] == {"where": "tag", "withValue": "Check key"} and warn_model["led"] == "red"
+    assert empty["found"][0]["where"] == "tag"
+    # the colours behind data-led: green, amber, red (the warn light is also a little bigger)
+    for state, hue in (("green", "145"), ("amber", "75"), ("red", "27")):
+        body = next(b for sel, b in _css_rules("[data-led=" + state + "]"))
+        assert re.search(r"--led:oklch\([\d.]+ [\d.]+ " + hue + r"\)", body), state
+    assert any("data-warn=true" in sel for sel, _ in _css_rules(".h-scan-led"))
+    led = next(body for sel, body in _css_rules(".h-scan-led") if sel == ".h-scan-led")
+    assert "background:var(--led)" in led and "max(5px," in led  # never smaller than 5px on a phone
+
+
+@needs_node
+def test_the_saved_image_draws_the_light_in_the_right_colour():
+    out = _run("""
+const hexes = { green: oklchToHex(0.86, 0.21, 145), amber: oklchToHex(0.83, 0.16, 75), red: oklchToHex(0.66, 0.24, 27) }
+const svg = (led, warn, fields) => scannerSvg({ hue: 255, hue2: 40, name: 'Ada', tag: warn ? 'Check key' : 'Agent', serial: '3F2A', warn, led, fields })
+console.log(JSON.stringify({ hexes,
+  green: svg('green', false, [['Owner', 'Jo'], ['Status', 'Idle']]),
+  amber: svg('amber', false, [['Agents', 'Bo'], ['In the room', 'Away']]),
+  model: svg('green', false, [['Owner', 'Jo'], ['Model', 'opus']]),
+  warn: svg('green', true, [['Owner', 'Jo', true], ['Status', 'Idle']]),
+  junk: svg('<b>', false, [['Status', 'Idle']]), proto: svg('constructor', false, [['Status', 'Idle']]) }))""")
+    hexes = out["hexes"]
+
+    def lights(svg):
+        root = _check_inert(svg)
+        return [(float(c.get("cx")), float(c.get("cy")), c.get("fill")) for c in root.iter(SVG_NS + "circle")
+                if c.get("fill", "").startswith("#")]
+
+    for name, want in (("green", "green"), ("amber", "amber"), ("model", "green"), ("warn", "red"), ("junk", "green"), ("proto", "green")):
+        found = lights(out[name])
+        assert len(found) == 1 and found[0][2] == hexes[want], (name, found)  # exactly one, the right colour
+        assert 'stop-color="' + hexes[want] + '"' in out[name]  # and its halo
+        x, y, _ = found[0]
+        assert 0.07 * 1200 <= x <= 0.93 * 1200 and 0.17 * 750 <= y <= 0.9 * 750, (name, x, y)  # inside the screen's insets
+    def dot_r(svg):
+        root = _check_inert(svg)
+        return [float(c.get("r")) for c in root.iter(SVG_NS + "circle") if c.get("fill", "").startswith("#")][0]
+    assert dot_r(out["warn"]) > dot_r(out["green"])  # the warn rule enlarges the light, as on the card
+    # by the value at the bottom right, or by the tag at the top left when there is no Status readout
+    assert lights(out["green"])[0][0] > 600 and lights(out["green"])[0][1] > 600
+    assert lights(out["model"])[0][0] < 400 and lights(out["model"])[0][1] < 400
+    # the warn card stays unmistakable: red rim and the Check key tag
+    assert "CHECK KEY" in out["warn"] and 'stroke-width="12"' in out["warn"]
 
 
 def test_labels_and_the_card_number_have_backing_on_the_screen():

@@ -157,7 +157,7 @@ const SPRING = {
   pop: { k: 520, c: 22 },      // a face reacting to a new state
   tilt: { k: 240, c: 27 },     // a card leaning after the pointer: near critical (z 0.87), so it follows without wobble
   flip: { k: 200, c: 20 },     // a card turning over: z 0.71, a slight overshoot (about 7 degrees on a half turn)
-  power: { k: 300, c: 34 }     // the Scanner's screen switching on: z 0.98, opens from a line without bulging past the bezel
+  power: { k: 300, c: 34 }     // the Scanner's screen switching on: z 0.98, opens from a line without bulging past the card
 }
 
 const motion = (function () {
@@ -962,28 +962,26 @@ const CSS = TOKENS + `
 .h-idcard-num{font-family:var(--h-mono,ui-monospace),ui-monospace,monospace;letter-spacing:.06em;color:var(--h-fg)}
 .h-idcard-sr{position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}
 .h-idcard[data-card=scanner]{--scan-ui:oklch(0.86 0.12 205);--scan-ink:oklch(0.97 0.04 205);--scan-glow:oklch(0.78 0.15 215);color:var(--scan-ink);
-  background:repeating-linear-gradient(90deg,oklch(1 0 0 / .025) 0 1px,transparent 1px 3px),linear-gradient(180deg,#5b626b 0%,#3c4249 4%,#2b3036 45%,#22262b 88%,#3a3f46 100%);
-  box-shadow:0 22px 48px -22px oklch(0.12 0.04 250 / .9),inset 0 0 0 1px oklch(1 0 0 / .14),inset 0 1px 0 oklch(1 0 0 / .22)}
-.h-idcard[data-card=scanner][data-warn=true]{--scan-ui:oklch(0.7 0.21 27);--scan-glow:oklch(0.62 0.24 27);box-shadow:0 22px 48px -22px oklch(0.3 0.17 28 / .9),inset 0 0 0 1px oklch(0.75 0.17 30 / .45)}
+  background:oklch(0.1 0.035 262);box-shadow:0 22px 48px -22px oklch(0.12 0.04 250 / .9)}
+.h-idcard[data-card=scanner][data-warn=true]{--scan-ui:oklch(0.7 0.21 27);--scan-glow:oklch(0.62 0.24 27);box-shadow:0 22px 48px -22px oklch(0.3 0.17 28 / .9)}
 .h-idcard[data-card=scanner][data-warn=true]::after{display:none}
 .h-idcard[data-card=scanner][data-led=green]{--led:oklch(0.86 0.21 145)}
 .h-idcard[data-card=scanner][data-led=amber]{--led:oklch(0.83 0.16 75)}
 .h-idcard[data-card=scanner][data-led=red]{--led:oklch(0.66 0.24 27)}
-.h-scan-screen{position:absolute;left:3.4cqw;right:3.4cqw;top:3.4cqw;bottom:10.4cqw;border-radius:2.4cqw;overflow:hidden;isolation:isolate;background:oklch(0.1 0.035 262);
-  box-shadow:0 0 0 .35cqw #0b0d10,0 .55cqw 0 .3cqw oklch(1 0 0 / .08)}
+.h-scan-screen{position:absolute;inset:0;border-radius:inherit;overflow:hidden;isolation:isolate;background:oklch(0.1 0.035 262)}
 .h-scan-nebula{position:absolute;inset:0;z-index:0}
 .h-scan-nebula canvas{position:absolute;inset:0;width:100%;height:100%;display:block}
 .h-scan-px{image-rendering:crisp-edges;image-rendering:pixelated}
 .h-scan-bloom{filter:blur(2.6cqw) saturate(1.25) brightness(1.4);mix-blend-mode:screen;opacity:1;transform:scale(1.05)}
 .h-scan-cells{position:absolute;inset:0;z-index:1;mix-blend-mode:multiply;opacity:.5;
-  background-image:linear-gradient(90deg,oklch(0.55 0 0) 1px,transparent 1px),linear-gradient(oklch(0.55 0 0) 1px,transparent 1px);background-size:calc(100% / 48) 100%,100% calc(100% / 25)}
+  background-image:linear-gradient(90deg,oklch(0.55 0 0) 1px,transparent 1px),linear-gradient(oklch(0.55 0 0) 1px,transparent 1px);background-size:calc(100% / 48) 100%,100% calc(100% / 30)}
 .h-scan-band{position:absolute;left:0;right:0;height:10%;z-index:2;background-size:1.55cqw 1.55cqw;
   background-image:linear-gradient(90deg,color-mix(in oklch,var(--scan-ui) 34%,transparent) 1px,transparent 1px),linear-gradient(color-mix(in oklch,var(--scan-ui) 34%,transparent) 1px,transparent 1px)}
 .h-scan-band[data-at=top]{top:0;border-bottom:1px solid color-mix(in oklch,var(--scan-ui) 70%,transparent)}
 .h-scan-band[data-at=bottom]{bottom:0;border-top:1px solid color-mix(in oklch,var(--scan-ui) 70%,transparent);background-position:0 100%}
 .h-scan-scrim{position:absolute;inset:0;z-index:3;pointer-events:none;
-  background:linear-gradient(to top,oklch(0.08 0.04 255 / .72) 0,oklch(0.08 0.04 255 / .5) 18%,transparent 36%),radial-gradient(ellipse 40% 26% at 28% 30%,oklch(0.08 0.04 255 / .5),transparent)}
-.h-scan-box{position:absolute;z-index:3;right:4.5%;top:15%;width:28%;aspect-ratio:1;box-shadow:inset 0 0 0 1px color-mix(in oklch,var(--scan-ui) 38%,transparent);
+  background:linear-gradient(to top,oklch(0.08 0.04 255 / .72) 0,oklch(0.08 0.04 255 / .5) 18%,transparent 36%),radial-gradient(ellipse 40% 26% at 30% 32%,oklch(0.08 0.04 255 / .5),transparent)}
+.h-scan-box{position:absolute;z-index:3;right:7.5%;top:17%;width:30%;aspect-ratio:1;box-shadow:inset 0 0 0 1px color-mix(in oklch,var(--scan-ui) 38%,transparent);
   background:radial-gradient(closest-side,oklch(0.1 0.04 255 / .55),transparent)}
 .h-scan-box::before{content:'';position:absolute;inset:0;--a:12%;--w:2px;background-repeat:no-repeat;filter:drop-shadow(0 0 3px var(--scan-glow));
   background-image:linear-gradient(var(--scan-ui),var(--scan-ui)),linear-gradient(var(--scan-ui),var(--scan-ui)),linear-gradient(var(--scan-ui),var(--scan-ui)),linear-gradient(var(--scan-ui),var(--scan-ui)),
@@ -1002,7 +1000,7 @@ const CSS = TOKENS + `
 .h-idcard[data-card=scanner] .h-idcard-mate{filter:brightness(.78)}
 .h-idcard[data-card=scanner] .h-idcard-mate[data-front=true]{filter:drop-shadow(0 .6cqw 1cqw oklch(0.08 0.04 255 / .7))}
 .h-idcard[data-card=scanner] .h-idcard-initial{font-family:var(--h-mono,ui-monospace),ui-monospace,monospace;font-size:20cqw;font-weight:400;color:var(--scan-ink);text-shadow:0 0 1.6cqw var(--scan-glow)}
-.h-scan-top{position:absolute;z-index:4;left:4.5%;top:16%;right:38%;display:flex;flex-direction:column;align-items:flex-start;gap:1.3cqw}
+.h-scan-top{position:absolute;z-index:4;left:7.5%;top:17%;right:40%;display:flex;flex-direction:column;align-items:flex-start;gap:1.3cqw}
 .h-scan-name,.h-scan-tag,.h-scan-id,.h-scan-label,.h-scan-value,.h-scan-key,.h-scan-about{font-family:var(--h-mono,ui-monospace),ui-monospace,monospace;text-transform:uppercase}
 .h-scan-name{font-size:5.9cqw;font-weight:500;line-height:1.14;letter-spacing:.06em;color:var(--scan-ink);overflow-wrap:anywhere;max-width:100%;
   text-shadow:0 0 .5cqw var(--scan-glow),0 0 2.2cqw color-mix(in oklch,var(--scan-glow) 60%,transparent);display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;line-clamp:2;overflow:hidden}
@@ -1011,10 +1009,10 @@ const CSS = TOKENS + `
 .h-scan-tag{font-size:max(8px,2.25cqw);font-weight:500;letter-spacing:.18em;line-height:1;padding:.6cqw .9cqw .5cqw;margin-left:1px;color:var(--scan-ink);text-shadow:0 0 .6cqw var(--scan-glow);background:oklch(0.1 0.04 255 / .6);
   box-shadow:inset 0 0 0 1px var(--scan-ui),0 0 1cqw color-mix(in oklch,var(--scan-glow) 40%,transparent)}
 .h-idcard[data-card=scanner][data-warn=true] .h-scan-tag{background:var(--scan-ui);color:oklch(0.16 0.05 27);text-shadow:none;box-shadow:0 0 1.6cqw var(--scan-glow)}
-.h-scan-id{position:absolute;z-index:4;right:4.5%;top:5%;transform:translateY(-50%);font-size:max(7.5px,1.9cqw);line-height:1;letter-spacing:.14em;color:var(--scan-ink);padding:.55cqw .9cqw .5cqw;border-radius:.6cqw;
+.h-scan-id{position:absolute;z-index:4;right:7.5%;top:5%;transform:translateY(-50%);font-size:max(7.5px,1.9cqw);line-height:1;letter-spacing:.14em;color:var(--scan-ink);padding:.55cqw .9cqw .5cqw;border-radius:.6cqw;
   background:oklch(0.09 0.04 255 / .72);text-shadow:0 0 .6cqw var(--scan-glow)}
 .h-idcard[data-card=scanner][data-warn=true] .h-scan-id{color:oklch(0.95 0.05 25)}
-.h-scan-foot{position:absolute;z-index:4;left:4.5%;right:4.5%;bottom:13%;display:flex;justify-content:space-between;align-items:flex-end;gap:3cqw}
+.h-scan-foot{position:absolute;z-index:4;left:7.5%;right:7.5%;bottom:13%;display:flex;justify-content:space-between;align-items:flex-end;gap:3cqw}
 .h-scan-field{display:flex;flex-direction:column;gap:.7cqw;min-width:0;max-width:52%}
 .h-scan-field+.h-scan-field{text-align:right;align-items:flex-end;max-width:45%}
 .h-scan-label{font-size:max(7.5px,1.85cqw);line-height:1;letter-spacing:.2em;color:var(--scan-ui);text-shadow:0 0 .5cqw oklch(0.08 0.04 255 / .95),0 0 .6cqw var(--scan-glow)}
@@ -1024,24 +1022,18 @@ const CSS = TOKENS + `
 .h-scan-glass{position:absolute;inset:0;z-index:5;pointer-events:none;border-radius:inherit;
   background:repeating-linear-gradient(180deg,transparent 0 2px,oklch(0 0 0 / .22) 2px 3px),radial-gradient(130% 120% at 50% 50%,transparent 55%,oklch(0.05 0.02 260 / .72) 100%),
     radial-gradient(90% 70% at 14% -12%,oklch(1 0 0 / .11),transparent 62%);
-  box-shadow:inset 0 0 2.4cqw oklch(0 0 0 / .65),inset 0 0 0 1px oklch(1 0 0 / .05)}
-.h-idcard[data-card=scanner][data-warn=true] .h-scan-glass{box-shadow:inset 0 0 2.4cqw oklch(0 0 0 / .65),inset 0 0 4cqw oklch(0.6 0.23 27 / .6),inset 0 0 0 1px oklch(0.7 0.21 27 / .5)}
+  box-shadow:inset 0 0 0 1px oklch(1 0 0 / .16),inset 0 1px 0 oklch(1 0 0 / .1),inset 0 0 3cqw oklch(0 0 0 / .6)}
+.h-idcard[data-card=scanner][data-warn=true] .h-scan-glass{box-shadow:inset 0 0 0 1px oklch(0.7 0.21 27 / .55),inset 0 0 3cqw oklch(0 0 0 / .6),inset 0 0 4.5cqw oklch(0.6 0.23 27 / .6)}
 .h-idcard[data-card=scanner] .h-idcard-shine{mix-blend-mode:screen;opacity:calc(var(--glow) * .9);
   background:linear-gradient(105deg,transparent calc(26% + var(--tx) * 30%),oklch(1 0 0 / .15) calc(38% + var(--tx) * 30%),oklch(1 0 0 / .04) calc(46% + var(--tx) * 30%),transparent calc(52% + var(--tx) * 30%)),
     radial-gradient(50% 70% at calc(50% + var(--tx) * 50%) calc(40% + var(--ty) * 50%),oklch(1 0 0 / .1),transparent 70%)}
 .h-idcard-back[data-card=scanner] .h-idcard-shine{background:linear-gradient(255deg,transparent calc(26% + var(--tx) * 30%),oklch(1 0 0 / .08) calc(38% + var(--tx) * 30%),transparent calc(52% + var(--tx) * 30%))}
-.h-idcard-back[data-card=scanner]{background:repeating-linear-gradient(90deg,oklch(1 0 0 / .025) 0 1px,transparent 1px 3px),linear-gradient(180deg,#5b626b 0%,#3c4249 4%,#2b3036 45%,#22262b 88%,#3a3f46 100%)}
-.h-scan-strip{position:absolute;left:3.4cqw;right:3.4cqw;bottom:0;height:10.4cqw;transform:translateY(.3cqw)}
-.h-scan-strip>*{position:absolute;top:50%;transform:translateY(-50%)}
-.h-scan-led{left:1.55cqw;width:2.1cqw;height:2.1cqw;border-radius:50%;background:#111316;box-shadow:0 1px 0 oklch(1 0 0 / .1)}
-.h-scan-led::after{content:'';position:absolute;inset:.33cqw;border-radius:50%;background:var(--led);box-shadow:0 0 .8cqw .15cqw var(--led),0 0 3cqw .5cqw color-mix(in oklch,var(--led) 45%,transparent)}
-.h-scan-brand{left:5.2cqw;font-size:max(7.5px,1.6cqw);font-weight:600;letter-spacing:.4em;text-transform:uppercase;line-height:1;color:#5b626b;text-shadow:0 1px 0 #101215}
-.h-scan-vent{left:36%;width:6.95cqw;height:2.6cqw;background:repeating-linear-gradient(90deg,#101215 0 .45cqw,transparent .45cqw 1.3cqw)}
-.h-scan-knobs{right:2.4cqw;display:flex;align-items:center;gap:2.2cqw}
-.h-scan-knob{position:relative;width:4.6cqw;height:4.6cqw;border-radius:50%;background:radial-gradient(80% 80% at 36% 30%,#9aa1aa 0%,#4a5058 45%,#1c1f23 100%);box-shadow:0 0 0 .25cqw #121417,0 .4cqw .8cqw oklch(0 0 0 / .5)}
-.h-scan-knob[data-i='2'],.h-scan-knob[data-i='3']{width:3.6cqw;height:3.6cqw}
-.h-scan-knob::after{content:'';position:absolute;left:50%;top:7.5%;width:.25cqw;height:25%;margin-left:-.125cqw;border-radius:1px;background:oklch(0.94 0.005 250 / .8);transform-origin:50% 170%;transform:rotate(var(--r))}
-.h-scan-term{position:absolute;z-index:4;left:4.5%;right:4.5%;top:16%;display:flex;flex-direction:column;align-items:flex-start;gap:1cqw}
+.h-scan-read{display:flex;align-items:center;gap:1.2cqw;min-width:0;max-width:100%}
+.h-scan-read .h-scan-value{min-width:0}
+.h-scan-led{flex:none;width:max(5px,1.5cqw);height:max(5px,1.5cqw);border-radius:50%;background:var(--led);
+  box-shadow:0 0 0 .2cqw oklch(0.08 0.04 255 / .7),0 0 .7cqw .1cqw var(--led),0 0 2.6cqw .4cqw color-mix(in oklch,var(--led) 50%,transparent)}
+.h-idcard[data-card=scanner][data-warn=true] .h-scan-led{width:max(6px,1.8cqw);height:max(6px,1.8cqw)}
+.h-scan-term{position:absolute;z-index:4;left:7.5%;right:7.5%;top:17%;display:flex;flex-direction:column;align-items:flex-start;gap:1cqw}
 .h-scan-key{display:grid;grid-template-columns:repeat(2,max-content);gap:.4cqw 3cqw;font-size:max(8px,2.7cqw);line-height:1.3;letter-spacing:.08em;color:var(--scan-ink);text-shadow:0 0 .5cqw var(--scan-glow)}
 .h-scan-about{margin-top:1.4cqw;font-size:max(8px,2.6cqw);line-height:1.4;text-transform:none;color:var(--scan-ink);opacity:.92;text-shadow:0 0 .5cqw var(--scan-glow);overflow-wrap:anywhere;
   display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;line-clamp:2;overflow:hidden}
@@ -1056,8 +1048,8 @@ const CSS = TOKENS + `
 .h-cardswatch{display:block;position:relative;width:40px;height:25px;border-radius:5px;overflow:hidden;flex:none}
 .h-cardswatch[data-card=member]{background:radial-gradient(115% 105% at 74% 40%,oklch(0.6 0.19 var(--hue)) 0%,oklch(0.4 0.2 var(--hue)) 46%,oklch(0.2 0.12 var(--hue)) 100%);
   box-shadow:inset 0 0 0 2px oklch(0.4 0.2 var(--hue)),inset 0 0 0 2.8px oklch(0.95 0.07 200 / .8)}
-.h-cardswatch[data-card=scanner]{background:linear-gradient(180deg,#5b626b,#2b3036 45%,#22262b)}
-.h-cardswatch-screen{position:absolute;left:2px;right:2px;top:2px;bottom:6px;border-radius:2px;
+.h-cardswatch[data-card=scanner]{background:oklch(0.1 0.035 262)}
+.h-cardswatch-screen{position:absolute;inset:0;border-radius:inherit;box-shadow:inset 0 0 0 1px oklch(1 0 0 / .16),inset 0 0 4px oklch(0 0 0 / .6);
   background:linear-gradient(oklch(0.86 0.12 205 / .8),oklch(0.86 0.12 205 / .8)) 0 2px/100% 1px no-repeat,
     radial-gradient(circle at 68% 58%,oklch(0.95 0.06 75) 0 1.5px,oklch(0.7 0.16 var(--hue2)) 3px,oklch(0.5 0.19 var(--hue)) 6px,transparent 10px),
     radial-gradient(circle at 26% 66%,oklch(0.6 0.19 var(--hue)) 0 2px,oklch(0.36 0.15 var(--hue)) 5px,transparent 8px),oklch(0.1 0.035 262)}
@@ -1330,11 +1322,11 @@ function Modal(props) {
 // ===== ui/34_scanner.js =========================================================================
 
 // ---------------------------------------------------------------------------------------------
-// the Scanner card style: the card as an old monitor in a gunmetal bezel. The screen shows a pixel
-// nebula grown from the agent's key (so each agent's is its own and never changes), in the agent's
-// colours, drifting very slowly. Cyan grid bands, brackets and glowing readouts sit on the glass; every
-// readout is the same data the Member card shows. A strip under the screen holds knobs and one LED:
-// green when online, amber when away, red when the key check failed.
+// the Scanner card style: the card is an old monitor's screen, edge to edge, with no bezel around it. It
+// shows a pixel nebula grown from the agent's key (so each agent's is its own and never changes), in the
+// agent's colours, drifting very slowly. Cyan grid bands, brackets and glowing readouts sit on the glass;
+// every readout is the same data the Member card shows. A small status light sits by the Status (or "In
+// the room") readout: green when online, amber when away, red when the key check failed.
 //
 // The field is a small grid of numbers (nebulaField, pure, runs in node for the tests), coloured through a
 // lookup table and put on a canvas a few cells wide that CSS scales up with hard pixel edges. A blurred
@@ -1342,14 +1334,17 @@ function Modal(props) {
 // while the card is on screen and the page is visible, and never with reduced motion.
 // ---------------------------------------------------------------------------------------------
 
-// The field's size in cells: about the screen's own aspect (93.2 x 48.7 card widths), so cells stay square.
+// The field's size in cells: the card's own 1.6:1 (the screen is the whole card), so cells stay square.
 const SCAN_W = 48
-const SCAN_H = 25
-// Bezel sizes in % of the card's width (cqw), kept in step with the .h-scan rules in 20_style.js.
-const SCAN_INSET = 3.4
-const SCAN_STRIP = 10.4
-// The hero's bracket box, in % of the screen: right edge, top, width (it is square).
-const SCAN_BOX = { right: 4.5, top: 15, size: 28 }
+const SCAN_H = 30
+// Layout in % of the card, kept in step with the .h-scan rules in 20_style.js (the export reads these):
+// the side inset of the readouts, the grid bands' height, and the hero's bracket box (right edge and width in
+// % of the card's width, top in % of its height; it is square).
+const SCAN_PAD = 7.5
+const SCAN_BAND = 10
+const SCAN_BOX = { right: 7.5, top: 17, size: 30 }
+// The status light's colours, shared by the card (CSS --led) and the export.
+const SCAN_LEDS = { green: [0.86, 0.21, 145], amber: [0.83, 0.16, 75], red: [0.66, 0.24, 27] }
 
 // ---- the field ---------------------------------------------------------------------------------
 
@@ -1635,16 +1630,14 @@ function scanLed(props) {
   return stateWord(props.state) === 'absent' ? 'amber' : 'green'
 }
 
-// The bezel's lower strip: an LED, the maker's name and four knobs (turned by the key, for variety).
-function scanStrip(pk) {
-  const s = scanSeed(pk)
-  return jsxs('div', { className: 'h-scan-strip', children: [
-    jsx('span', { className: 'h-scan-led' }),
-    jsx('span', { className: 'h-scan-brand', children: 'Ninsei' }),
-    jsx('span', { className: 'h-scan-vent' }),
-    jsx('span', { className: 'h-scan-knobs', children: [0, 1, 2, 3].map(i =>
-      jsx('span', { className: 'h-scan-knob', 'data-i': i, style: { '--r': Math.round(scanHash(i, 41, s) * 270 - 135) + 'deg' } }, i)) })
-  ] })
+// Which readout the status light sits by: the Status field (agents) or In the room (people). -1 when the card
+// shows neither (an agent card showing its model instead), and the light then sits by the tag.
+function scanLightAt(fields) {
+  return (fields || []).findIndex(x => x && (x[0] === 'Status' || x[0] === 'In the room'))
+}
+
+function scanLight() {
+  return jsx('span', { className: 'h-scan-led' }, 'led')
 }
 
 function scanBands() {
@@ -1654,6 +1647,7 @@ function scanBands() {
 // The front: the picture in its bracket box, the readouts in the corners.
 function scannerFront(model, props, hero) {
   const { f, warn, fields, name, serial } = model
+  const at = scanLightAt(fields)
   return jsxs('div', { className: 'h-idcard h-idcard-front', ref: props.cardRef, 'data-card': 'scanner', 'data-warn': warn, 'data-led': model.led,
     style: { '--hue': f.hue, '--hue2': f.hue2 }, role: props.interactive ? undefined : 'img', 'aria-label': props.interactive ? undefined : props.label,
     children: [
@@ -1665,21 +1659,20 @@ function scannerFront(model, props, hero) {
         jsx('div', { className: 'h-scan-box', 'data-hero': true, children: jsx('div', { className: 'h-idcard-hero', children: hero }) }),
         jsxs('div', { className: 'h-scan-top', children: [
           jsx('div', { className: 'h-scan-name', 'data-size': nameSize(name), children: name }),
-          jsx('span', { className: 'h-scan-tag', children: model.tag })
+          jsxs('div', { className: 'h-scan-read', children: [jsx('span', { className: 'h-scan-tag', children: model.tag }, 'tag'), at < 0 ? scanLight() : null] })
         ] }),
         serial ? jsx('div', { className: 'h-scan-id', children: 'ID ' + serial }) : null,
-        jsx('div', { className: 'h-scan-foot', children: fields.map(x => jsxs('div', { className: 'h-scan-field', children: [
+        jsx('div', { className: 'h-scan-foot', children: fields.map((x, i) => jsxs('div', { className: 'h-scan-field', children: [
           jsx('span', { className: 'h-scan-label', children: x[0] }),
-          jsx('span', { className: 'h-scan-value', 'data-warn': !!x[2], children: x[1] })
+          jsxs('div', { className: 'h-scan-read', children: [i === at ? scanLight() : null, jsx('span', { className: 'h-scan-value', 'data-warn': !!x[2], children: x[1] }, 'v')] })
         ] }, x[0])) }),
         jsx('div', { className: 'h-scan-glass' })
       ] }),
-      scanStrip(props.pk),
       jsx('div', { className: 'h-idcard-shine' })
     ] })
 }
 
-// The back: the same monitor, the screen dimmed and still, the key and the rest as terminal lines.
+// The back: the same screen, dimmed and still, the key and the rest as terminal lines.
 function scannerBack(model, props, back) {
   const { f, warn } = model
   return jsxs('div', { className: 'h-idcard h-idcard-back', 'aria-hidden': true, 'data-card': 'scanner', 'data-warn': warn, 'data-led': model.led,
@@ -1701,7 +1694,6 @@ function scannerBack(model, props, back) {
         ] }, x[0])) }),
         jsx('div', { className: 'h-scan-glass' })
       ] }),
-      scanStrip(props.pk),
       jsx('div', { className: 'h-idcard-shine' })
     ] })
 }
@@ -1774,7 +1766,7 @@ function scanPngOk(s) {
 }
 
 // The Scanner front as a standalone SVG string, 1200 x 750, like cardSvg (same options, plus `led` and
-// `nebula`, a PNG data URL from scanNebulaPng). Text is escaped the same way; faces go through faceMarkup.
+// `nebula`, a PNG data URL from scanNebulaPng, the size of the whole card). Text is escaped the same way; faces go through faceMarkup.
 function scannerSvg(o) {
   o = o || {}
   const W = CARD_W
@@ -1797,23 +1789,16 @@ function scannerSvg(o) {
     (a.anchor ? ' text-anchor="' + a.anchor + '"' : '') + (a.opacity != null ? ' fill-opacity="' + a.opacity + '"' : '') +
     (a.glow === false ? '' : ' filter="url(#nsglow)"') + '>' + xmlEsc(str) + '</text>'
 
-  // the screen, in image pixels
-  const sx = SCAN_INSET * U
-  const sy = SCAN_INSET * U
-  const sw = W - 2 * sx
-  const sh = H - sy - SCAN_STRIP * U
-  const px = (x, y) => [sx + x / 100 * sw, sy + y / 100 * sh]
+  // the screen is the whole card
+  const R = 70 // the card's corner radius at this size (the Member export's too)
+  const px = (x, y) => [x / 100 * W, y / 100 * H]
 
   const defs = []
   const out = []
-  defs.push('<linearGradient id="nsmetal" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#5b626b"/><stop offset="0.08" stop-color="#3c4249"/>' +
-    '<stop offset="0.55" stop-color="#2b3036"/><stop offset="0.9" stop-color="#22262b"/><stop offset="1" stop-color="#3a3f46"/></linearGradient>')
-  defs.push('<pattern id="nsbrush" width="6" height="750" patternUnits="userSpaceOnUse"><rect width="2" height="750" fill="#fff" fill-opacity="0.025"/></pattern>')
-  defs.push('<clipPath id="nscard"><rect width="' + W + '" height="' + H + '" rx="70"/></clipPath>')
-  defs.push('<clipPath id="nsscreen"><rect x="' + num(sx) + '" y="' + num(sy) + '" width="' + num(sw) + '" height="' + num(sh) + '" rx="' + num(2.4 * U) + '"/></clipPath>')
+  defs.push('<clipPath id="nscard"><rect width="' + W + '" height="' + H + '" rx="' + R + '"/></clipPath>')
   defs.push('<pattern id="nsscan" width="8" height="5" patternUnits="userSpaceOnUse"><rect y="3" width="8" height="2" fill="#000" fill-opacity="0.26"/></pattern>')
   const cell = 1.55 * U
-  defs.push('<pattern id="nsgrid" x="' + num(sx) + '" y="' + num(sy) + '" width="' + num(cell) + '" height="' + num(cell) + '" patternUnits="userSpaceOnUse">' +
+  defs.push('<pattern id="nsgrid" width="' + num(cell) + '" height="' + num(cell) + '" patternUnits="userSpaceOnUse">' +
     '<path d="M0 0.75H' + num(cell) + 'M0.75 0V' + num(cell) + '" stroke="' + ui + '" stroke-width="1.5" stroke-opacity="0.34" fill="none"/></pattern>')
   defs.push('<radialGradient id="nsvig" cx="0.5" cy="0.5" r="0.75"><stop offset="0.55" stop-color="#000" stop-opacity="0"/><stop offset="1" stop-color="#000" stop-opacity="0.72"/></radialGradient>')
   defs.push('<linearGradient id="nsglare" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#fff" stop-opacity="0.13"/><stop offset="0.36" stop-color="#fff" stop-opacity="0.03"/>' +
@@ -1829,39 +1814,33 @@ function scannerSvg(o) {
     (warn ? hx(0.65, 0.22, 27) : hx(0.8, 0.14, 215)) + '" flood-opacity="0.75"/></filter>')
   defs.push('<filter id="nsdim" x="-40%" y="-40%" width="180%" height="180%" color-interpolation-filters="sRGB">' +
     '<feComponentTransfer><feFuncR type="linear" slope="0.7"/><feFuncG type="linear" slope="0.7"/><feFuncB type="linear" slope="0.7"/></feComponentTransfer></filter>')
-  defs.push('<radialGradient id="nsknob" cx="0.36" cy="0.3" r="0.8"><stop offset="0" stop-color="#9aa1aa"/><stop offset="0.45" stop-color="#4a5058"/><stop offset="1" stop-color="#1c1f23"/></radialGradient>')
-  const led = { green: [0.86, 0.21, 145], amber: [0.83, 0.16, 75], red: [0.66, 0.24, 27] }[o.led] || [0.86, 0.21, 145]
-  defs.push('<radialGradient id="nsled" cx="0.5" cy="0.5" r="0.5"><stop offset="0" stop-color="' + hx(led[0], led[1], led[2]) + '" stop-opacity="0.75"/>' +
-    '<stop offset="1" stop-color="' + hx(led[0], led[1], led[2]) + '" stop-opacity="0"/></radialGradient>')
+  // the status light: red whenever the key check failed, whatever was asked for
+  const led = SCAN_LEDS[warn ? 'red' : Object.prototype.hasOwnProperty.call(SCAN_LEDS, o.led) ? o.led : 'green']
+  const ledHex = hx(led[0], led[1], led[2])
+  defs.push('<radialGradient id="nsled" cx="0.5" cy="0.5" r="0.5"><stop offset="0" stop-color="' + ledHex + '" stop-opacity="0.75"/>' +
+    '<stop offset="1" stop-color="' + ledHex + '" stop-opacity="0"/></radialGradient>')
+  // the glass edge: a soft dark falloff just inside the rim
+  defs.push('<filter id="nsedge" x="-5%" y="-8%" width="110%" height="116%"><feGaussianBlur stdDeviation="14"/></filter>')
 
-  // the bezel
   out.push('<g clip-path="url(#nscard)">')
-  out.push('<rect width="' + W + '" height="' + H + '" fill="url(#nsmetal)"/>')
-  out.push('<rect width="' + W + '" height="' + H + '" fill="url(#nsbrush)"/>')
-  out.push('<rect x="' + num(sx - 4) + '" y="' + num(sy - 4) + '" width="' + num(sw + 8) + '" height="' + num(sh + 8) + '" rx="' + num(2.4 * U + 4) + '" fill="#0b0d10"/>')
-  out.push('<rect x="' + num(sx - 4) + '" y="' + num(sy + sh + 2) + '" width="' + num(sw + 8) + '" height="3" fill="#fff" fill-opacity="0.09"/>')
-
-  // the screen
-  out.push('<g clip-path="url(#nsscreen)">')
-  out.push('<rect x="' + num(sx) + '" y="' + num(sy) + '" width="' + num(sw) + '" height="' + num(sh) + '" fill="' + hx(0.1, 0.035, 262) + '"/>')
+  out.push('<rect width="' + W + '" height="' + H + '" fill="' + hx(0.1, 0.035, 262) + '"/>')
   if (scanPngOk(o.nebula)) {
-    out.push('<image x="' + num(sx) + '" y="' + num(sy) + '" width="' + num(sw) + '" height="' + num(sh) + '" preserveAspectRatio="none" href="' + o.nebula + '"/>')
+    out.push('<image width="' + W + '" height="' + H + '" preserveAspectRatio="none" href="' + o.nebula + '"/>')
   }
-  const band = sh * 0.1
-  out.push('<rect x="' + num(sx) + '" y="' + num(sy) + '" width="' + num(sw) + '" height="' + num(band) + '" fill="url(#nsgrid)"/>')
-  out.push('<rect x="' + num(sx) + '" y="' + num(sy + sh - band) + '" width="' + num(sw) + '" height="' + num(band) + '" fill="url(#nsgrid)"/>')
-  out.push('<path d="M' + num(sx) + ' ' + num(sy + band) + 'H' + num(sx + sw) + 'M' + num(sx) + ' ' + num(sy + sh - band) + 'H' + num(sx + sw) +
-    '" stroke="' + ui + '" stroke-width="2" stroke-opacity="0.7" fill="none"/>')
+  const band = H * SCAN_BAND / 100
+  out.push('<rect width="' + W + '" height="' + num(band) + '" fill="url(#nsgrid)"/>')
+  out.push('<rect y="' + num(H - band) + '" width="' + W + '" height="' + num(band) + '" fill="url(#nsgrid)"/>')
+  out.push('<path d="M0 ' + num(band) + 'H' + W + 'M0 ' + num(H - band) + 'H' + W + '" stroke="' + ui + '" stroke-width="2" stroke-opacity="0.7" fill="none"/>')
 
   // a soft dark scrim under the name block and the two fields, so a bright core never washes the text out
   // (the .h-scan-scrim layer: the same stops)
-  out.push('<rect x="' + num(sx) + '" y="' + num(sy + sh * 0.64) + '" width="' + num(sw) + '" height="' + num(sh * 0.36) + '" fill="url(#nsscrim)"/>')
-  out.push('<ellipse cx="' + num(sx + sw * 0.28) + '" cy="' + num(sy + sh * 0.3) + '" rx="' + num(sw * 0.4) + '" ry="' + num(sh * 0.26) + '" fill="url(#nsscrimn)"/>')
+  out.push('<rect y="' + num(H * 0.64) + '" width="' + W + '" height="' + num(H * 0.36) + '" fill="url(#nsscrim)"/>')
+  out.push('<ellipse cx="' + num(W * 0.3) + '" cy="' + num(H * 0.32) + '" rx="' + num(W * 0.4) + '" ry="' + num(H * 0.26) + '" fill="url(#nsscrimn)"/>')
 
   // the hero's bracket box, the picture inside it
-  const bs = SCAN_BOX.size / 100 * sw
-  const bx = sx + sw * (1 - SCAN_BOX.right / 100) - bs
-  const by = sy + SCAN_BOX.top / 100 * sh
+  const bs = SCAN_BOX.size / 100 * W
+  const bx = W * (1 - SCAN_BOX.right / 100) - bs
+  const by = SCAN_BOX.top / 100 * H
   out.push('<rect x="' + num(bx) + '" y="' + num(by) + '" width="' + num(bs) + '" height="' + num(bs) + '" fill="url(#nsdark)"/>')
   out.push('<rect x="' + num(bx + 1) + '" y="' + num(by + 1) + '" width="' + num(bs - 2) + '" height="' + num(bs - 2) + '" fill="none" stroke="' + ui + '" stroke-width="2" stroke-opacity="0.38"/>')
   const arm = bs * 0.12
@@ -1886,29 +1865,42 @@ function scannerSvg(o) {
   }
   out.push('</g>')
 
+  // the status light: a lit dot and its halo, centred on (x, y)
+  const lr = (warn ? 0.9 : 0.75) * U
+  const light = (x, y) => {
+    out.push('<circle cx="' + num(x) + '" cy="' + num(y) + '" r="' + num(3.2 * lr) + '" fill="url(#nsled)"/>')
+    out.push('<circle cx="' + num(x) + '" cy="' + num(y) + '" r="' + num(lr) + '" fill="' + ledHex + '"/>')
+  }
+  const lightGap = 1.2 * U
+  const fields = (Array.isArray(o.fields) ? o.fields : []).filter(Boolean).slice(0, 2)
+  const at = scanLightAt(fields)
+
   // the name (two lines at most) and the tag under it
   const size = nameSize(o.name)
   const npx = { l: 5.9, m: 4.8, s: 3.6 }[size] * U
   const nls = npx * 0.06
   const lh = npx * 1.14
-  const [nx, ny] = px(4.5, 16)
-  const lines = wrapLines(up(o.name), sw * 0.575, 2, s => width(s, npx, nls))
+  const [nx, ny] = px(SCAN_PAD, 17)
+  const lines = wrapLines(up(o.name), W * (1 - SCAN_PAD / 100 - 0.4), 2, s => width(s, npx, nls))
   lines.forEach((ln, i) => out.push(text(nx, ny + i * lh + npx * 0.86, ln, { size: npx, ls: nls })))
   const tagPx = 2.25 * U
   const tagLs = tagPx * 0.18
   const tagText = up(o.tag || '')
+  const ty = ny + lines.length * lh + 1.3 * U
+  const th = tagPx * 1.75
+  let tagEnd = nx
   if (tagText) {
     const tw = width(tagText, tagPx, tagLs) + 1.8 * U
-    const ty = ny + lines.length * lh + 1.3 * U
-    const th = tagPx * 1.75
     out.push('<rect x="' + num(nx + 1) + '" y="' + num(ty) + '" width="' + num(tw) + '" height="' + num(th) + '" fill="' + (warn ? ui : hx(0.1, 0.04, 255)) + '" fill-opacity="' + (warn ? 0.92 : 0.6) +
       '" stroke="' + ui + '" stroke-width="2.4"/>')
     out.push(text(nx + 1 + 0.9 * U + tagLs / 2, ty + th / 2 + tagPx * 0.36, tagText, { size: tagPx, ls: tagLs, fill: warn ? '#1a0606' : ink, glow: !warn }))
+    tagEnd = nx + 1 + tw + lightGap
   }
+  if (at < 0) light(tagEnd + lr, ty + th / 2)
 
-  // the card number, top right, on the grid
+  // the card number, top right, in the grid band
   if (o.serial) {
-    const [ix, iy] = px(95.5, 6.4)
+    const [ix, iy] = px(100 - SCAN_PAD, SCAN_BAND / 2)
     const idPx = 1.9 * U
     const idLs = idPx * 0.14
     const idText = 'ID ' + o.serial
@@ -1920,65 +1912,46 @@ function scannerSvg(o) {
     out.push(text(ix, iy + idPx * 0.36, idText, { size: idPx, ls: idLs, anchor: 'end', fill: warn ? hx(0.95, 0.05, 25) : ink }))
   }
 
-  // the two fields, bottom corners
-  const fields = (Array.isArray(o.fields) ? o.fields : []).filter(Boolean).slice(0, 2)
+  // the two fields, bottom corners; the light (when it is here) takes room before its value
   const vpx = 3.3 * U
   const vls = vpx * 0.04
   const lpx = 1.85 * U
   const lls = lpx * 0.2
-  const base = sy + sh * (1 - 0.13)
-  const rowW = sw * 0.91
+  const base = H * (1 - 0.13)
+  const rowW = W * (1 - 2 * SCAN_PAD / 100)
+  const lightW = 2 * lr + lightGap
   const shown = fields.map(() => '')
   for (const i of fields.map((_, n) => n).reverse()) {
-    const room = i === 1 ? rowW * 0.45 : Math.min(rowW * 0.52, shown[1] ? rowW - width(shown[1], vpx, vls) - 3 * U : rowW)
+    const own = i === at ? lightW : 0
+    const room = (i === 1 ? rowW * 0.45 : Math.min(rowW * 0.52, shown[1] ? rowW - width(shown[1], vpx, vls) - (at === 1 ? lightW : 0) - 3 * U : rowW)) - own
     shown[i] = fitText(up(fields[i][1]), room, s => width(s, vpx, vls))
   }
   fields.forEach((fl, i) => {
-    const x = i === 0 ? nx : sx + sw * 0.955
+    const right = W * (1 - SCAN_PAD / 100)
+    const x = i === 0 ? nx : right
     const anchor = i === 0 ? 'start' : 'end'
     out.push(text(x, base - vpx * 1.02, up(fl[0]), { size: lpx, ls: lls, anchor, fill: ui }))
-    out.push(text(x, base, shown[i], { size: vpx, ls: vls, anchor, fill: fl[2] ? hx(0.86, 0.14, 70) : ink }))
+    let vx = x
+    if (i === at) {
+      const cy = base - vpx * 0.36
+      if (i === 0) { light(x + lr, cy); vx = x + lightW } else light(x - width(shown[i], vpx, vls) - lightGap - lr, cy)
+    }
+    out.push(text(vx, base, shown[i], { size: vpx, ls: vls, anchor, fill: fl[2] ? hx(0.86, 0.14, 70) : ink }))
   })
 
-  // the glass: scanlines, vignette, glare, and a red edge when the key check failed
-  out.push('<rect x="' + num(sx) + '" y="' + num(sy) + '" width="' + num(sw) + '" height="' + num(sh) + '" fill="url(#nsscan)"/>')
-  out.push('<rect x="' + num(sx) + '" y="' + num(sy) + '" width="' + num(sw) + '" height="' + num(sh) + '" fill="url(#nsvig)"/>')
+  // the glass: scanlines, vignette, glare, a red inner glow when the key check failed, then the edge: a soft
+  // dark falloff and a thin light rim (glass catching the light, not a frame)
+  out.push('<rect width="' + W + '" height="' + H + '" fill="url(#nsscan)"/>')
+  out.push('<rect width="' + W + '" height="' + H + '" fill="url(#nsvig)"/>')
   if (warn) {
-    out.push('<rect x="' + num(sx + 6) + '" y="' + num(sy + 6) + '" width="' + num(sw - 12) + '" height="' + num(sh - 12) + '" rx="' + num(2.4 * U) + '" fill="none" stroke="' + ui +
+    out.push('<rect x="6" y="6" width="' + (W - 12) + '" height="' + (H - 12) + '" rx="' + (R - 6) + '" fill="none" stroke="' + ui +
       '" stroke-width="12" stroke-opacity="0.35" filter="url(#nsglow)"/>')
   }
-  out.push('<rect x="' + num(sx) + '" y="' + num(sy) + '" width="' + num(sw) + '" height="' + num(sh) + '" fill="url(#nsglare)"/>')
+  out.push('<rect width="' + W + '" height="' + H + '" fill="url(#nsglare)"/>')
+  out.push('<rect width="' + W + '" height="' + H + '" rx="' + R + '" fill="none" stroke="#000" stroke-opacity="0.6" stroke-width="40" filter="url(#nsedge)"/>')
   out.push('</g>')
-
-  // the strip: LED, maker's name, vent and knobs
-  const cy = H - SCAN_STRIP * U / 2 + 0.3 * U
-  const lx = sx + 2.6 * U
-  out.push('<circle cx="' + num(lx) + '" cy="' + num(cy) + '" r="' + num(2.6 * U) + '" fill="url(#nsled)"/>')
-  out.push('<circle cx="' + num(lx) + '" cy="' + num(cy) + '" r="' + num(1.05 * U) + '" fill="#111316"/>')
-  out.push('<circle cx="' + num(lx) + '" cy="' + num(cy) + '" r="' + num(0.72 * U) + '" fill="' + hx(led[0], led[1], led[2]) + '"/>')
-  // an engraving: the letters in a lighter metal with a dark edge one pixel (on a 400px card) below
-  out.push(text(lx + 2.6 * U, cy + 1.6 * U * 0.36 + 3, 'NINSEI', { size: 1.6 * U, ls: 1.6 * U * 0.4, fill: '#101215', sans: true, weight: 600, glow: false }))
-  out.push(text(lx + 2.6 * U, cy + 1.6 * U * 0.36, 'NINSEI', { size: 1.6 * U, ls: 1.6 * U * 0.4, fill: '#5b626b', sans: true, weight: 600, glow: false }))
-  const vx = sx + sw * 0.36
-  for (let i = 0; i < 6; i++) {
-    out.push('<rect x="' + num(vx + i * 1.3 * U) + '" y="' + num(cy - 1.3 * U) + '" width="' + num(0.45 * U) + '" height="' + num(2.6 * U) + '" rx="' + num(0.22 * U) + '" fill="#101215"/>')
-  }
-  const seed = scanSeed(o.pk)
-  const knobs = [[4.6, 0], [4.6, 1], [3.6, 2], [3.6, 3]]
-  let kx = sx + sw - 2.4 * U
-  for (let i = knobs.length - 1; i >= 0; i--) {
-    const d = knobs[i][0] * U
-    const r = d / 2
-    const cx0 = kx - r
-    const ang = (scanHash(knobs[i][1], 41, seed) * 270 - 135) * Math.PI / 180
-    out.push('<circle cx="' + num(cx0) + '" cy="' + num(cy) + '" r="' + num(r + 3) + '" fill="#121417"/>')
-    out.push('<circle cx="' + num(cx0) + '" cy="' + num(cy) + '" r="' + num(r) + '" fill="url(#nsknob)"/>')
-    out.push('<path d="M' + num(cx0 + Math.sin(ang) * r * 0.35) + ' ' + num(cy - Math.cos(ang) * r * 0.35) + 'L' + num(cx0 + Math.sin(ang) * r * 0.85) + ' ' + num(cy - Math.cos(ang) * r * 0.85) +
-      '" stroke="#e8ecef" stroke-opacity="0.8" stroke-width="3" stroke-linecap="round"/>')
-    kx -= d + 2.2 * U
-  }
-  out.push('</g>')
-  out.push('<rect x="1.5" y="1.5" width="' + (W - 3) + '" height="' + (H - 3) + '" rx="69" fill="none" stroke="#fff" stroke-opacity="0.14" stroke-width="3"/>')
+  out.push('<rect x="1.5" y="1.5" width="' + (W - 3) + '" height="' + (H - 3) + '" rx="' + (R - 1.5) + '" fill="none" stroke="#fff" stroke-opacity="' + (warn ? 0 : 0.16) + '" stroke-width="3"/>')
+  if (warn) out.push('<rect x="1.5" y="1.5" width="' + (W - 3) + '" height="' + (H - 3) + '" rx="' + (R - 1.5) + '" fill="none" stroke="' + ui + '" stroke-opacity="0.5" stroke-width="3"/>')
 
   return '<svg xmlns="http://www.w3.org/2000/svg" width="' + W + '" height="' + H + '" viewBox="0 0 ' + W + ' ' + H + '"><defs>' + defs.join('') + '</defs>' + out.join('') + '</svg>'
 }
@@ -2910,9 +2883,7 @@ async function cardImage(props, front) {
     // the nebula at the moment the card shows (its canvas remembers when that was)
     const canvas = front && front.querySelector('.h-scan-px')
     const t = canvas && SCAN_T && SCAN_T.has(canvas) ? SCAN_T.get(canvas) : scanHash(3, 5, scanSeed(props.pk)) * 400
-    const sw = CARD_W - 2 * SCAN_INSET * CARD_W / 100
-    const sh = CARD_H - (SCAN_INSET + SCAN_STRIP) * CARD_W / 100
-    svg = scannerSvg(Object.assign(opts, { pk: props.pk, led: m.led, measure: scanMeasure, nebula: scanNebulaPng(props.pk, m.f.hue, m.f.hue2, t, sw, sh) }))
+    svg = scannerSvg(Object.assign(opts, { pk: props.pk, led: m.led, measure: scanMeasure, nebula: scanNebulaPng(props.pk, m.f.hue, m.f.hue2, t, CARD_W, CARD_H) }))
   } else {
     svg = cardSvg(opts)
   }

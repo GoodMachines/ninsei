@@ -427,9 +427,7 @@ async function cardImage(props, front) {
     // the nebula at the moment the card shows (its canvas remembers when that was)
     const canvas = front && front.querySelector('.h-scan-px')
     const t = canvas && SCAN_T && SCAN_T.has(canvas) ? SCAN_T.get(canvas) : scanHash(3, 5, scanSeed(props.pk)) * 400
-    const sw = CARD_W - 2 * SCAN_INSET * CARD_W / 100
-    const sh = CARD_H - (SCAN_INSET + SCAN_STRIP) * CARD_W / 100
-    svg = scannerSvg(Object.assign(opts, { pk: props.pk, led: m.led, measure: scanMeasure, nebula: scanNebulaPng(props.pk, m.f.hue, m.f.hue2, t, sw, sh) }))
+    svg = scannerSvg(Object.assign(opts, { pk: props.pk, led: m.led, measure: scanMeasure, nebula: scanNebulaPng(props.pk, m.f.hue, m.f.hue2, t, CARD_W, CARD_H) }))
   } else {
     svg = cardSvg(opts)
   }
