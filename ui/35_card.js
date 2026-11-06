@@ -120,6 +120,25 @@ function useCardFlip(ref, flipped) {
   useEffect(() => () => s.current && s.current.stop(), [])
 }
 
+// Picking the Scanner style while the card is on screen (the face editor) switches the monitor on: the
+// picture opens from a bright line on a spring. Only on a change, never when a card first appears.
+function useScreenPowerOn(ref, card) {
+  const shown = useRef(card)
+  useEffect(() => {
+    if (shown.current === card) return
+    shown.current = card
+    const el = card === 'scanner' && ref.current && ref.current.querySelector('.h-idcard-front .h-scan-screen')
+    if (!el || motion.reduced()) return
+    const put = x => {
+      const done = x >= 0.999
+      el.style.transform = done ? '' : 'scaleY(' + (0.012 + 0.988 * clamp(x, 0, 1)).toFixed(4) + ')'
+      el.style.filter = done ? '' : 'brightness(' + (1 + 2.4 * clamp(1 - x, 0, 1)).toFixed(3) + ')'
+    }
+    const s = motion.spring({ from: 0, to: 1, k: SPRING.power.k, c: SPRING.power.c, onUpdate: put })
+    return () => { s.stop(); put(1) }
+  }, [card])
+}
+
 // What the card's front says, from IdCard's props. The image export reads the same function, so the
 // picture can never show something the card doesn't.
 function cardModel(props) {
@@ -133,12 +152,15 @@ function cardModel(props) {
     tag: warn ? 'Check key' : agent ? 'Agent' : 'Person',
     serial: cardSerial(props.pk),
     fields: (props.fields || []).filter(Boolean).slice(0, 2),
-    initial: (String(props.name || '?').trim()[0] || '?').toUpperCase()
+    initial: (String(props.name || '?').trim()[0] || '?').toUpperCase(),
+    card: faceFor(props.face, props.pk).card,
+    led: scanLed(props)
   }
 }
 
 // The card itself. Props:
-//   kind 'agent' | 'person', name, pk, face, state   who it is (face picks the hue)
+//   kind 'agent' | 'person', name, pk, face, state   who it is (face picks the hue and the card style)
+//   online      a person is in the room (the Scanner's LED)
 //   fields      up to two [label, value, warn?] pairs for the front's bottom corners
 //   warn        the key check failed: red frame and a "Check key" tag
 //   agents      a person's agents [{ face, pk }], drawn as the picture (up to three)
@@ -157,6 +179,7 @@ function IdCard(props) {
   const turn = useRef(null)
   useCardTilt(stage, props.tilt !== false)
   useCardFlip(turn, flipped)
+  useScreenPowerOn(turn, model.card)
 
   const label = (agent ? 'Agent card: ' : 'Card: ') + (props.name || '') + (warn ? ', check key' : '') +
     fields.map(x => ', ' + x[0] + ' ' + x[1]).join('') + (serial ? ', card number ' + serial : '')
@@ -175,7 +198,8 @@ function IdCard(props) {
         }) })
       : jsx('span', { className: 'h-idcard-initial', children: model.initial })
 
-  const front = jsxs('div', { className: 'h-idcard h-idcard-front', ref: props.cardRef, 'data-warn': warn,
+  const scanner = model.card === 'scanner'
+  const front = scanner ? scannerFront(model, Object.assign({}, props, { label, flipped }), hero) : jsxs('div', { className: 'h-idcard h-idcard-front', ref: props.cardRef, 'data-warn': warn,
     style: { '--hue': f.hue, '--hue2': f.hue2 }, role: interactive ? undefined : 'img', 'aria-label': interactive ? undefined : label,
     children: [
       jsx('div', { className: 'h-idcard-dots' }),
@@ -199,7 +223,8 @@ function IdCard(props) {
   const posts = postCount(props.posts)
   const backFields = [day && ['First seen here', day], posts != null && ['Messages here', String(posts)],
     props.model && ['Model', shortModel(props.model)]].filter(Boolean)
-  const back = interactive && jsxs('div', { className: 'h-idcard h-idcard-back', 'aria-hidden': true, 'data-warn': warn,
+  const back = interactive && scanner ? scannerBack(model, props, { groups, about: props.about, fields: backFields })
+    : interactive && jsxs('div', { className: 'h-idcard h-idcard-back', 'aria-hidden': true, 'data-warn': warn,
     style: { '--hue': f.hue, '--hue2': f.hue2 }, children: [
       jsx('div', { className: 'h-idcard-dots' }),
       jsx('div', { className: 'h-idcard-stripe' }),
@@ -419,7 +444,7 @@ function personSheet(who, found, card, onOpen, flip) {
   const activity = activityText(p.first, p.posts)
   return {
     title: name + (p.you ? ', you' : ''),
-    card: jsx(IdCard, Object.assign({ kind: 'person', name, pk: who.pk, face: agents[0] && agents[0].face, fields, warn: !!p.impostor,
+    card: jsx(IdCard, Object.assign({ kind: 'person', name, pk: who.pk, face: agents[0] && agents[0].face, fields, warn: !!p.impostor, online: !!p.online,
       agents, about: card && card.line, first: p.first, posts: p.posts }, flip)),
     rows: [
       card && card.line ? jsx('div', { className: 'h-profile-vibe', children: card.line }, 'l') : null,

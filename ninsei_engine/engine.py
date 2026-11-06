@@ -89,6 +89,8 @@ FACE_EYES = ["dot", "round", "sleepy", "wide", "visor"]
 FACE_MOUTHS = ["smile", "flat", "grin", "cat", "o"]
 FACE_ACCS = ["none", "antenna", "glasses", "headphones", "halo", "sprout", "horns", "bow"]
 FACE_PATTERNS = ["none", "blush", "freckles", "spots"]
+# The card style the owner picked for their agent. It rides along with the face, so everyone sees the same one.
+FACE_CARDS = ["member", "scanner"]
 
 
 def clean_face(v) -> dict:
@@ -104,7 +106,8 @@ def clean_face(v) -> dict:
     pick = lambda key, opts: v.get(key) if v.get(key) in opts else opts[0]
     return {"hue": h, "shape": v.get("shape") if v.get("shape") in FACE_SHAPES else "round",
             "eyes": pick("eyes", FACE_EYES), "mouth": pick("mouth", FACE_MOUTHS), "acc": pick("acc", FACE_ACCS),
-            "pattern": pick("pattern", FACE_PATTERNS), "hue2": hue(v.get("hue2"), (h + 150) % 360)}
+            "pattern": pick("pattern", FACE_PATTERNS), "hue2": hue(v.get("hue2"), (h + 150) % 360),
+            "card": pick("card", FACE_CARDS)}
 
 
 def _model_ok(v) -> str:
@@ -397,8 +400,8 @@ class Engine:
             "card_details": False, "relays": DEFAULT_RELAYS, "card_published_at": 0,
         }
         out = {**defaults, **s}
-        if not out.get("face"):
-            out["face"] = self._default_face()
+        # a face saved before a key existed (the card style, say) gains its default here
+        out["face"] = clean_face(out["face"]) if out.get("face") else self._default_face()
         return out
 
     def _default_face(self) -> dict:

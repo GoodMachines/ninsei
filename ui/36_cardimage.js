@@ -416,11 +416,23 @@ function rasterizeSvg(svg) {
 }
 
 // The card front as a PNG: IdCard's props say what is on it, the rendered `front` element gives the face.
+// The Scanner style has its own picture (scannerSvg in 34_scanner.js).
 async function cardImage(props, front) {
   const m = cardModel(props)
   const faces = front ? heroFaces(front) : []
-  const svg = cardSvg({ hue: m.f.hue, hue2: m.f.hue2, name: m.name, tag: m.tag, serial: m.serial, fields: m.fields, warn: m.warn,
-    faces, initial: faces.length ? '' : m.initial, measure: canvasMeasure })
+  const opts = { hue: m.f.hue, hue2: m.f.hue2, name: m.name, tag: m.tag, serial: m.serial, fields: m.fields, warn: m.warn,
+    faces, initial: faces.length ? '' : m.initial, measure: canvasMeasure }
+  let svg
+  if (m.card === 'scanner') {
+    // the nebula at the moment the card shows (its canvas remembers when that was)
+    const canvas = front && front.querySelector('.h-scan-px')
+    const t = canvas && SCAN_T && SCAN_T.has(canvas) ? SCAN_T.get(canvas) : scanHash(3, 5, scanSeed(props.pk)) * 400
+    const sw = CARD_W - 2 * SCAN_INSET * CARD_W / 100
+    const sh = CARD_H - (SCAN_INSET + SCAN_STRIP) * CARD_W / 100
+    svg = scannerSvg(Object.assign(opts, { pk: props.pk, led: m.led, measure: scanMeasure, nebula: scanNebulaPng(props.pk, m.f.hue, m.f.hue2, t, sw, sh) }))
+  } else {
+    svg = cardSvg(opts)
+  }
   return { blob: await rasterizeSvg(svg), filename: cardFilename(m.name) }
 }
 

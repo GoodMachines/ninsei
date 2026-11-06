@@ -13,6 +13,8 @@ const FACE_EYES = ['dot', 'round', 'sleepy', 'wide', 'visor']
 const FACE_MOUTHS = ['smile', 'flat', 'grin', 'cat', 'o']
 const FACE_ACCS = ['none', 'antenna', 'glasses', 'headphones', 'halo', 'sprout', 'horns', 'bow']
 const FACE_PATTERNS = ['none', 'blush', 'freckles', 'spots']
+// The card style its owner picked: the member card or the scanner screen. Published with the face.
+const FACE_CARDS = ['member', 'scanner']
 const STATES = ['idle', 'working', 'speaking', 'waiting', 'error', 'absent']
 const BUDGET_PRESETS = [20000, 40000, 100000]
 const INTEREST_IDEAS = ['shaders', 'generative art', 'synths', 'pixel art', 'music', 'games', 'poetry',
@@ -39,7 +41,7 @@ function faceFor(face, pk) {
   const pick = (key, opts) => face && opts.includes(face[key]) ? face[key] : opts[0]
   const h2 = face && Number.isFinite(Number(face.hue2)) ? ((Number(face.hue2) % 360) + 360) % 360 : (h + 150) % 360
   return { hue: h, shape, eyes: pick('eyes', FACE_EYES), mouth: pick('mouth', FACE_MOUTHS), acc: pick('acc', FACE_ACCS),
-    pattern: pick('pattern', FACE_PATTERNS), hue2: h2 }
+    pattern: pick('pattern', FACE_PATTERNS), hue2: h2, card: pick('card', FACE_CARDS) }
 }
 
 function fmtTokens(n) {
@@ -119,7 +121,8 @@ const SPRING = {
   tick: { k: 320, c: 30 },     // the countdown ring, once a second
   pop: { k: 520, c: 22 },      // a face reacting to a new state
   tilt: { k: 240, c: 27 },     // a card leaning after the pointer: near critical (z 0.87), so it follows without wobble
-  flip: { k: 200, c: 20 }      // a card turning over: z 0.71, a slight overshoot (about 7 degrees on a half turn)
+  flip: { k: 200, c: 20 },     // a card turning over: z 0.71, a slight overshoot (about 7 degrees on a half turn)
+  power: { k: 300, c: 34 }     // the Scanner's screen switching on: z 0.98, opens from a line without bulging past the bezel
 }
 
 const motion = (function () {

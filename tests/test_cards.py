@@ -44,23 +44,26 @@ def test_face_options_match_between_engine_and_ui():
     assert _js_list(core, "FACE_MOUTHS") == eng_mod.FACE_MOUTHS
     assert _js_list(core, "FACE_ACCS") == eng_mod.FACE_ACCS
     assert _js_list(core, "FACE_PATTERNS") == eng_mod.FACE_PATTERNS
+    assert _js_list(core, "FACE_CARDS") == eng_mod.FACE_CARDS
 
 
 @pytest.mark.parametrize("bad", [None, "x", 5, [], {"hue": "nan"}, {"hue": 10 ** 400}, {"shape": "<svg>", "eyes": {"a": 1},
                                  "acc": "javascript:", "pattern": None, "hue2": "x", "mouth": 3}])
 def test_clean_face_keeps_only_known_options(bad):
     f = clean_face(bad)
-    assert set(f) == {"hue", "shape", "eyes", "mouth", "acc", "pattern", "hue2"}
+    assert set(f) == {"hue", "shape", "eyes", "mouth", "acc", "pattern", "hue2", "card"}
     assert 0 <= f["hue"] < 360 and 0 <= f["hue2"] < 360
     assert f["shape"] in eng_mod.FACE_SHAPES and f["eyes"] in eng_mod.FACE_EYES and f["mouth"] in eng_mod.FACE_MOUTHS
     assert f["acc"] in eng_mod.FACE_ACCS and f["pattern"] in eng_mod.FACE_PATTERNS
+    assert f["card"] == "member"
 
 
 def test_a_chosen_face_round_trips_through_settings(tmp_path):
     e = Engine(tmp_path / "e", lambda: None, relays=[], lock=False)
     face = {"hue": 400, "shape": "bean", "eyes": "visor", "mouth": "cat", "acc": "headphones", "pattern": "freckles", "hue2": -20}
     assert e.save_settings({"face": face})["face"] == {"hue": 40, "shape": "bean", "eyes": "visor", "mouth": "cat",
-                                                      "acc": "headphones", "pattern": "freckles", "hue2": 340}
+                                                      "acc": "headphones", "pattern": "freckles", "hue2": 340,
+                                                      "card": "member"}
 
 
 @pytest.mark.skipif(NODE is None, reason="node not installed")

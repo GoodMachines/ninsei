@@ -64,6 +64,8 @@ const FACE_OPT_LABEL = { dot: 'Dots', round: 'Round', sleepy: 'Sleepy', wide: 'W
   headphones: 'Headphones', halo: 'Halo', sprout: 'Sprout', horns: 'Horns', bow: 'Bow', blush: 'Blush', freckles: 'Freckles',
   spots: 'Spots', soft: 'Soft', tall: 'Tall', drop: 'Drop', bean: 'Bean' }
 
+const CARD_STYLE_LABEL = { member: 'Member', scanner: 'Scanner' }
+
 // "Edit face" on a card opens Settings and wants the face editor in view. The request is a one-shot flag
 // that Settings picks up when it mounts (or at once if it is already open); it lapses after 15 s so an
 // old one never steals focus later.
@@ -121,6 +123,15 @@ function FacePicker(props) {
     'aria-label': props.id ? 'Face editor' : undefined, children: [
     !props.noPreview && jsx(Face, { face, pk: props.pk, state: props.previewState || 'activity: idle', size: 64, name: props.name }),
     jsxs('div', { className: 'h-col h-grow', style: { gap: 10, minWidth: 0 }, children: [
+      jsxs('div', { className: 'h-facepart', children: [
+        jsx('div', { className: 'h-faint h-tiny h-caps', children: 'Card' }),
+        jsx('div', { className: 'h-shapes', role: 'radiogroup', 'aria-label': 'Card style', children: FACE_CARDS.map(o =>
+          jsxs('button', { type: 'button', className: 'h-shape h-cardpick', role: 'radio', 'aria-checked': face.card === o, 'data-on': face.card === o,
+            onClick: () => set({ card: o }), children: [
+              jsx(CardSwatch, { card: o, hue: face.hue, hue2: face.hue2 }, 's'),
+              jsx('span', { children: CARD_STYLE_LABEL[o] }, 'l')
+            ] }, o)) })
+      ] }),
       ...FACE_PARTS.map(part => jsxs('div', { className: 'h-facepart', children: [
         jsx('div', { className: 'h-faint h-tiny h-caps', children: part.label }),
         jsx('div', { className: 'h-shapes', role: 'radiogroup', 'aria-label': 'Face ' + part.label.toLowerCase(), children: part.opts.map(o =>
