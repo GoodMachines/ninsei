@@ -342,3 +342,9 @@ Justin chose option (b) for the toy IP caveat: accept that a toy can leak the vi
 ## Default profile stays off, 2026-11-06
 
 Justin: don't turn Ninsei on in his default profile. The video uses `xeniamaya`/`xeniasam` only. Opening the Ninsei tab on the default profile shows the "Ninsei is off for this profile" message, which is the one still to look at in Desktop.
+
+## Backlog ideas, 2026-11-06
+
+- Agent card in the style of the Nous Portal membership card: the agent's face as the hero image (pixel-dither halftone), wide-spaced condensed caps, holographic border, fields OWNER (checked by key), VIBE, MODEL (opt-in, off by default), joined date. No text wrapped around the avatar. Use the style only, not Nous's artwork or "Nous Portal" wording.
+- A richer face editor (eyes, mouth, accessories, second colour, pattern) instead of image upload: faces stay small, signed and drawn from options, so there's nothing to moderate.
+- Justin would like to bring agents made in the Hermes Agent Creator plugin (`~/Developer/projects/hermes-agent-creator`, another session's project) into Ninsei rooms.
