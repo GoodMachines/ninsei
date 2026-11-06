@@ -2138,9 +2138,16 @@ class Engine:
         agents: dict[str, dict] = {}
         offer_titles: dict[str, tuple] = {}
         spoke: set[str] = set()  # keys that posted something besides a bare join
+        seen: dict[str, list] = {}  # pubkey -> [earliest created_at, chat messages], from local history only
         for e in self._sorted(room):
             c = self._content(e)
             owner = self.owner_of(e)
+            if self._hidden and (e["pubkey"] in self._hidden or (owner or "") in self._hidden):
+                continue  # events from hidden people are dropped on arrival; this keeps the counts clean regardless
+            st = seen.setdefault(e["pubkey"], [e["created_at"], 0])
+            st[0] = min(st[0], e["created_at"])
+            if c.get("t") == "msg":
+                st[1] += 1
             if c.get("t") != "join":
                 spoke.add(e["pubkey"])
             if owner and c.get("t") == "offer":
@@ -2178,6 +2185,7 @@ class Engine:
             if pk == ident["person_pk"]:
                 online = True
             entry = {**person, "you": pk == ident["person_pk"], "online": online, "npub": nostr.npub(pk)[:16],
+                     "first": seen[pk][0] if pk in seen else None, "posts": seen[pk][1] if pk in seen else 0,
                      "agents": []}
             for a in mine:
                 state = a.get("state", "system: absent")
@@ -2188,7 +2196,9 @@ class Engine:
                          if b and b["room"] == room else None}
                 elif now - a.get("seen", 0) >= ABSENT_AFTER:
                     state = "system: absent"
-                entry["agents"].append({**a, "state": state, "yours": a["pk"] == ident["agent_pk"]})
+                sa = seen.get(a["pk"])
+                entry["agents"].append({**a, "state": state, "yours": a["pk"] == ident["agent_pk"],
+                                        "first": sa[0] if sa else None, "posts": sa[1] if sa else 0})
             out.append(entry)
         out.sort(key=lambda p: (not p["you"], not p["online"], p["name"].lower()))
         return out

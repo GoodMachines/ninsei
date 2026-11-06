@@ -64,11 +64,61 @@ const FACE_OPT_LABEL = { dot: 'Dots', round: 'Round', sleepy: 'Sleepy', wide: 'W
   headphones: 'Headphones', halo: 'Halo', sprout: 'Sprout', horns: 'Horns', bow: 'Bow', blush: 'Blush', freckles: 'Freckles',
   spots: 'Spots', soft: 'Soft', tall: 'Tall', drop: 'Drop', bean: 'Bean' }
 
+// "Edit face" on a card opens Settings and wants the face editor in view. The request is a one-shot flag
+// that Settings picks up when it mounts (or at once if it is already open); it lapses after 15 s so an
+// old one never steals focus later.
+const FACE_FOCUS = { at: 0, fns: new Set() }
+function wantFaceEditor() {
+  FACE_FOCUS.at = Date.now()
+  FACE_FOCUS.fns.forEach(fn => fn())
+}
+
+// Focus the face editor and scroll its card and controls to the top of whatever scrolls. A spring does
+// the scrolling (an instant jump with reduced motion). False if the editor isn't on the page yet.
+function showFaceEditor() {
+  const picker = document.getElementById('h-facepicker')
+  if (!picker) return false
+  try { picker.focus({ preventScroll: true }) } catch (_) { /* not focusable here */ }
+  const target = picker.parentElement || picker
+  let box = target.parentElement
+  while (box && !(box.scrollHeight > box.clientHeight + 1 && /(auto|scroll)/.test(getComputedStyle(box).overflowY))) box = box.parentElement
+  if (!box) { target.scrollIntoView({ block: 'start' }); return true }
+  const dy = target.getBoundingClientRect().top - box.getBoundingClientRect().top - 16
+  const from = box.scrollTop
+  const to = clamp(from + dy, 0, box.scrollHeight - box.clientHeight)
+  if (motion.reduced() || Math.abs(to - from) < 2) { box.scrollTop = to; return true }
+  // the person scrolling for themselves ends the animation
+  const stops = ['wheel', 'touchstart', 'pointerdown', 'keydown']
+  const done = () => stops.forEach(t => box.removeEventListener(t, stop))
+  const spring = motion.spring({ from, to, k: SPRING.calm.k, c: SPRING.calm.c, onUpdate: x => { box.scrollTop = x }, onRest: done })
+  const stop = () => { spring.stop(); done() }
+  stops.forEach(t => box.addEventListener(t, stop, { passive: true }))
+  return true
+}
+
+function useFaceEditorFocus() {
+  useEffect(() => {
+    let frame = 0
+    let live = true
+    const attempt = tries => {
+      if (!live || !FACE_FOCUS.at) return
+      if (Date.now() - FACE_FOCUS.at > 15000) { FACE_FOCUS.at = 0; return }
+      if (showFaceEditor()) { FACE_FOCUS.at = 0; return }
+      if (tries > 0) frame = window.requestAnimationFrame(() => attempt(tries - 1))
+    }
+    const kick = () => { window.cancelAnimationFrame(frame); frame = window.requestAnimationFrame(() => attempt(40)) }
+    FACE_FOCUS.fns.add(kick)
+    kick()
+    return () => { live = false; window.cancelAnimationFrame(frame); FACE_FOCUS.fns.delete(kick) }
+  }, [])
+}
+
 function FacePicker(props) {
   const face = faceFor(props.value, props.pk)
   const set = patch => props.onChange(Object.assign({}, face, patch))
   const accent = face.acc !== 'none' || face.pattern !== 'none'
-  return jsxs('div', { className: 'h-row h-facepick', children: [
+  return jsxs('div', { className: 'h-row h-facepick', id: props.id, tabIndex: props.id ? -1 : undefined, role: props.id ? 'group' : undefined,
+    'aria-label': props.id ? 'Face editor' : undefined, children: [
     !props.noPreview && jsx(Face, { face, pk: props.pk, state: props.previewState || 'activity: idle', size: 64, name: props.name }),
     jsxs('div', { className: 'h-col h-grow', style: { gap: 10, minWidth: 0 }, children: [
       ...FACE_PARTS.map(part => jsxs('div', { className: 'h-facepart', children: [

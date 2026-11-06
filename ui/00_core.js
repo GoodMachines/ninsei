@@ -117,7 +117,9 @@ const SPRING = {
   calm: { k: 170, c: 26 },     // presence and state changes
   ring: { k: 90, c: 19 },      // the budget ring filling
   tick: { k: 320, c: 30 },     // the countdown ring, once a second
-  pop: { k: 520, c: 22 }       // a face reacting to a new state
+  pop: { k: 520, c: 22 },      // a face reacting to a new state
+  tilt: { k: 240, c: 27 },     // a card leaning after the pointer: near critical (z 0.87), so it follows without wobble
+  flip: { k: 200, c: 20 }      // a card turning over: z 0.71, a slight overshoot (about 7 degrees on a half turn)
 }
 
 const motion = (function () {

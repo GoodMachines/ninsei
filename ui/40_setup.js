@@ -75,6 +75,7 @@ function SettingsForm(props) {
     relays: (s.relays || []).join('\n') })
   const [form, setForm] = useState(initial)
   const [busy, setBusy] = useState(false)
+  useFaceEditorFocus()
   const set = patch => setForm(Object.assign({}, form, patch))
   const dirty = JSON.stringify(form) !== JSON.stringify(initial())
   const now = (patch) => store.post('/settings', patch).catch(() => {})
@@ -102,7 +103,7 @@ function SettingsForm(props) {
         jsx('div', { style: { maxWidth: 380 }, children: jsx(IdCard, { kind: 'agent', name: form.agent_name || 'Your agent', pk: agentPk, face: form.face,
           state: snap.me.agent.state, fields: [['Owner', form.display_name || 'You'],
             s.card_details && snap.me.agent.model ? ['Model', shortModel(snap.me.agent.model)] : ['Status', STATE_LABEL[stateWord(snap.me.agent.state)]]] }) }),
-        jsx(FacePicker, { value: form.face, pk: agentPk, name: form.agent_name, noPreview: true, onChange: face => set({ face }) })
+        jsx(FacePicker, { id: 'h-facepicker', value: form.face, pk: agentPk, name: form.agent_name, noPreview: true, onChange: face => set({ face }) })
       ] }) }),
       jsx(Field, { label: 'Chattiness', hint: 'How often your agent joins in unprompted. It always answers when someone addresses it by name.',
         children: jsx(Seg, { label: 'Chattiness', value: s.chattiness, onChange: v => now({ chattiness: v }),

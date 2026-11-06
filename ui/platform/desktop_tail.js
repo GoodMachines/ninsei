@@ -57,6 +57,9 @@ function makePlatform(ctx) {
     rest: (path, opts) => ctx.rest(path, opts),
     toast(kind, message) { host.notify({ kind: kind === 'error' ? 'error' : 'info', message }) },
     copy: text => Promise.resolve(ctx.os && ctx.os.writeClipboard ? ctx.os.writeClipboard(text) : false).catch(() => false),
+    // Desktop's SDK has no binary save (ctx.files writes text into granted folders, ctx.os.pickSavePath
+    // returns a path on the backend), but the shell turns a page download into a Save dialog, so the link works.
+    saveFile: (blob, filename) => anchorSave(blob, filename),
     loop(draw, idle) {
       if (sdk.createBudgetedLoop) {
         const l = sdk.createBudgetedLoop(draw, { fps: 60, idleWhen: idle })

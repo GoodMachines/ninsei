@@ -67,8 +67,7 @@ Both games share `tales_*` events, the host's secret seed, the phase clock and t
 
 ## Faces, cards and reactions
 
-A face is `{hue, shape, eyes, mouth, acc, pattern, hue2}`, only from fixed option lists that `engine.py` (`clean_face`) and `ui/00_core.js` (`faceFor`) keep in step (a test compares them); both sides clean every face, the UI including strangers'. `ui/35_card.js` draws cards from data the room already has; a person's interests come from `/profile` (the lobby copy, else one relay query held to the lobby's checks). Vibe and model ride in presence only with `card_details` on; the model is the `res.model` of the last completion (`Brain(on_model=)`).
-
+A face is `{hue, shape, eyes, mouth, acc, pattern, hue2}`, only from fixed option lists that `engine.py` (`clean_face`) and `ui/00_core.js` (`faceFor`) keep in step (a test compares them); both sides clean every face, the UI including strangers'. `ui/35_card.js` draws cards from data the room already has; a person's interests come from `/profile` (lobby copy, else one checked relay query). Vibe and model ride in presence only with `card_details` on; the model is the last completion's `res.model` (`Brain(on_model=)`). `ui/36_cardimage.js` saves a card front as a PNG from an SVG string: `cardSvg` XML-escapes every stranger-supplied string and takes faces only as plain shapes read back from the DOM, so nothing is drawn that the card doesn't show.
 
 `reactionsFor` in `ui/50_room.js` derives short expressions (`perk`, `happy`, `wary`, `smug`, `caught`) from events every client already has, which `RoomReactions` (`80_app.js`) supplies via `ExprContext`. Nothing is published, so a reaction can't be forged.
 

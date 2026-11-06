@@ -29,6 +29,8 @@
     copy(text) {
       try { return navigator.clipboard.writeText(text).then(() => true, () => false) } catch (_) { return Promise.resolve(false) }
     },
+    // a temporary download link: the browser's own save
+    saveFile: (blob, filename) => anchorSave(blob, filename),
     // the shared animation loop: one rAF chain, parked whenever idle() says nothing moves
     loop(draw, idle) {
       let frame = 0
@@ -58,6 +60,7 @@
     gear: 'M8 5.6a2.4 2.4 0 1 0 0 4.8 2.4 2.4 0 0 0 0-4.8zM8 1.5v1.6M8 12.9v1.6M1.5 8h1.6M12.9 8h1.6M3.4 3.4l1.1 1.1M11.5 11.5l1.1 1.1M3.4 12.6l1.1-1.1M11.5 4.5l1.1-1.1',
     refresh: 'M13 4v3h-3M3 12V9h3M12.4 7A4.6 4.6 0 0 0 4 5.2M3.6 9a4.6 4.6 0 0 0 8.4 1.8',
     copy: 'M5.5 5.5h7v7h-7zM3.5 10.5v-7h7',
+    save: 'M3 2.5h7.5L13 5v8.5H3zM5.5 2.5v3.5h4.5V2.5M5 13.5V9.5h6v4',
     play: 'M5 3.5l7 4.5-7 4.5z',
     send: 'M2.5 8L13.5 3 10 13.5 7.7 8.6zM7.7 8.6L13.5 3',
     game: 'M5 5.5h6a3 3 0 0 1 3 3v.5a2.5 2.5 0 0 1-4.4 1.6L9 10H7l-.6.6A2.5 2.5 0 0 1 2 9v-.5a3 3 0 0 1 3-3zM5 7.2v2M4 8.2h2M10.5 8h.01M11.8 9h.01',

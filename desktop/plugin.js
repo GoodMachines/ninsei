@@ -152,7 +152,9 @@ const SPRING = {
   calm: { k: 170, c: 26 },     // presence and state changes
   ring: { k: 90, c: 19 },      // the budget ring filling
   tick: { k: 320, c: 30 },     // the countdown ring, once a second
-  pop: { k: 520, c: 22 }       // a face reacting to a new state
+  pop: { k: 520, c: 22 },      // a face reacting to a new state
+  tilt: { k: 240, c: 27 },     // a card leaning after the pointer: near critical (z 0.87), so it follows without wobble
+  flip: { k: 200, c: 20 }      // a card turning over: z 0.71, a slight overshoot (about 7 degrees on a half turn)
 }
 
 const motion = (function () {
@@ -892,17 +894,29 @@ const CSS = TOKENS + `
 .hx .h-plain:focus-visible{outline:2px solid var(--h-accent);outline-offset:2px}
 .hx .h-plain.h-trunc{display:block}
 .hx .h-plain:hover .h-namelink,.hx .h-plain:hover>b{text-decoration:underline;text-decoration-color:var(--h-fg3);text-underline-offset:3px}
+.h-idcard-stage{--tx:0;--ty:0;--glow:0;position:relative;border-radius:22px;perspective:1000px;-webkit-tap-highlight-color:transparent}
+.h-idcard-stage[data-interactive=true]{cursor:pointer;-webkit-user-select:none;user-select:none}
+.h-idcard-stage:focus-visible{outline:2px solid var(--h-accent);outline-offset:3px}
+.h-idcard-tilt{transform:rotateX(calc(var(--ty) * -7deg)) rotateY(calc(var(--tx) * 7deg));transform-style:preserve-3d}
+.h-idcard-turn{position:relative;transform-style:preserve-3d}
 .h-idcard{--c1:oklch(0.6 0.19 var(--hue));--c2:oklch(0.4 0.2 var(--hue));--c3:oklch(0.2 0.12 var(--hue));position:relative;width:100%;aspect-ratio:1.6;border-radius:22px;overflow:hidden;color:#fff;isolation:isolate;container-type:inline-size;
+  -webkit-backface-visibility:hidden;backface-visibility:hidden;
   background:radial-gradient(115% 105% at 74% 40%,var(--c1) 0%,var(--c2) 46%,var(--c3) 100%);
   box-shadow:0 22px 48px -22px oklch(0.3 0.2 var(--hue) / .8),inset 0 0 0 1px oklch(1 0 0 / .08)}
 .h-idcard-dots{position:absolute;inset:0;z-index:0;background-image:radial-gradient(circle,oklch(1 0 0 / .34) 0.85px,transparent 1.25px);background-size:5px 5px;
   -webkit-mask-image:radial-gradient(56% 74% at 72% 52%,#000 0%,transparent 72%);mask-image:radial-gradient(56% 74% at 72% 52%,#000 0%,transparent 72%)}
-.h-idcard-frame{position:absolute;inset:9px;z-index:3;border-radius:15px;padding:1.5px;pointer-events:none;opacity:.9;
-  background:conic-gradient(from 210deg,oklch(0.96 0.07 200),oklch(0.93 0.1 320),oklch(0.98 0.05 95),oklch(0.92 0.11 160),oklch(0.96 0.07 200));
+.h-idcard-frame{--spin:calc(210deg + var(--tx) * 34deg - var(--ty) * 18deg);position:absolute;inset:9px;z-index:3;border-radius:15px;padding:1.5px;pointer-events:none;opacity:calc(.9 + var(--glow) * .1);
+  background:conic-gradient(from var(--spin),oklch(0.96 0.07 200),oklch(0.93 0.1 320),oklch(0.98 0.05 95),oklch(0.92 0.11 160),oklch(0.96 0.07 200));
   -webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);-webkit-mask-composite:xor;mask-composite:exclude}
-.h-idcard-hero{position:absolute;z-index:1;right:7%;top:41%;transform:translateY(-50%);width:36%;aspect-ratio:1;display:grid;place-items:center;filter:drop-shadow(0 0 20px oklch(0.85 0.14 var(--hue) / .55))}
+.h-idcard-shine{position:absolute;inset:0;z-index:5;pointer-events:none;opacity:var(--glow);mix-blend-mode:overlay;
+  background:radial-gradient(60% 95% at calc(50% + var(--tx) * 55%) calc(50% + var(--ty) * 60%),oklch(1 0 0 / .62) 0%,oklch(1 0 0 / .2) 38%,transparent 72%)}
+.h-idcard-back .h-idcard-shine{background:radial-gradient(60% 95% at calc(50% - var(--tx) * 55%) calc(50% + var(--ty) * 60%),oklch(1 0 0 / .4) 0%,oklch(1 0 0 / .12) 38%,transparent 72%)}
+.h-idcard-hero{position:absolute;z-index:1;right:7%;top:46%;transform:translateY(-50%);width:35%;aspect-ratio:1;display:grid;place-items:center;filter:drop-shadow(0 0 20px oklch(0.85 0.14 var(--hue) / .55))}
 .h-idcard-hero .hf{width:100%!important;height:100%!important}
 .h-idcard-hero .hf svg{width:100%;height:100%}
+.h-idcard-crew{position:relative;width:100%;height:100%}
+.h-idcard-mate{position:absolute;aspect-ratio:1;filter:brightness(.86) saturate(.85)}
+.h-idcard-mate[data-front=true]{filter:drop-shadow(0 4px 10px oklch(0.2 0.14 var(--hue) / .55))}
 .h-idcard .hf-body{fill:oklch(0.94 0.045 var(--hue))}
 .h-idcard .hf-shine{stroke:oklch(1 0 0 / .55)}
 .h-idcard .hf-eye,.h-idcard .hf-mouth{fill:oklch(0.27 0.12 var(--hue))}
@@ -912,20 +926,47 @@ const CSS = TOKENS + `
 .h-idcard .hf-acc-line{stroke:oklch(0.84 0.13 var(--hue2))}
 .h-idcard-initial{font-size:clamp(60px,30cqw,120px);font-weight:200;line-height:1;color:oklch(0.95 0.04 var(--hue));text-shadow:0 0 28px oklch(0.85 0.14 var(--hue) / .7)}
 .h-idcard-top{position:absolute;z-index:4;left:8%;top:13%;right:46%;display:flex;flex-direction:column;align-items:flex-start;gap:9px}
-.h-idcard-name{font-weight:300;font-size:clamp(16px,6.6cqw,26px);line-height:1.08;letter-spacing:.12em;text-transform:uppercase;font-stretch:condensed;overflow-wrap:anywhere;text-shadow:0 1px 14px oklch(0.2 0.12 var(--hue) / .55)}
+.h-idcard-name{font-weight:300;font-size:clamp(16px,6.6cqw,26px);line-height:1.08;letter-spacing:.12em;text-transform:uppercase;font-stretch:condensed;overflow-wrap:anywhere;text-shadow:0 1px 14px oklch(0.2 0.12 var(--hue) / .55);
+  display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;line-clamp:2;overflow:hidden;max-width:100%}
+.h-idcard-name[data-size=m]{font-size:clamp(14px,5.3cqw,21px);letter-spacing:.1em}
+.h-idcard-name[data-size=s]{font-size:clamp(12px,4.3cqw,17px);letter-spacing:.08em;line-height:1.12}
 .h-idcard-tag{font-size:clamp(8.5px,2.7cqw,10.5px);font-weight:500;letter-spacing:.16em;text-transform:uppercase;padding:2px 7px 1px;color:oklch(0.32 0.17 var(--hue));background:oklch(0.98 0.02 var(--hue));box-shadow:inset 0 0 0 1.5px oklch(0.4 0.17 var(--hue)),0 0 0 1.5px oklch(0.98 0.02 var(--hue))}
+.h-idcard-serial{position:absolute;z-index:4;top:7%;right:8.5%;font-family:var(--h-mono,ui-monospace),ui-monospace,monospace;font-size:clamp(7.5px,2.35cqw,9.5px);line-height:1;letter-spacing:.16em;opacity:.72;text-shadow:0 1px 6px oklch(0.2 0.12 var(--hue) / .6)}
 .h-idcard-foot{position:absolute;z-index:4;left:8%;right:8%;bottom:12%;display:flex;justify-content:space-between;align-items:flex-end;gap:14px}
 .h-idcard-field{display:flex;flex-direction:column;gap:3px;min-width:0;max-width:60%}
 .h-idcard-field+.h-idcard-field{text-align:right;align-items:flex-end;max-width:45%}
 .h-idcard-label{font-size:clamp(8px,2.5cqw,10px);letter-spacing:.2em;text-transform:uppercase;opacity:.74}
 .h-idcard-value{font-size:clamp(11px,4.4cqw,17px);letter-spacing:.06em;text-transform:uppercase;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%;text-shadow:0 1px 10px oklch(0.2 0.12 var(--hue) / .5)}
 .h-idcard-value[data-warn=true]{color:oklch(0.9 0.12 70)}
+.h-idcard[data-warn=true]{box-shadow:0 22px 48px -22px oklch(0.35 0.2 30 / .85),inset 0 0 0 1px oklch(0.8 0.16 50 / .35)}
+.h-idcard[data-warn=true]::after{content:'';position:absolute;inset:0;z-index:2;pointer-events:none;background:radial-gradient(120% 130% at 50% 50%,transparent 46%,oklch(0.55 0.21 32 / .62) 100%)}
+.h-idcard[data-warn=true] .h-idcard-frame{padding:2.5px;opacity:1;background:conic-gradient(from var(--spin),oklch(0.8 0.17 45),oklch(0.68 0.21 28),oklch(0.88 0.15 78),oklch(0.72 0.2 35),oklch(0.8 0.17 45))}
+.h-idcard[data-warn=true] .h-idcard-tag{color:oklch(0.3 0.13 35);background:oklch(0.9 0.13 75);box-shadow:inset 0 0 0 1.5px oklch(0.5 0.18 35),0 0 0 1.5px oklch(0.9 0.13 75)}
+.h-idcard-back{position:absolute;inset:0;transform:rotateY(180deg);
+  background:radial-gradient(120% 110% at 28% 40%,oklch(0.34 0.16 var(--hue)) 0%,var(--c3) 60%,oklch(0.14 0.07 var(--hue)) 100%)}
+.h-idcard-back .h-idcard-dots{opacity:.42;-webkit-mask-image:radial-gradient(70% 80% at 30% 45%,#000 0%,transparent 75%);mask-image:radial-gradient(70% 80% at 30% 45%,#000 0%,transparent 75%)}
+.h-idcard-back .h-idcard-frame{opacity:.5}
+.h-idcard-stripe{position:absolute;z-index:4;left:0;right:0;top:10%;height:13%;background:linear-gradient(180deg,oklch(0.12 0.03 var(--hue)),oklch(0.17 0.05 var(--hue)));box-shadow:0 1px 0 oklch(1 0 0 / .06)}
+.h-idcard-keyblock{position:absolute;z-index:4;left:8%;right:8%;top:31%;display:flex;flex-direction:column;gap:5px}
+.h-idcard-key{display:grid;grid-template-columns:repeat(2,max-content);gap:3px 1.4em;font-family:var(--h-mono,ui-monospace),ui-monospace,monospace;font-size:clamp(8px,2.85cqw,11px);line-height:1.35;letter-spacing:.1em;opacity:.92}
+.h-idcard-about{position:absolute;z-index:4;left:8%;right:8%;top:55%;font-size:clamp(10px,3.3cqw,13px);line-height:1.35;opacity:.86;
+  display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;line-clamp:2;overflow:hidden;overflow-wrap:anywhere}
+.h-idcard-back .h-idcard-foot{gap:16px}
+.h-idcard-back .h-idcard-field,.h-idcard-back .h-idcard-field+.h-idcard-field{flex:0 0 auto;max-width:none;text-align:left;align-items:flex-start}
+.h-idcard-back .h-idcard-field:last-child:not(:first-child){flex:0 1 auto;text-align:right;align-items:flex-end}
+.h-idcard-back .h-idcard-label{white-space:nowrap;letter-spacing:.16em}
+.h-idcard-back .h-idcard-value{font-size:clamp(10px,3.6cqw,14px)}
+.h-idcard-num{font-family:var(--h-mono,ui-monospace),ui-monospace,monospace;letter-spacing:.06em;color:var(--h-fg)}
+.h-idcard-sr{position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}
 .h-profile-scrim{position:fixed;inset:0;z-index:1000;display:grid;place-items:center;padding:16px;background:color-mix(in oklch,var(--h-bg) 58%,transparent);-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px)}
 .h-profile{width:min(400px,100%);max-height:calc(100vh - 32px);overflow:auto;display:flex;flex-direction:column;gap:14px;padding:12px 12px 16px;border-radius:30px;background:var(--h-card);border:1px solid var(--h-line);box-shadow:0 30px 80px -30px var(--h-shadow);transform-origin:50% 60%}
 .h-profile-body{display:flex;flex-direction:column;gap:10px;padding:0 8px}
-.h-profile-head{display:flex;justify-content:flex-end;margin-bottom:-6px}
+.h-profile-actions{display:flex;flex-wrap:wrap;align-items:center;gap:6px;padding:0 8px}
+.h-profile-actions>*{max-width:100%}
+.h-profile-head{display:flex;justify-content:flex-end;align-items:center;gap:2px;margin-bottom:-6px}
 .h-profile-vibe{font-size:14px;line-height:1.45;color:var(--h-fg)}
 .h-profile-row{display:flex;gap:8px;align-items:flex-start;font-size:12px;color:var(--h-fg2)}
+.h-profile-keyrow>button{flex:0 0 auto;margin-top:-3px}
 .h-profile-agents{display:flex;flex-direction:column;gap:4px}
 .h-profile-agents .h-plain{gap:8px;padding:4px 6px;border-radius:10px}
 .h-profile-agents .h-plain:hover{background:var(--h-hover)}
@@ -999,11 +1040,61 @@ const FACE_OPT_LABEL = { dot: 'Dots', round: 'Round', sleepy: 'Sleepy', wide: 'W
   headphones: 'Headphones', halo: 'Halo', sprout: 'Sprout', horns: 'Horns', bow: 'Bow', blush: 'Blush', freckles: 'Freckles',
   spots: 'Spots', soft: 'Soft', tall: 'Tall', drop: 'Drop', bean: 'Bean' }
 
+// "Edit face" on a card opens Settings and wants the face editor in view. The request is a one-shot flag
+// that Settings picks up when it mounts (or at once if it is already open); it lapses after 15 s so an
+// old one never steals focus later.
+const FACE_FOCUS = { at: 0, fns: new Set() }
+function wantFaceEditor() {
+  FACE_FOCUS.at = Date.now()
+  FACE_FOCUS.fns.forEach(fn => fn())
+}
+
+// Focus the face editor and scroll its card and controls to the top of whatever scrolls. A spring does
+// the scrolling (an instant jump with reduced motion). False if the editor isn't on the page yet.
+function showFaceEditor() {
+  const picker = document.getElementById('h-facepicker')
+  if (!picker) return false
+  try { picker.focus({ preventScroll: true }) } catch (_) { /* not focusable here */ }
+  const target = picker.parentElement || picker
+  let box = target.parentElement
+  while (box && !(box.scrollHeight > box.clientHeight + 1 && /(auto|scroll)/.test(getComputedStyle(box).overflowY))) box = box.parentElement
+  if (!box) { target.scrollIntoView({ block: 'start' }); return true }
+  const dy = target.getBoundingClientRect().top - box.getBoundingClientRect().top - 16
+  const from = box.scrollTop
+  const to = clamp(from + dy, 0, box.scrollHeight - box.clientHeight)
+  if (motion.reduced() || Math.abs(to - from) < 2) { box.scrollTop = to; return true }
+  // the person scrolling for themselves ends the animation
+  const stops = ['wheel', 'touchstart', 'pointerdown', 'keydown']
+  const done = () => stops.forEach(t => box.removeEventListener(t, stop))
+  const spring = motion.spring({ from, to, k: SPRING.calm.k, c: SPRING.calm.c, onUpdate: x => { box.scrollTop = x }, onRest: done })
+  const stop = () => { spring.stop(); done() }
+  stops.forEach(t => box.addEventListener(t, stop, { passive: true }))
+  return true
+}
+
+function useFaceEditorFocus() {
+  useEffect(() => {
+    let frame = 0
+    let live = true
+    const attempt = tries => {
+      if (!live || !FACE_FOCUS.at) return
+      if (Date.now() - FACE_FOCUS.at > 15000) { FACE_FOCUS.at = 0; return }
+      if (showFaceEditor()) { FACE_FOCUS.at = 0; return }
+      if (tries > 0) frame = window.requestAnimationFrame(() => attempt(tries - 1))
+    }
+    const kick = () => { window.cancelAnimationFrame(frame); frame = window.requestAnimationFrame(() => attempt(40)) }
+    FACE_FOCUS.fns.add(kick)
+    kick()
+    return () => { live = false; window.cancelAnimationFrame(frame); FACE_FOCUS.fns.delete(kick) }
+  }, [])
+}
+
 function FacePicker(props) {
   const face = faceFor(props.value, props.pk)
   const set = patch => props.onChange(Object.assign({}, face, patch))
   const accent = face.acc !== 'none' || face.pattern !== 'none'
-  return jsxs('div', { className: 'h-row h-facepick', children: [
+  return jsxs('div', { className: 'h-row h-facepick', id: props.id, tabIndex: props.id ? -1 : undefined, role: props.id ? 'group' : undefined,
+    'aria-label': props.id ? 'Face editor' : undefined, children: [
     !props.noPreview && jsx(Face, { face, pk: props.pk, state: props.previewState || 'activity: idle', size: 64, name: props.name }),
     jsxs('div', { className: 'h-col h-grow', style: { gap: 10, minWidth: 0 }, children: [
       ...FACE_PARTS.map(part => jsxs('div', { className: 'h-facepart', children: [
@@ -1133,30 +1224,226 @@ function Modal(props) {
 
 const ProfileContext = createContext(null)
 
-// The card itself. `who` is { kind: 'agent' | 'person', name, pk, face?, state? }; `fields` is two
-// [label, value, warn?] pairs for the bottom corners.
-function IdCard(props) {
-  const f = faceFor(props.face, props.pk)
+// "3f2a9c1b77e0..." -> "3F2A·9C1B·77E0": the start of a key, printed on the card like a card number.
+// Anything that isn't at least 12 hex characters gets no number.
+function cardSerial(pk) {
+  const s = typeof pk === 'string' ? pk : ''
+  if (!/^[0-9a-fA-F]{12,}$/.test(s)) return ''
+  const h = s.slice(0, 12).toUpperCase()
+  return h.slice(0, 4) + '·' + h.slice(4, 8) + '·' + h.slice(8, 12)
+}
+
+// A whole 64-character key as four rows of 16, for the back of the card ([] for anything else).
+function keyGroups(pk) {
+  const s = typeof pk === 'string' ? pk : ''
+  if (!/^[0-9a-fA-F]{64}$/.test(s)) return []
+  const h = s.toUpperCase()
+  return [h.slice(0, 16), h.slice(16, 32), h.slice(32, 48), h.slice(48, 64)]
+}
+
+// Three type sizes for the name, so a long one stays in two lines above the fields. Long words step
+// down sooner than long names, since a word only breaks mid-letter.
+function nameSize(name) {
+  const s = String(name == null ? '' : name).trim()
+  const len = Array.from(s).length
+  const word = s.split(/\s+/).reduce((m, w) => Math.max(m, Array.from(w).length), 0)
+  if (len > 20 || word > 12) return 's'
+  if (len > 12 || word > 9) return 'm'
+  return 'l'
+}
+
+const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
+const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+
+// unix seconds -> "Thu 6 Nov" (with the year when it isn't this one); '' for anything else.
+function fmtDay(ts) {
+  const n = typeof ts === 'number' ? ts : NaN
+  if (!Number.isFinite(n) || n <= 0) return ''
+  const d = new Date(n * 1000)
+  if (isNaN(d.getTime())) return ''
+  const out = DAY_NAMES[d.getDay()] + ' ' + d.getDate() + ' ' + MONTH_NAMES[d.getMonth()]
+  return d.getFullYear() === new Date().getFullYear() ? out : out + ' ' + d.getFullYear()
+}
+
+// A message count the engine sent, or null.
+function postCount(n) {
+  return Number.isInteger(n) && n >= 0 ? n : null
+}
+
+// "First seen here Thu 6 Nov. 42 messages here." from whatever of the two is known.
+function activityText(first, posts) {
+  const day = fmtDay(first)
+  const n = postCount(posts)
+  const out = []
+  if (day) out.push('First seen here ' + day + '.')
+  if (n != null) out.push(n + (n === 1 ? ' message' : ' messages') + ' here.')
+  return out.join(' ')
+}
+
+// Where a person's agents sit in their card's picture: [left, top, size] in % of the hero box.
+// The first is largest and in front; the others peek out behind it.
+const CREW_SPOTS = {
+  1: [[0, 0, 100]],
+  2: [[4, 16, 78], [52, -2, 50]],
+  3: [[14, 21, 72], [57, -1, 45], [-6, 5, 41]]
+}
+
+// Pointer tilt: the card leans toward the pointer and a shine follows it. Three springs write
+// --tx, --ty (-1..1) and --glow (0..1) on the stage; CSS turns them into the rotation, the shine and
+// the frame's colour shift. No tilt for touch or with reduced motion.
+function useCardTilt(ref, enabled) {
+  useEffect(() => {
+    const el = ref.current
+    if (!el || !enabled) return
+    const put = name => x => el.style.setProperty(name, x.toFixed(4))
+    const sx = motion.spring({ from: 0, to: 0, k: SPRING.tilt.k, c: SPRING.tilt.c, onUpdate: put('--tx') })
+    const sy = motion.spring({ from: 0, to: 0, k: SPRING.tilt.k, c: SPRING.tilt.c, onUpdate: put('--ty') })
+    const glow = motion.spring({ from: 0, to: 0, k: SPRING.calm.k, c: SPRING.calm.c, onUpdate: put('--glow') })
+    const move = e => {
+      if (e.pointerType === 'touch' || motion.reduced()) return
+      const r = el.getBoundingClientRect()
+      if (!r.width || !r.height) return
+      sx.to(clamp((e.clientX - r.left) / r.width * 2 - 1, -1, 1))
+      sy.to(clamp((e.clientY - r.top) / r.height * 2 - 1, -1, 1))
+      glow.to(1)
+    }
+    const rest = () => { sx.to(0); sy.to(0); glow.to(0) }
+    el.addEventListener('pointermove', move)
+    el.addEventListener('pointerleave', rest)
+    el.addEventListener('pointercancel', rest)
+    return () => {
+      el.removeEventListener('pointermove', move)
+      el.removeEventListener('pointerleave', rest)
+      el.removeEventListener('pointercancel', rest)
+      sx.stop(); sy.stop(); glow.stop()
+    }
+  }, [enabled])
+}
+
+// The half turn: rotateY on a spring with a little overshoot, lifting slightly mid-turn. Reduced
+// motion swaps faces at once (the spring snaps).
+function useCardFlip(ref, flipped) {
+  const s = useRef(null)
+  useEffect(() => {
+    const el = ref.current
+    if (!el) return
+    const deg = flipped ? 180 : 0
+    if (s.current) { s.current.to(deg); return }
+    s.current = motion.spring({ from: deg, to: deg, k: SPRING.flip.k, c: SPRING.flip.c, onUpdate: x => {
+      const lift = 1 + 0.04 * Math.max(0, Math.sin(x * Math.PI / 180))
+      el.style.transform = x === 0 ? '' : 'rotateY(' + x.toFixed(2) + 'deg) scale(' + lift.toFixed(4) + ')'
+    } })
+  }, [flipped])
+  useEffect(() => () => s.current && s.current.stop(), [])
+}
+
+// What the card's front says, from IdCard's props. The image export reads the same function, so the
+// picture can never show something the card doesn't.
+function cardModel(props) {
   const agent = props.kind !== 'person'
-  const fields = (props.fields || []).filter(Boolean).slice(0, 2)
-  return jsxs('div', { className: 'h-idcard', style: { '--hue': f.hue, '--hue2': f.hue2 }, role: 'img',
-    'aria-label': (agent ? 'Agent card: ' : 'Card: ') + (props.name || '') + fields.map(x => ', ' + x[0] + ' ' + x[1]).join(''),
+  const warn = !!props.warn
+  return {
+    f: faceFor(props.face, props.pk),
+    agent,
+    warn,
+    name: props.name || (agent ? 'Agent' : 'Someone'),
+    tag: warn ? 'Check key' : agent ? 'Agent' : 'Person',
+    serial: cardSerial(props.pk),
+    fields: (props.fields || []).filter(Boolean).slice(0, 2),
+    initial: (String(props.name || '?').trim()[0] || '?').toUpperCase()
+  }
+}
+
+// The card itself. Props:
+//   kind 'agent' | 'person', name, pk, face, state   who it is (face picks the hue)
+//   fields      up to two [label, value, warn?] pairs for the front's bottom corners
+//   warn        the key check failed: red frame and a "Check key" tag
+//   agents      a person's agents [{ face, pk }], drawn as the picture (up to three)
+//   about, model, first, posts   the back: vibe or line, model, first seen (unix s), messages here
+//   interactive the sheet's card: click, Enter or Space turns it over (role=button, aria-pressed)
+//   flipped, onFlip   control the turn from outside (the sheet's Flip button); else it keeps its own
+//   tilt        false turns off the pointer tilt (on by default, preview included)
+//   cardRef     ref to the front face element
+function IdCard(props) {
+  const model = cardModel(props)
+  const { f, agent, warn, fields, name, serial } = model
+  const interactive = !!props.interactive
+  const [own, setOwn] = useState(false)
+  const flipped = interactive && (props.flipped != null ? !!props.flipped : own)
+  const stage = useRef(null)
+  const turn = useRef(null)
+  useCardTilt(stage, props.tilt !== false)
+  useCardFlip(turn, flipped)
+
+  const label = (agent ? 'Agent card: ' : 'Card: ') + (props.name || '') + (warn ? ', check key' : '') +
+    fields.map(x => ', ' + x[0] + ' ' + x[1]).join('') + (serial ? ', card number ' + serial : '')
+  const flip = () => { if (props.onFlip) props.onFlip(!flipped); else setOwn(!flipped) }
+  const crew = (props.agents || []).filter(a => a && a.pk).slice(0, 3)
+  const idle = 'activity: idle'
+
+  const hero = agent
+    // the picture is always the whole face; an away agent's status is in the corner, not a faded portrait
+    ? jsx(Face, { face: props.face, pk: props.pk, state: stateWord(props.state) === 'absent' ? idle : (props.state || idle), size: 120 })
+    : crew.length
+      ? jsx('div', { className: 'h-idcard-crew', children: crew.map((a, i) => {
+          const [left, top, size] = CREW_SPOTS[crew.length][i]
+          return jsx('div', { className: 'h-idcard-mate', 'data-front': i === 0, style: { left: left + '%', top: top + '%', width: size + '%', zIndex: 3 - i },
+            children: jsx(Face, { face: a.face, pk: a.pk, state: idle, size: 120 }) }, a.pk)
+        }) })
+      : jsx('span', { className: 'h-idcard-initial', children: model.initial })
+
+  const front = jsxs('div', { className: 'h-idcard h-idcard-front', ref: props.cardRef, 'data-warn': warn,
+    style: { '--hue': f.hue, '--hue2': f.hue2 }, role: interactive ? undefined : 'img', 'aria-label': interactive ? undefined : label,
     children: [
       jsx('div', { className: 'h-idcard-dots' }),
-      jsx('div', { className: 'h-idcard-hero', 'aria-hidden': true, children: agent
-        // the picture is always the whole face; an away agent's status is in the corner, not a faded portrait
-        ? jsx(Face, { face: props.face, pk: props.pk, state: stateWord(props.state) === 'absent' ? 'activity: idle' : (props.state || 'activity: idle'), size: 120 })
-        : jsx('span', { className: 'h-idcard-initial', children: (String(props.name || '?').trim()[0] || '?').toUpperCase() }) }),
+      jsx('div', { className: 'h-idcard-hero', 'aria-hidden': true, children: hero }),
       jsxs('div', { className: 'h-idcard-top', 'aria-hidden': true, children: [
-        jsx('div', { className: 'h-idcard-name', children: props.name || (agent ? 'Agent' : 'Someone') }),
-        jsx('span', { className: 'h-idcard-tag', children: agent ? 'Agent' : 'Person' })
+        jsx('div', { className: 'h-idcard-name', 'data-size': nameSize(name), children: name }),
+        jsx('span', { className: 'h-idcard-tag', children: model.tag })
       ] }),
+      serial ? jsx('div', { className: 'h-idcard-serial', 'aria-hidden': true, children: serial }) : null,
       jsx('div', { className: 'h-idcard-foot', 'aria-hidden': true, children: fields.map(x => jsxs('div', { className: 'h-idcard-field', children: [
         jsx('span', { className: 'h-idcard-label', children: x[0] }),
         jsx('span', { className: 'h-idcard-value', 'data-warn': !!x[2], children: x[1] })
       ] }, x[0])) }),
-      jsx('div', { className: 'h-idcard-frame' })
+      jsx('div', { className: 'h-idcard-frame' }),
+      jsx('div', { className: 'h-idcard-shine' })
     ] })
+
+  // Everything on the back is also in the sheet's rows, so screen readers skip it.
+  const groups = keyGroups(props.pk)
+  const day = fmtDay(props.first)
+  const posts = postCount(props.posts)
+  const backFields = [day && ['First seen here', day], posts != null && ['Messages here', String(posts)],
+    props.model && ['Model', shortModel(props.model)]].filter(Boolean)
+  const back = interactive && jsxs('div', { className: 'h-idcard h-idcard-back', 'aria-hidden': true, 'data-warn': warn,
+    style: { '--hue': f.hue, '--hue2': f.hue2 }, children: [
+      jsx('div', { className: 'h-idcard-dots' }),
+      jsx('div', { className: 'h-idcard-stripe' }),
+      jsxs('div', { className: 'h-idcard-keyblock', children: [
+        jsx('span', { className: 'h-idcard-label', children: 'Key' }),
+        groups.length
+          ? jsx('div', { className: 'h-idcard-key', children: groups.map((g, i) => jsx('span', { children: g }, i)) })
+          : jsx('span', { className: 'h-idcard-value', children: 'Unknown' })
+      ] }),
+      props.about ? jsx('div', { className: 'h-idcard-about', children: props.about }) : null,
+      jsx('div', { className: 'h-idcard-foot', 'data-n': backFields.length, children: backFields.map(x => jsxs('div', { className: 'h-idcard-field', children: [
+        jsx('span', { className: 'h-idcard-label', children: x[0] }),
+        jsx('span', { className: 'h-idcard-value', children: x[1] })
+      ] }, x[0])) }),
+      jsx('div', { className: 'h-idcard-frame' }),
+      jsx('div', { className: 'h-idcard-shine' })
+    ] })
+
+  return jsx('div', { className: 'h-idcard-stage', ref: stage, 'data-interactive': interactive,
+    role: interactive ? 'button' : undefined, tabIndex: interactive ? 0 : undefined,
+    'aria-pressed': interactive ? flipped : undefined, 'aria-label': interactive ? label : undefined,
+    onClick: interactive ? flip : undefined,
+    onKeyDown: interactive ? e => {
+      // a native button acts once per press; holding the key must not keep turning the card
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); if (!e.repeat) flip() }
+    } : undefined,
+    children: jsx('div', { className: 'h-idcard-tilt', children: jsxs('div', { className: 'h-idcard-turn', ref: turn, children: [front, back] }) }) })
 }
 
 // Wraps a face or a name so it opens that card. Outside a room (no provider) it renders as is.
@@ -1181,17 +1468,40 @@ function ProfileLayer(props) {
   const open = useCallback(w => setWho(w), [])
   return jsxs(ProfileContext.Provider, { value: open, children: [
     props.children,
-    who && jsx(ProfileSheet, { who, room: props.room, snap: props.snap, onClose: () => setWho(null), onOpen: setWho, key: who.pk })
+    who && jsx(ProfileSheet, { who, room: props.room, snap: props.snap, store: props.store, openSettings: props.openSettings,
+      onClose: () => setWho(null), onOpen: setWho, key: who.pk })
   ] })
+}
+
+// What the buttons under a card may do. Edit face: only on your own agent's card. Hide: only on someone
+// else's card, and it hides their person (an agent's card hides its owner, as the People column does).
+// Never on your own person or agent.
+function cardActions(who, found, snap) {
+  const myPk = snap && snap.me && snap.me.pk
+  const myAgent = snap && snap.me && snap.me.agent && snap.me.agent.pk
+  const hide = (pk, name) => (typeof pk === 'string' && pk && pk !== myPk && pk !== myAgent ? { pk, name: String(name || 'them') } : null)
+  if (who.kind === 'agent' || found.agent) {
+    const a = found.agent || {}
+    const o = found.owner
+    if (a.yours || (myAgent && who.pk === myAgent)) return { edit: true, hide: null }
+    return { edit: false, hide: o && !o.you ? hide(o.pk, o.name) : null }
+  }
+  const p = found.person || {}
+  return { edit: false, hide: p.you ? null : hide(who.pk, p.name || who.name) }
 }
 
 function ProfileSheet(props) {
   const { who, room, snap } = props
   const sheet = useRef(null)
   const close = useRef(null)
+  const cardRef = useRef(null)
+  const keepFocus = useRef(false)
+  const [busy, setBusy] = useState('')
+  const canCopy = useCanCopyImage()
   const opener = useRef(typeof document !== 'undefined' ? document.activeElement : null)
   const found = findMember(room, who.pk)
   const [card, setCard] = useState(null)
+  const [flipped, setFlipped] = useState(false)
   const isAgent = who.kind === 'agent' || !!found.agent
 
   useEffect(() => {
@@ -1204,7 +1514,7 @@ function ProfileSheet(props) {
       el.style.transform = x === 1 ? '' : 'translateY(' + ((1 - x) * 16).toFixed(2) + 'px) scale(' + (0.94 + 0.06 * x).toFixed(4) + ')'
     } })
     const back = opener.current
-    return () => { off(); s && s.stop(); if (back && back.focus) try { back.focus() } catch (_) { /* gone */ } }
+    return () => { off(); s && s.stop(); if (!keepFocus.current && back && back.focus) try { back.focus() } catch (_) { /* gone */ } }
   }, [])
 
   // a person's published interest card, fetched when theirs opens
@@ -1215,17 +1525,66 @@ function ProfileSheet(props) {
     return () => { live = false }
   }, [who.pk])
 
-  const body = isAgent ? agentSheet(who, found, snap, props.onOpen) : personSheet(who, found, card, props.onOpen)
+  // the sheet's card turns over (click, Enter/Space, or the Flip button) and tilts
+  const flip = { interactive: true, flipped, onFlip: setFlipped, cardRef }
+  const body = isAgent ? agentSheet(who, found, snap, props.onOpen, flip) : personSheet(who, found, card, props.onOpen, flip)
+
+  // buttons under the card: save or copy it as an image, edit your own agent's face, hide someone else
+  const act = cardActions(who, found, snap)
+  const cardName = body.card.props.name
+  const image = () => cardImage(body.card.props, cardRef.current)
+  const save = async () => {
+    setBusy('save')
+    try {
+      const { blob, filename } = await image()
+      if (await P.saveFile(blob, filename)) P.toast('info', 'Saved ' + cardName + '’s card.')
+      else P.toast('error', 'Couldn’t save the image here. Try Copy image.')
+    } catch (_) { P.toast('error', 'Couldn’t save the image here. Try Copy image.') }
+    setBusy('')
+  }
+  const copyImage = async () => {
+    setBusy('copy')
+    try {
+      await navigator.clipboard.write([new ClipboardItem({ 'image/png': image().then(r => r.blob) })])
+      P.toast('info', 'Copied ' + cardName + '’s card.')
+    } catch (_) { P.toast('error', 'Couldn’t copy the image here. Try Save image.') }
+    setBusy('')
+  }
+  const editFace = () => {
+    keepFocus.current = true
+    wantFaceEditor()
+    props.onClose()
+    if (props.openSettings) props.openSettings()
+  }
+  const hideThem = async () => {
+    if (!act.hide || !props.store) return
+    try {
+      await props.store.post('/people/hide', { pk: act.hide.pk, name: act.hide.name }, 'Hid ' + act.hide.name + ' and their agent. Undo in Settings.')
+      props.onClose()
+    } catch (_) { /* toasted */ }
+  }
+  const saveBtn = jsx(K.Button, { variant: 'outline', size: 'sm', disabled: !!busy, onClick: save, children: [jsx(K.Icon, { name: 'save', size: 13 }, 'i'), 'Save image'] }, 'save')
+  const copyBtn = canCopy ? jsx(K.Button, { variant: 'outline', size: 'sm', disabled: !!busy, onClick: copyImage, children: [jsx(K.Icon, { name: 'copy', size: 13 }, 'i'), 'Copy image'] }, 'copy') : null
   return jsx('div', { className: 'hx h-profile-scrim', onClick: e => { if (e.target === e.currentTarget) props.onClose() }, children:
     jsxs('div', { className: 'h-profile', ref: sheet, role: 'dialog', 'aria-modal': true, 'aria-label': body.title, children: [
-      jsx('div', { className: 'h-profile-head', children: jsx('span', { ref: close, tabIndex: -1, style: { outline: 'none' }, children:
-        jsx(K.Button, { variant: 'ghost', size: 'icon', 'aria-label': 'Close', onClick: props.onClose, children: jsx(K.Icon, { name: 'close', size: 14 }) }) }) }),
+      jsxs('div', { className: 'h-profile-head', children: [
+        jsx(K.Button, { variant: 'ghost', size: 'icon', 'aria-label': 'Flip card', 'aria-pressed': flipped, onClick: () => setFlipped(v => !v),
+          children: jsx(K.Icon, { name: 'refresh', size: 14 }) }),
+        jsx('span', { ref: close, tabIndex: -1, style: { outline: 'none' }, children:
+          jsx(K.Button, { variant: 'ghost', size: 'icon', 'aria-label': 'Close', onClick: props.onClose, children: jsx(K.Icon, { name: 'close', size: 14 }) }) })
+      ] }),
       body.card,
+      jsxs('div', { className: 'h-profile-actions', children: [
+        saveBtn, copyBtn,
+        act.edit && jsx(K.Button, { variant: 'ghost', size: 'sm', onClick: editFace, children: [jsx(K.Icon, { name: 'edit', size: 13 }, 'i'), 'Edit face'] }, 'edit'),
+        act.hide && props.store && jsx(K.Button, { variant: 'ghost', size: 'sm', onClick: hideThem, children: [jsx(K.Icon, { name: 'eye-closed', size: 13 }, 'i'),
+          jsx('span', { className: 'h-trunc', style: { maxWidth: 190 }, children: 'Hide ' + act.hide.name }, 't')] }, 'hide')
+      ] }),
       jsx('div', { className: 'h-profile-body', children: body.rows })
     ] }) })
 }
 
-function agentSheet(who, found, snap, onOpen) {
+function agentSheet(who, found, snap, onOpen, flip) {
   const a = found.agent || {}
   const owner = found.owner || {}
   const mine = a.yours || who.pk === (snap.me.agent && snap.me.agent.pk)
@@ -1238,9 +1597,12 @@ function agentSheet(who, found, snap, onOpen) {
   const state = mine ? snap.me.agent.state : (a.state || 'system: absent')
   const fields = [['Owner', ownerName, warn], model ? ['Model', shortModel(model)] : ['Status', STATE_LABEL[stateWord(state)]]]
   const shared = snap.settings && snap.settings.card_details
+  const serial = cardSerial(who.pk)
+  const activity = activityText(a.first, a.posts)
   return {
     title: name + ', ' + (mine ? 'your agent' : ownerName + "'s agent"),
-    card: jsx(IdCard, { kind: 'agent', name, pk: who.pk, face, state, fields }),
+    card: jsx(IdCard, Object.assign({ kind: 'agent', name, pk: who.pk, face, state, fields, warn, about: vibe, model,
+      first: a.first, posts: a.posts }, flip)),
     rows: [
       vibe ? jsx('div', { className: 'h-profile-vibe', children: '“' + vibe + '”' }, 'v') : null,
       jsxs('div', { className: 'h-profile-row', children: [
@@ -1251,8 +1613,10 @@ function agentSheet(who, found, snap, onOpen) {
             : found.owner ? 'Signed by ' + ownerName + '’s key. Nobody else can claim this agent as theirs.'
               : 'Its owner signed its key. The name it shows is its own choice.' })
       ] }, 'k'),
+      serial ? cardNumberRow(serial, who.pk, mine ? 'your agent’s' : 'its') : null,
       model && jsxs('div', { className: 'h-profile-row', children: [jsx(K.Icon, { name: 'sparkle', size: 13 }),
         jsx('span', { children: 'Last ran on ' + model + '.' })] }, 'm'),
+      activity ? activityRow(activity) : null,
       mine && jsx('div', { className: 'h-faint h-small', children: shared
         ? 'Others see its vibe and model. Change this in Settings.'
         : 'Only you see its vibe and model. You can show them to others in Settings.' }, 's'),
@@ -1262,15 +1626,18 @@ function agentSheet(who, found, snap, onOpen) {
   }
 }
 
-function personSheet(who, found, card, onOpen) {
+function personSheet(who, found, card, onOpen, flip) {
   const p = found.person || {}
   const name = p.name || who.name || 'Someone'
   const agents = p.agents || []
   const interests = (card && card.interests) || []
   const fields = [['Agents', agents.length ? agents.map(a => a.name).join(', ') : 'None here'], ['In the room', p.online ? 'Online' : 'Away']]
+  const serial = cardSerial(who.pk)
+  const activity = activityText(p.first, p.posts)
   return {
     title: name + (p.you ? ', you' : ''),
-    card: jsx(IdCard, { kind: 'person', name, pk: who.pk, face: agents[0] && agents[0].face, fields }),
+    card: jsx(IdCard, Object.assign({ kind: 'person', name, pk: who.pk, face: agents[0] && agents[0].face, fields, warn: !!p.impostor,
+      agents, about: card && card.line, first: p.first, posts: p.posts }, flip)),
     rows: [
       card && card.line ? jsx('div', { className: 'h-profile-vibe', children: card.line }, 'l') : null,
       interests.length ? jsx('div', { className: 'h-chips', children: interests.map(t => jsx('span', { className: 'h-chip', children: t }, t)) }, 'i') : null,
@@ -1278,6 +1645,8 @@ function personSheet(who, found, card, onOpen) {
       card === null ? jsx('div', { className: 'h-faint h-small', children: 'Looking for their interest card…' }, 'w') : null,
       p.impostor && jsxs('div', { className: 'h-profile-row', children: [jsx(K.Icon, { name: 'warning', size: 13 }),
         jsx('span', { children: 'Someone else in this room already uses this name. This is a different key.' })] }, 'x'),
+      serial ? cardNumberRow(serial, who.pk, p.you ? 'your' : 'their') : null,
+      activity ? activityRow(activity) : null,
       agents.length ? jsx('div', { className: 'h-profile-agents', children: agents.map(a =>
         jsx(ProfileButton, { who: { kind: 'agent', pk: a.pk, name: a.name, face: a.face }, label: 'Show ' + a.name, children: [
           jsx(Face, { face: a.face, pk: a.pk, state: a.state, size: 24, name: a.name }, 'f'),
@@ -1288,10 +1657,499 @@ function personSheet(who, found, card, onOpen) {
   }
 }
 
+// What the card number is, in words. It is only a label: the first 12 characters of the key are cheap to
+// imitate, so the copy sends people to the full key on the card's back, and a button copies that key
+// (the back can't be selected, since the stage turns on click). The full key also rides along for screen readers.
+function cardNumberRow(serial, pk, whose) {
+  const groups = keyGroups(pk)
+  const copyKey = async () => {
+    const ok = await P.copy(groups.join('').toLowerCase())
+    P.toast(ok ? 'info' : 'error', ok ? 'Key copied.' : 'Couldn’t reach the clipboard here. Flip the card to read the key.')
+  }
+  return jsxs('div', { className: 'h-profile-row h-profile-keyrow', children: [jsx(K.Icon, { name: 'lock', size: 13 }),
+    jsxs('span', { className: 'h-grow', children: ['Card number ', jsx('span', { className: 'h-idcard-num', children: serial }, 'n'),
+      ' is short for ' + whose + ' key. To be certain, compare the full key on the back of the card.',
+      groups.length ? jsx('span', { className: 'h-idcard-sr', children: ' Full key: ' + groups.join(' ') + '.' }, 'k') : null] }),
+    groups.length ? jsx(K.Button, { variant: 'outline', size: 'sm', onClick: copyKey, 'aria-label': 'Copy full key',
+      children: [jsx(K.Icon, { name: 'copy', size: 13 }, 'i'), 'Copy key'] }, 'b') : null] }, 'c')
+}
+
+function activityRow(text) {
+  return jsxs('div', { className: 'h-profile-row', children: [jsx(K.Icon, { name: 'clock', size: 13 }), jsx('span', { children: text })] }, 'act')
+}
+
 // "anthropic/claude-sonnet-5-5" -> "claude-sonnet-5-5": the provider prefix rarely fits a card corner.
 function shortModel(m) {
   const s = String(m || '')
   return s.includes('/') ? s.split('/').pop() : s
+}
+
+// ===== ui/36_cardimage.js =======================================================================
+
+// ---------------------------------------------------------------------------------------------
+// card images: the front of a card as a 1200x750 PNG, to save or copy. Built as a standalone SVG
+// string (no library, no page CSS), then drawn onto a canvas. It shows exactly what the card front
+// shows: IdCard's own cardModel() supplies the words, and the picture is the card's rendered face,
+// read back from the DOM with its styles written onto each shape.
+//
+// Names, models and every label come from strangers, so each text value is XML-escaped and anything
+// that is not a plain shape is refused: no scripts, event attributes, foreign objects, links or
+// references outside the document.
+// ---------------------------------------------------------------------------------------------
+
+const CARD_W = 1200
+const CARD_H = 750
+const CARD_FONT = 'system-ui, -apple-system, sans-serif'
+const CARD_MONO = 'ui-monospace, SFMono-Regular, Menlo, monospace'
+// the only elements a face may be drawn with
+const FACE_SHAPES = ['svg', 'g', 'path', 'circle', 'ellipse', 'rect', 'line', 'polyline', 'polygon']
+const FACE_ATTRS = ['d', 'cx', 'cy', 'r', 'rx', 'ry', 'x', 'y', 'width', 'height', 'x1', 'y1', 'x2', 'y2', 'points', 'viewBox']
+
+// ---- colour -----------------------------------------------------------------------------------
+
+function clamp01(v) {
+  return Number.isFinite(v) ? Math.min(1, Math.max(0, v)) : 0
+}
+
+// OKLab -> [r, g, b] as 0-255 integers (linear sRGB, then gamma). Out-of-gamut values are clamped.
+function oklabToRgb(L, a, b) {
+  const l_ = L + 0.3963377774 * a + 0.2158037573 * b
+  const m_ = L - 0.1055613458 * a - 0.0638541728 * b
+  const s_ = L - 0.0894841775 * a - 1.2914855480 * b
+  const l3 = l_ * l_ * l_
+  const m3 = m_ * m_ * m_
+  const s3 = s_ * s_ * s_
+  const lin = [4.0767416621 * l3 - 3.3077115913 * m3 + 0.2309699292 * s3,
+    -1.2684380046 * l3 + 2.6097574011 * m3 - 0.3413193965 * s3,
+    -0.0041960863 * l3 - 0.7034186147 * m3 + 1.7076147010 * s3]
+  return lin.map(v => {
+    const g = v <= 0.0031308 ? 12.92 * v : 1.055 * Math.pow(v, 1 / 2.4) - 0.055
+    return Math.round(clamp01(g) * 255)
+  })
+}
+
+function rgbHex(rgb) {
+  return '#' + rgb.map(n => ('0' + Math.min(255, Math.max(0, Math.round(n) || 0)).toString(16)).slice(-2)).join('')
+}
+
+// CSS oklch(l c h) -> '#rrggbb'. l is 0-1, c about 0-0.4, h in degrees. Anything odd gives a valid colour.
+function oklchToHex(l, c, h) {
+  const L = Number(l)
+  const C = Number(c)
+  const H = (Number(h) || 0) * Math.PI / 180
+  const ok = Number.isFinite(L) && Number.isFinite(C) && Number.isFinite(H)
+  return rgbHex(ok ? oklabToRgb(L, C * Math.cos(H), C * Math.sin(H)) : [0, 0, 0])
+}
+
+// A computed CSS colour string -> { hex, a }, or null when it isn't one we can read (or is 'none').
+// Browsers hand back rgb(), color(srgb ...), oklch() or oklab() depending on what the stylesheet said.
+function cssColor(str) {
+  const s = String(str == null ? '' : str).trim().toLowerCase()
+  if (!s || s === 'none') return null
+  if (s === 'transparent') return { hex: '#000000', a: 0 }
+  let m = /^#([0-9a-f]{3}|[0-9a-f]{4}|[0-9a-f]{6}|[0-9a-f]{8})$/.exec(s)
+  if (m) {
+    let h = m[1]
+    if (h.length <= 4) h = h.split('').map(ch => ch + ch).join('')
+    return { hex: '#' + h.slice(0, 6), a: h.length === 8 ? parseInt(h.slice(6), 16) / 255 : 1 }
+  }
+  m = /^([a-z-]+)\(([^)]*)\)$/.exec(s)
+  if (!m) return null
+  const sides = m[2].split('/')
+  const toks = sides[0].trim().split(/[\s,]+/).filter(Boolean)
+  const val = (t, whole) => {
+    if (t == null) return NaN
+    if (t === 'none') return 0
+    return t.endsWith('%') ? parseFloat(t) / 100 * whole : parseFloat(t)
+  }
+  let a = 1
+  const aTok = sides[1] != null ? sides[1].trim() : (m[1] === 'rgba' && toks.length > 3 ? toks[3] : null)
+  if (aTok != null) a = clamp01(val(aTok, 1))
+  let rgb = null
+  if (m[1] === 'rgb' || m[1] === 'rgba') rgb = [0, 1, 2].map(i => val(toks[i], 255))
+  else if (m[1] === 'oklch') rgb = oklabToRgb(val(toks[0], 1), val(toks[1], 0.4) * Math.cos((val(toks[2], 360) || 0) * Math.PI / 180), val(toks[1], 0.4) * Math.sin((val(toks[2], 360) || 0) * Math.PI / 180))
+  else if (m[1] === 'oklab') rgb = oklabToRgb(val(toks[0], 1), val(toks[1], 0.4), val(toks[2], 0.4))
+  else if (m[1] === 'color' && toks[0] === 'srgb') rgb = [1, 2, 3].map(i => val(toks[i], 1) * 255)
+  if (!rgb || rgb.some(n => !Number.isFinite(n))) return null
+  return { hex: rgbHex(rgb), a }
+}
+
+// Whatever cssColor can't read (display-p3, color-mix, a named colour), asked of the browser itself.
+function canvasColor(str) {
+  try {
+    const ctx = document.createElement('canvas').getContext('2d')
+    ctx.fillStyle = '#000'
+    ctx.fillStyle = String(str)
+    ctx.clearRect(0, 0, 1, 1)
+    ctx.fillRect(0, 0, 1, 1)
+    const d = ctx.getImageData(0, 0, 1, 1).data
+    return { hex: rgbHex([d[0], d[1], d[2]]), a: d[3] / 255 }
+  } catch (_) { return null }
+}
+
+// ---- text ---------------------------------------------------------------------------------------
+
+// Drop the characters XML cannot hold (controls, lone surrogates, U+FFFE and U+FFFF).
+function xmlClean(s) {
+  let out = ''
+  for (const ch of String(s == null ? '' : s)) {
+    const c = ch.codePointAt(0)
+    if (c === 9 || c === 10 || c === 13 || (c >= 0x20 && c <= 0xD7FF) || (c >= 0xE000 && c <= 0xFFFD) || (c >= 0x10000 && c <= 0x10FFFF)) out += ch
+  }
+  return out
+}
+
+// Text as it goes between tags or inside an attribute: the five XML characters, escaped.
+function xmlEsc(s) {
+  return xmlClean(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;')
+}
+
+// A rough text width when the page can't measure: 0.64 em a letter, plus the letter spacing.
+function guessWidth(text, px, spacing) {
+  return Array.from(String(text)).length * (px * 0.64 + (spacing || 0))
+}
+
+// One line of text cut with an ellipsis until it fits maxW.
+function fitText(text, maxW, width) {
+  const chars = Array.from(String(text))
+  if (width(chars.join('')) <= maxW) return chars.join('')
+  while (chars.length > 1 && width(chars.join('') + '…') > maxW) chars.pop()
+  return chars.join('') + '…'
+}
+
+// Words wrapped to at most maxLines lines of maxW. A word wider than a line is broken, and whatever
+// still doesn't fit ends the last line with an ellipsis. Always returns at least one line.
+function wrapLines(text, maxW, maxLines, width) {
+  const words = String(text).split(/\s+/).filter(Boolean)
+  const lines = []
+  let cur = ''
+  for (let w of words) {
+    while (Array.from(w).length > 1 && width(w) > maxW) {
+      const chars = Array.from(w)
+      let n = chars.length - 1
+      while (n > 1 && width(chars.slice(0, n).join('')) > maxW) n--
+      if (cur) { lines.push(cur); cur = '' }
+      lines.push(chars.slice(0, n).join(''))
+      w = chars.slice(n).join('')
+    }
+    const next = cur ? cur + ' ' + w : w
+    if (cur && width(next) > maxW) { lines.push(cur); cur = w } else cur = next
+  }
+  if (cur) lines.push(cur)
+  if (!lines.length) return ['']
+  if (lines.length > maxLines) {
+    const rest = lines.slice(maxLines - 1).join(' ')
+    lines.length = maxLines - 1
+    lines.push(rest)
+  }
+  lines[lines.length - 1] = fitText(lines[lines.length - 1], maxW, width)
+  return lines
+}
+
+// "Ada Lovelace" -> "ninsei-ada-lovelace-card.png": lowercase letters, digits and hyphens only.
+function cardFilename(name) {
+  const slug = String(name == null ? '' : name).normalize('NFKD').replace(/[̀-ͯ]/g, '').toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40).replace(/-+$/g, '')
+  return 'ninsei-' + (slug || 'card') + '-card.png'
+}
+
+// ---- the picture --------------------------------------------------------------------------------
+
+// A face's inner markup, or '' if it is anything but plain shapes with plain attributes. The elements
+// come from a short list, so scripts, styles, foreign objects, images, links and animation all fail
+// at once; the rest of the checks are belts over the braces.
+function faceMarkup(markup) {
+  if (typeof markup !== 'string') return ''
+  const m = markup.replace(/\sxmlns(:\w+)?="[^"]*"/g, '')
+  const tags = m.match(/<\/?[A-Za-z][\w:.-]*/g) || []
+  if (!tags.length || m.length > 20000) return ''
+  if (tags.some(t => !FACE_SHAPES.includes(t.replace(/^<\/?/, '')))) return ''
+  if (/\son\w+\s*=/i.test(m) || /href\s*=/i.test(m) || /javascript:/i.test(m) || /\/\//.test(m) || /@import/i.test(m)) return ''
+  if (/url\(\s*(?!['"]?#)/i.test(m)) return ''
+  return m
+}
+
+function cardHue(h) {
+  const n = Number(h)
+  return Number.isFinite(n) ? ((n % 360) + 360) % 360 : 0
+}
+
+// The card front as a standalone SVG string, 1200 x 750. Sizes are the card's own CSS percentages
+// (cqw) scaled to this width, so it looks like the card on screen.
+//   hue, hue2     the face's colours
+//   name, tag, serial, fields [[label, value, warn?]], warn, initial   the words on the front
+//   faces         [{ inner, left, top, size, front }]: face drawings from heroFaces(), placed in % of the
+//                 picture's box; with none, `initial` is drawn big instead
+//   measure       (text, fontPx, letterSpacingPx) -> width, from a canvas; a rough guess without it
+function cardSvg(o) {
+  o = o || {}
+  const W = CARD_W
+  const H = CARD_H
+  const hue = cardHue(o.hue)
+  const hue2 = cardHue(o.hue2 == null ? o.hue : o.hue2)
+  const warn = !!o.warn
+  const hx = oklchToHex
+  const measure = typeof o.measure === 'function' ? o.measure : guessWidth
+  const width = (text, px, ls) => {
+    const w = Number(measure(text, px, ls))
+    return Number.isFinite(w) ? w : guessWidth(text, px, ls)
+  }
+  const up = s => Array.from(xmlClean(s).replace(/\s+/g, ' ').trim()).slice(0, 120).join('').toUpperCase()
+  const num = n => String(Math.round(n * 100) / 100)
+  const text = (x, y, str, a) => '<text x="' + num(x) + '" y="' + num(y) + '" font-family="' + (a.mono ? CARD_MONO : CARD_FONT) + '" font-size="' + num(a.size) +
+    '" font-weight="' + (a.weight || 400) + '" fill="' + (a.fill || '#fff') + '"' + (a.ls ? ' letter-spacing="' + num(a.ls) + '"' : '') +
+    (a.anchor ? ' text-anchor="' + a.anchor + '"' : '') + (a.opacity != null ? ' fill-opacity="' + a.opacity + '"' : '') + '>' + xmlEsc(str) + '</text>'
+
+  const out = []
+  const defs = []
+  defs.push('<radialGradient id="ncbg" gradientUnits="userSpaceOnUse" gradientTransform="translate(' + num(W * 0.74) + ' ' + num(H * 0.4) + ') scale(' + num(W * 1.15) + ' ' + num(H * 1.05) + ')" cx="0" cy="0" r="1">' +
+    '<stop offset="0" stop-color="' + hx(0.6, 0.19, hue) + '"/><stop offset="0.46" stop-color="' + hx(0.4, 0.2, hue) + '"/><stop offset="1" stop-color="' + hx(0.2, 0.12, hue) + '"/></radialGradient>')
+  defs.push('<pattern id="ncdots" width="16" height="16" patternUnits="userSpaceOnUse"><circle cx="8" cy="8" r="2.7" fill="#fff" fill-opacity="0.34"/></pattern>')
+  defs.push('<radialGradient id="ncfade" gradientUnits="userSpaceOnUse" gradientTransform="translate(' + num(W * 0.72) + ' ' + num(H * 0.52) + ') scale(' + num(W * 0.56) + ' ' + num(H * 0.74) + ')" cx="0" cy="0" r="1">' +
+    '<stop offset="0" stop-color="#fff"/><stop offset="0.72" stop-color="#fff" stop-opacity="0"/></radialGradient>')
+  defs.push('<mask id="ncmask"><rect width="' + W + '" height="' + H + '" fill="url(#ncfade)"/></mask>')
+  const ring = warn ? [[0.8, 0.17, 45], [0.68, 0.21, 28], [0.88, 0.15, 78], [0.72, 0.2, 35], [0.8, 0.17, 45]]
+    : [[0.96, 0.07, 200], [0.93, 0.1, 320], [0.98, 0.05, 95], [0.92, 0.11, 160], [0.96, 0.07, 200]]
+  defs.push('<linearGradient id="ncring" gradientUnits="userSpaceOnUse" x1="60" y1="40" x2="' + (W - 60) + '" y2="' + (H - 40) + '">' +
+    ring.map((c, i) => '<stop offset="' + i / 4 + '" stop-color="' + hx(c[0], c[1], c[2]) + '"/>').join('') + '</linearGradient>')
+  defs.push('<filter id="ncglow" filterUnits="userSpaceOnUse" x="' + num(W * 0.4) + '" y="0" width="' + num(W * 0.6) + '" height="' + H + '" color-interpolation-filters="sRGB">' +
+    '<feDropShadow dx="0" dy="0" stdDeviation="32" flood-color="' + hx(0.85, 0.14, hue) + '" flood-opacity="0.55"/></filter>')
+  defs.push('<filter id="ncdim" x="-40%" y="-40%" width="180%" height="180%" color-interpolation-filters="sRGB">' +
+    '<feComponentTransfer><feFuncR type="linear" slope="0.86"/><feFuncG type="linear" slope="0.86"/><feFuncB type="linear" slope="0.86"/></feComponentTransfer>' +
+    '<feColorMatrix type="saturate" values="0.85"/></filter>')
+  if (warn) {
+    defs.push('<radialGradient id="ncwarn" gradientUnits="userSpaceOnUse" gradientTransform="translate(' + W / 2 + ' ' + H / 2 + ') scale(' + num(W * 1.2) + ' ' + num(H * 1.3) + ')" cx="0" cy="0" r="1">' +
+      '<stop offset="0.46" stop-color="' + hx(0.55, 0.21, 32) + '" stop-opacity="0"/><stop offset="1" stop-color="' + hx(0.55, 0.21, 32) + '" stop-opacity="0.62"/></radialGradient>')
+  }
+  defs.push('<clipPath id="ncclip"><rect width="' + W + '" height="' + H + '" rx="70"/></clipPath>')
+
+  out.push('<g clip-path="url(#ncclip)">')
+  out.push('<rect width="' + W + '" height="' + H + '" fill="url(#ncbg)"/>')
+  out.push('<rect width="' + W + '" height="' + H + '" fill="url(#ncdots)" mask="url(#ncmask)"/>')
+  if (warn) out.push('<rect width="' + W + '" height="' + H + '" fill="url(#ncwarn)"/>')
+
+  // the picture: up to three faces, or the initial
+  const bx = W * 0.58
+  const by = H * 0.46 - W * 0.175
+  const bs = W * 0.35
+  const faces = (Array.isArray(o.faces) ? o.faces : []).map(f => ({ f, inner: faceMarkup(f && f.inner) })).filter(x => x.inner).slice(0, 3)
+  out.push('<g filter="url(#ncglow)">')
+  if (faces.length) {
+    for (let i = faces.length - 1; i >= 0; i--) {
+      const { f, inner } = faces[i]
+      const left = Number(f.left) || 0
+      const top = Number(f.top) || 0
+      const size = Number(f.size) || 100
+      out.push('<svg x="' + num(bx + left / 100 * bs) + '" y="' + num(by + top / 100 * bs) + '" width="' + num(size / 100 * bs) + '" height="' + num(size / 100 * bs) +
+        '" viewBox="0 0 40 40" overflow="visible"' + (f.front ? '' : ' filter="url(#ncdim)"') + '>' + inner + '</svg>')
+    }
+  } else if (o.initial) {
+    out.push(text(bx + bs / 2, by + bs / 2 + W * 0.3 * 0.36, Array.from(xmlClean(o.initial))[0] || '?', { size: W * 0.3, weight: 200, fill: hx(0.95, 0.04, hue), anchor: 'middle' }))
+  }
+  out.push('</g>')
+
+  // name (two lines at most), then the tag under it
+  const size = nameSize(o.name)
+  const px = { l: 6.6, m: 5.3, s: 4.3 }[size] * (W / 100)
+  const ls = px * { l: 0.12, m: 0.1, s: 0.08 }[size]
+  const lh = px * (size === 's' ? 1.12 : 1.08)
+  const left = W * 0.08
+  const top = H * 0.13
+  const lines = wrapLines(up(o.name), W * 0.46, 2, s => width(s, px, ls))
+  lines.forEach((ln, i) => out.push(text(left, top + i * lh + (lh - px) / 2 + px * 0.8, ln, { size: px, weight: 300, ls })))
+  const tagPx = 2.7 * (W / 100)
+  const tagLs = tagPx * 0.16
+  const tagText = up(o.tag || '')
+  const tagW = width(tagText, tagPx, tagLs) + 44
+  const tagY = top + lines.length * lh + 29
+  const tFill = warn ? hx(0.9, 0.13, 75) : hx(0.98, 0.02, hue)
+  const tInk = warn ? hx(0.3, 0.13, 35) : hx(0.32, 0.17, hue)
+  const tRing = warn ? hx(0.5, 0.18, 35) : hx(0.4, 0.17, hue)
+  if (tagText) {
+    out.push('<rect x="' + num(left) + '" y="' + num(tagY) + '" width="' + num(tagW) + '" height="46" fill="' + tFill + '"/>')
+    out.push('<rect x="' + num(left + 2.4) + '" y="' + num(tagY + 2.4) + '" width="' + num(tagW - 4.8) + '" height="' + 41.2 + '" fill="none" stroke="' + tRing + '" stroke-width="4.8"/>')
+    out.push(text(left + 22 + tagLs / 2, tagY + 6 + tagPx * 0.88, tagText, { size: tagPx, weight: 500, ls: tagLs, fill: tInk }))
+  }
+
+  // card number, top right
+  if (o.serial) out.push(text(W * 0.915, H * 0.07 + 28, o.serial, { size: 2.35 * (W / 100), mono: true, ls: 2.35 * (W / 100) * 0.16, anchor: 'end', opacity: 0.72 }))
+
+  // the two fields along the bottom
+  const fields = (Array.isArray(o.fields) ? o.fields : []).filter(Boolean).slice(0, 2)
+  const valuePx = 4.4 * (W / 100)
+  const labelPx = 2.5 * (W / 100)
+  const valueLs = valuePx * 0.06
+  const labelLs = labelPx * 0.2
+  const base = H * 0.88 - valuePx * 0.22
+  // the right field is cut first (at 45% of the row), then the left gets what is left (at most 60%) minus a gap
+  const rowW = W * 0.84
+  const shown = fields.map(() => '')
+  for (const i of fields.map((_, n) => n).reverse()) {
+    const room = i === 1 ? rowW * 0.45 : Math.min(rowW * 0.6, shown[1] ? rowW - width(shown[1], valuePx, valueLs) - 42 : rowW)
+    shown[i] = fitText(up(fields[i][1]), room, s => width(s, valuePx, valueLs))
+  }
+  fields.forEach((fl, i) => {
+    const x = i === 0 ? left : W - left
+    const anchor = i === 0 ? 'start' : 'end'
+    out.push(text(x, base - valuePx * 0.72 - 11, up(fl[0]), { size: labelPx, ls: labelLs, anchor, opacity: 0.74 }))
+    out.push(text(x, base, shown[i], { size: valuePx, ls: valueLs, anchor, fill: fl[2] ? hx(0.9, 0.12, 70) : '#fff' }))
+  })
+
+  // the frame
+  out.push('<rect x="29" y="29" width="' + (W - 58) + '" height="' + (H - 58) + '" rx="48" fill="none" stroke="url(#ncring)" stroke-width="' + (warn ? 8 : 4.8) + '" stroke-opacity="' + (warn ? 1 : 0.9) + '"/>')
+  out.push('</g>')
+  out.push('<rect x="1.5" y="1.5" width="' + (W - 3) + '" height="' + (H - 3) + '" rx="69" fill="none" stroke="#fff" stroke-opacity="0.08" stroke-width="3"/>')
+
+  return '<svg xmlns="http://www.w3.org/2000/svg" width="' + W + '" height="' + H + '" viewBox="0 0 ' + W + ' ' + H + '"><defs>' + defs.join('') + '</defs>' + out.join('') + '</svg>'
+}
+
+// ---- reading the rendered card ----------------------------------------------------------------
+
+// One face's <svg> from the page, as markup that needs no page CSS: every shape gets the fill, stroke,
+// opacity and transform it is drawn with right now, and nothing else survives (no classes, ids,
+// styles or unknown attributes). The face holds still while it is read, so a blink never lands in
+// the picture. Returns the markup inside the <svg>, or ''.
+function inlineFace(svgEl) {
+  const hf = svgEl.closest ? svgEl.closest('.hf') : null
+  const had = !!(hf && hf.classList.contains('hf-still'))
+  // no transition either: stopping the breathing would otherwise ease the head back to rest
+  const heads = hf ? Array.from(hf.querySelectorAll('.hf-head')) : []
+  heads.forEach(h => { h.style.transition = 'none' })
+  if (hf) hf.classList.add('hf-still')
+  try {
+    const clone = svgEl.cloneNode(true)
+    const src = Array.from(svgEl.querySelectorAll('*'))
+    const dst = Array.from(clone.querySelectorAll('*'))
+    src.forEach((el, i) => {
+      const to = dst[i]
+      const tag = el.tagName.toLowerCase()
+      if (!to || !FACE_SHAPES.includes(tag)) { if (to) to.remove(); return }
+      const cs = getComputedStyle(el)
+      const style = []
+      for (const key of ['fill', 'stroke']) {
+        const v = cs.getPropertyValue(key)
+        const c = cssColor(v) || (v && v !== 'none' ? canvasColor(v) : null)
+        style.push(key + ':' + (c ? c.hex : 'none'))
+        if (c && c.a < 1) style.push(key + '-opacity:' + (Math.round(c.a * 100) / 100))
+      }
+      for (const key of ['fill-opacity', 'stroke-opacity', 'opacity']) {
+        const v = parseFloat(cs.getPropertyValue(key))
+        if (Number.isFinite(v) && v !== 1) style.push(key + ':' + v)
+      }
+      const sw = parseFloat(cs.getPropertyValue('stroke-width'))
+      if (Number.isFinite(sw)) style.push('stroke-width:' + sw)
+      for (const key of ['stroke-linecap', 'stroke-linejoin']) {
+        const v = cs.getPropertyValue(key)
+        if (/^(butt|round|square|miter|bevel)$/.test(v)) style.push(key + ':' + v)
+      }
+      const tf = cs.getPropertyValue('transform')
+      if (tf && tf !== 'none' && /^matrix(3d)?\([-0-9., e]+\)$/.test(tf)) {
+        style.push('transform:' + tf)
+        const origin = cs.getPropertyValue('transform-origin')
+        if (/^[-0-9. a-z%]+$/.test(origin)) style.push('transform-origin:' + origin)
+        const box = cs.getPropertyValue('transform-box')
+        if (/^(fill-box|view-box|stroke-box)$/.test(box)) style.push('transform-box:' + box)
+      }
+      for (const a of Array.from(to.attributes)) if (!FACE_ATTRS.includes(a.name)) to.removeAttribute(a.name)
+      to.setAttribute('style', style.join(';'))
+    })
+    const ser = new XMLSerializer()
+    return Array.from(clone.children).map(c => ser.serializeToString(c)).join('').replace(/\sxmlns="[^"]*"/g, '')
+  } finally {
+    if (hf && !had) hf.classList.remove('hf-still')
+    heads.forEach(h => { h.style.transition = '' })
+  }
+}
+
+// The picture on a rendered card front: [{ inner, left, top, size, front }] in % of its box.
+function heroFaces(front) {
+  const out = []
+  const mates = Array.from(front.querySelectorAll('.h-idcard-mate'))
+  const place = (svg, left, top, size, isFront) => {
+    const inner = svg ? inlineFace(svg) : ''
+    if (inner) out.push({ inner, left, top, size, front: isFront })
+  }
+  if (mates.length) {
+    mates.forEach(el => place(el.querySelector('svg'), parseFloat(el.style.left) || 0, parseFloat(el.style.top) || 0, parseFloat(el.style.width) || 100, el.getAttribute('data-front') === 'true'))
+  } else {
+    place(front.querySelector('.h-idcard-hero svg'), 0, 0, 100, true)
+  }
+  return out
+}
+
+let measureCtx = null
+function canvasMeasure(text, px, spacing) {
+  try {
+    if (!measureCtx) measureCtx = document.createElement('canvas').getContext('2d')
+    measureCtx.font = '300 ' + px + 'px ' + CARD_FONT
+    return measureCtx.measureText(text).width + Array.from(text).length * (spacing || 0)
+  } catch (_) { return guessWidth(text, px, spacing) }
+}
+
+function rasterizeSvg(svg) {
+  return new Promise((resolve, reject) => {
+    const img = new Image()
+    img.onload = () => {
+      try {
+        const canvas = document.createElement('canvas')
+        canvas.width = CARD_W
+        canvas.height = CARD_H
+        canvas.getContext('2d').drawImage(img, 0, 0, CARD_W, CARD_H)
+        canvas.toBlob(b => (b ? resolve(b) : reject(new Error('The card did not turn into an image'))), 'image/png')
+      } catch (e) { reject(e) }
+    }
+    img.onerror = () => reject(new Error('The card did not draw'))
+    img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg)
+  })
+}
+
+// The card front as a PNG: IdCard's props say what is on it, the rendered `front` element gives the face.
+async function cardImage(props, front) {
+  const m = cardModel(props)
+  const faces = front ? heroFaces(front) : []
+  const svg = cardSvg({ hue: m.f.hue, hue2: m.f.hue2, name: m.name, tag: m.tag, serial: m.serial, fields: m.fields, warn: m.warn,
+    faces, initial: faces.length ? '' : m.initial, measure: canvasMeasure })
+  return { blob: await rasterizeSvg(svg), filename: cardFilename(m.name) }
+}
+
+// Save a file through the page: a temporary link with a download name. Desktop's shell and every
+// browser turn that into a save. Resolves false if the click could not be made.
+function anchorSave(blob, filename) {
+  try {
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = filename
+    a.rel = 'noopener'
+    a.style.display = 'none'
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    window.setTimeout(() => URL.revokeObjectURL(url), 15000)
+    return Promise.resolve(true)
+  } catch (_) { return Promise.resolve(false) }
+}
+
+// Copying a picture needs the browser's image clipboard. The blob may still be on its way, which
+// the clipboard accepts as a promise (Safari wants it so the click still counts).
+function canCopyImage() {
+  return typeof ClipboardItem !== 'undefined' && typeof navigator !== 'undefined' && !!(navigator.clipboard && navigator.clipboard.write)
+}
+
+// canCopyImage, minus the places that say outright that the page may not write to the clipboard
+// (Hermes Desktop's shell denies it to plugin pages). Browsers that can't be asked just get the button.
+function useCanCopyImage() {
+  const [ok, setOk] = useState(canCopyImage)
+  useEffect(() => {
+    let live = true
+    try {
+      if (navigator.permissions && navigator.permissions.query) {
+        navigator.permissions.query({ name: 'clipboard-write' }).then(s => { if (live && s.state === 'denied') setOk(false) }, () => {})
+      }
+    } catch (_) { /* can't ask: leave the button */ }
+    return () => { live = false }
+  }, [])
+  return ok
 }
 
 // ===== ui/40_setup.js ===========================================================================
@@ -1373,6 +2231,7 @@ function SettingsForm(props) {
     relays: (s.relays || []).join('\n') })
   const [form, setForm] = useState(initial)
   const [busy, setBusy] = useState(false)
+  useFaceEditorFocus()
   const set = patch => setForm(Object.assign({}, form, patch))
   const dirty = JSON.stringify(form) !== JSON.stringify(initial())
   const now = (patch) => store.post('/settings', patch).catch(() => {})
@@ -1400,7 +2259,7 @@ function SettingsForm(props) {
         jsx('div', { style: { maxWidth: 380 }, children: jsx(IdCard, { kind: 'agent', name: form.agent_name || 'Your agent', pk: agentPk, face: form.face,
           state: snap.me.agent.state, fields: [['Owner', form.display_name || 'You'],
             s.card_details && snap.me.agent.model ? ['Model', shortModel(snap.me.agent.model)] : ['Status', STATE_LABEL[stateWord(snap.me.agent.state)]]] }) }),
-        jsx(FacePicker, { value: form.face, pk: agentPk, name: form.agent_name, noPreview: true, onChange: face => set({ face }) })
+        jsx(FacePicker, { id: 'h-facepicker', value: form.face, pk: agentPk, name: form.agent_name, noPreview: true, onChange: face => set({ face }) })
       ] }) }),
       jsx(Field, { label: 'Chattiness', hint: 'How often your agent joins in unprompted. It always answers when someone addresses it by name.',
         children: jsx(Seg, { label: 'Chattiness', value: s.chattiness, onChange: v => now({ chattiness: v }),
@@ -2965,6 +3824,8 @@ function App(props) {
   const view = useNav()
   const [people, setPeople] = useState(false)
   const go = v => nav().set(v)
+  // Settings is a view of this page on the dashboard and a page of Desktop's own Settings on Desktop (as in the Rail)
+  const openSettings = () => { if (P.kind === 'dashboard') go('settings'); else P.openSettings() }
   const embedded = !!props.embedded  // Desktop's room tab: the sidebar's Ninsei tab is the rail
   const snap = st.snap
 
@@ -2988,7 +3849,7 @@ function App(props) {
     else center = jsx(Welcome, { store, snap, onLobby: () => go('lobby') })
 
     // ProfileLayer: a click on a name or face, in the room or the people column, opens that card
-    inner = jsx(RoomReactions, { snap, room: showRoom ? room : null, children: jsx(ProfileLayer, { room: showRoom ? room : null, snap, children: jsxs('div', { className: 'h-grid', 'data-people': people ? 'open' : 'closed', 'data-embedded': embedded || undefined, children: [
+    inner = jsx(RoomReactions, { snap, room: showRoom ? room : null, children: jsx(ProfileLayer, { room: showRoom ? room : null, snap, store, openSettings, children: jsxs('div', { className: 'h-grid', 'data-people': people ? 'open' : 'closed', 'data-embedded': embedded || undefined, children: [
       !embedded && jsx('nav', { className: 'h-left', 'aria-label': 'Ninsei rooms', children: jsx(Rail, { store, snap, view, go, roomId }) }),
       jsxs('main', { className: 'h-center', children: [
         st.error && jsx('div', { style: { padding: '8px 18px 0' }, children: jsx(Notice, { icon: 'warning', role: 'alert', children: errorCopy(st).title + '. Showing the last state we had.' }) }),
@@ -3268,6 +4129,9 @@ function makePlatform(ctx) {
     rest: (path, opts) => ctx.rest(path, opts),
     toast(kind, message) { host.notify({ kind: kind === 'error' ? 'error' : 'info', message }) },
     copy: text => Promise.resolve(ctx.os && ctx.os.writeClipboard ? ctx.os.writeClipboard(text) : false).catch(() => false),
+    // Desktop's SDK has no binary save (ctx.files writes text into granted folders, ctx.os.pickSavePath
+    // returns a path on the backend), but the shell turns a page download into a Save dialog, so the link works.
+    saveFile: (blob, filename) => anchorSave(blob, filename),
     loop(draw, idle) {
       if (sdk.createBudgetedLoop) {
         const l = sdk.createBudgetedLoop(draw, { fps: 60, idleWhen: idle })
