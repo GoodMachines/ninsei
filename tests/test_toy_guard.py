@@ -54,6 +54,12 @@ def test_the_key_is_handed_out_once():
 
 
 @needs_node
+def test_the_key_still_goes_out_when_the_load_is_reported_before_the_hello():
+    # the order Chrome actually delivers them in
+    assert _run(["load", "hello", "proof"]) == [f"key:{KEY}", "show"]
+
+
+@needs_node
 def test_a_second_load_closes_the_toy():
     assert _run(["hello", "load", "proof", "load"]) == [f"key:{KEY}", "show", "leave"]
 
@@ -105,7 +111,39 @@ def test_the_backend_puts_the_guard_first_in_every_toy_frame():
 def test_the_in_frame_script_keeps_its_own_copies_before_the_toy_runs():
     from ninsei_engine import toy
     for needle in ('B=F.bind.bind(F.call)', 'D(M,"source").get', 'D(M,"data").get',
-                   'B(Event.prototype.stopImmediatePropagation)', '},true)', 'd.length===32'):
+                   'B(E.stopImmediatePropagation)', '},true)', 'd.length===32',
+                   'k===null&&e.isTrusted===true&&src(e)===p', 'function(e){if(e.isTrusted===true){l=1;go()}}'):
         assert needle in toy.TOY_GUARD, needle
     parts = (ROOT / "ui" / "30_parts.js").read_text()
     assert "padStart(2, '0')" in parts and "new Uint8Array(16)" in parts   # the key is 32 hex characters
+
+
+@needs_node
+def test_the_in_frame_script_runs_and_answers_only_real_events():
+    """Run TOY_GUARD under node's own Event/MessageEvent (isTrusted is an own property there too, as in
+    browsers): it must set up without throwing, say hello, ignore made-up events, and prove a real load."""
+    from ninsei_engine import toy
+    body = toy.TOY_GUARD[len("<script>"):-len("</script>")]
+    js = """
+const sent = [], listeners = {}
+const { port1, port2 } = new MessageChannel()   // node only accepts a MessagePort as an event's source
+port1.postMessage = m => sent.push(m)
+globalThis.parent = port1
+globalThis.addEventListener = (t, f) => { (listeners[t] = listeners[t] || []).push(f) }
+const real = (ev, trusted) => { Object.defineProperty(ev, 'isTrusted', { get: () => trusted }); return ev }
+""" + body + """
+const fire = (t, ev) => (listeners[t] || []).forEach(f => f(ev))
+fire('load', real(new Event('load'), false))
+fire('message', real(new MessageEvent('message', { data: 'f'.repeat(32) }), false))
+const afterFakes = sent.slice()
+const key = 'ab'.repeat(16)
+fire('message', real(new MessageEvent('message', { data: key, source: port1 }), true))
+const beforeLoad = sent.slice()
+fire('load', real(new Event('load'), true))
+console.log(JSON.stringify([afterFakes, beforeLoad, sent])); port1.close(); port2.close()"""
+    out = subprocess.run([NODE, "-e", js], capture_output=True, text=True)
+    assert out.returncode == 0, out.stderr
+    after_fakes, before_load, sent = json.loads(out.stdout)
+    assert after_fakes == ["ninsei-toy-hello"]
+    assert before_load == ["ninsei-toy-hello"]
+    assert sent == ["ninsei-toy-hello", "ninsei-toy-loaded:" + "ab" * 16]

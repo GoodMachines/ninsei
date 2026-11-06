@@ -892,11 +892,16 @@ function Notice(props) {
 // loading reports only the new page's load, without the key, so that page is never shown; after 10 s
 // the viewer is told it hasn't started (a slow honest toy still appears when its key arrives).
 // The request has already gone out either way, so that page may have seen the viewer's IP address.
+// This stops links, redirects and scripted navigation; a toy written to beat it from inside its own
+// page (document.open() wipes the guard's listeners) can still get one page shown. See toy.py.
 function toyGuard(key, show, leave, later, stuck) {
   let loads = 0
   let proved = false
   let helloed = false
   return {
+    // The key goes out once, in reply to the first hello: TOY_GUARD's, posted before any toy code
+    // runs. It can't wait for "no load yet": Chrome delivers the frame's load to this page before
+    // that earlier hello message, so an honest toy would never get its key.
     hello() { if (helloed) return null; helloed = true; return key },
     message(data) {
       if (proved || data !== 'ninsei-toy-loaded:' + key || loads > 1) return

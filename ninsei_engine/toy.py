@@ -35,15 +35,19 @@ def inject_csp(html: str, guard: bool = False) -> str:
 # random key from the Ninsei page (ToyFrame in ui/30_parts.js), and sends the key back once its own
 # page has finished loading; the page shows the frame only then, and closes it on any later load.
 # The toy's scripts run after it and may patch prototypes, so it keeps its own copies of everything
-# it calls later and stops the key's message from reaching any other listener. A page the toy
-# navigates to never holds the key, so it can't pass as the toy. It lives here, not in the UI,
-# because it is part of the guest document: the Desktop bundle carries no markup.
+# it calls later, ignores events the toy made up (isTrusted is an own, unforgeable property of each
+# event, so it is read directly), and stops the key's message from
+# reaching any other listener. A page the toy navigates to never holds the key, so it can't pass as
+# the toy. Limit: script in the toy's own realm can still win, e.g. document.open() erases these
+# listeners before the key arrives, so a toy written to beat the check can get one page shown.
+# It lives here, not in the UI, because it is part of the guest document: the Desktop bundle
+# carries no markup.
 TOY_GUARD = (
     '<script>(function(){var F=Function.prototype,B=F.bind.bind(F.call),D=Object.getOwnPropertyDescriptor,'
-    'M=MessageEvent.prototype,src=B(D(M,"source").get),dat=B(D(M,"data").get),stop=B(Event.prototype.stopImmediatePropagation),'
+    'M=MessageEvent.prototype,E=Event.prototype,src=B(D(M,"source").get),dat=B(D(M,"data").get),stop=B(E.stopImmediatePropagation),'
     'p=parent,k=null,l=0,done=0;function go(){if(k!==null&&l&&!done){done=1;p.postMessage("ninsei-toy-loaded:"+k,"*")}}'
-    'addEventListener("message",function(e){if(k===null&&src(e)===p){var d=dat(e);if(typeof d==="string"&&d.length===32){stop(e);k=d;go()}}},true);'
-    'addEventListener("load",function(){l=1;go()});p.postMessage("ninsei-toy-hello","*")})()</script>'
+    'addEventListener("message",function(e){if(k===null&&e.isTrusted===true&&src(e)===p){var d=dat(e);if(typeof d==="string"&&d.length===32){stop(e);k=d;go()}}},true);'
+    'addEventListener("load",function(e){if(e.isTrusted===true){l=1;go()}});p.postMessage("ninsei-toy-hello","*")})()</script>'
 )
 
 
