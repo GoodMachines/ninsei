@@ -623,7 +623,8 @@ async def test_an_impostor_gets_no_reply(bare):
 
 
 async def test_people_column_flags_a_second_holder_of_a_name(bare):
-    """The people column showed an impostor as a second plain "Maya". It now carries the same flag as its messages."""
+    """The people column showed an impostor as a second plain "Maya". It now carries the same flag as its messages.
+    A lookalike who has only joined stays out of the list until it says something."""
     e, _ = bare()  # I'm Maya
     await e._on_event(own_person_event(e, {"t": "join"}), "relay")
     s = Key("mallory")
@@ -631,9 +632,53 @@ async def test_people_column_flags_a_second_holder_of_a_name(bare):
     h = Key("honest")
     await e._on_event(h.person({"t": "join", "name": "Sam"}), "relay")
     people = {p["pk"]: p for p in e.members(ROOM)}
-    assert people[s.ppk]["impostor"] is True
-    assert people[h.ppk]["impostor"] is False
+    assert s.ppk not in people                      # silent lookalike: nothing to warn about yet
+    assert people[h.ppk]["impostor"] is False      # an honest joiner is listed as before
     assert people[e._identity()["person_pk"]]["impostor"] is False
+    await e._on_event(s.person({"t": "msg", "name": "Maya", "text": "it's me"}), "relay")
+    people = {p["pk"]: p for p in e.members(ROOM)}
+    assert people[s.ppk]["impostor"] is True         # once it speaks, it's listed and flagged
+
+
+async def test_a_bare_join_does_not_claim_a_name(bare):
+    """Test runs once joined the public Commons as "Sam"-style lookalikes with throwaway keys. A join that never
+    speaks must not take the name from the person who actually talks under it later."""
+    e, _ = bare()
+    ghost, sam = Key("ghost"), Key("sam")
+    early = int(time.time()) - 600
+    await e._on_event(ghost.person({"t": "join", "name": "Sam"}, created_at=early), "relay")
+    await e._on_event(ghost.agent({"t": "join", "name": "Bo"}, created_at=early), "relay")
+    await e._on_event(sam.person({"t": "join", "name": "Sam"}), "relay")
+    await e._on_event(sam.person({"t": "msg", "name": "Sam", "text": "hi all"}), "relay")
+    await e._on_event(sam.agent({"t": "msg", "name": "Bo", "text": "hello from Bo"}), "relay")
+    msgs = e.messages(ROOM)
+    assert not any(m.get("impostor") for m in msgs)                 # the real Sam and Bo are not flagged
+    assert [m["pk"] for m in msgs if m["t"] == "join"] == [sam.ppk]  # the ghost's joins are hidden
+    people = {p["pk"]: p for p in e.members(ROOM)}
+    assert ghost.ppk not in people and people[sam.ppk]["impostor"] is False
+
+
+async def test_speaking_first_still_holds_the_name(bare):
+    e, _ = bare()
+    sam, mal = Key("sam"), Key("mal")
+    await e._on_event(sam.person({"t": "msg", "name": "Sam", "text": "first"}), "relay")
+    await e._on_event(mal.person({"t": "join", "name": "Sam"}), "relay")
+    await e._on_event(mal.person({"t": "msg", "name": "Sam", "text": "second"}), "relay")
+    msgs = {m["text"]: m for m in e.messages(ROOM) if m["t"] == "msg"}
+    assert not msgs["first"].get("impostor") and msgs["second"]["impostor"]["real"] == sam.ppk
+
+
+async def test_a_registry_stored_before_the_rule_is_rebuilt(bare):
+    """Registries saved while joins still claimed names are dropped and rebuilt from history once."""
+    e, _ = bare()
+    ghost, sam = Key("ghost"), Key("sam")
+    await e._on_event(ghost.person({"t": "join", "name": "Sam"}, created_at=int(time.time()) - 600), "relay")
+    await e._on_event(sam.person({"t": "msg", "name": "Sam", "text": "real"}), "relay")
+    e.store.set(f"names:{ROOM}", {"p:sam": ghost.ppk})  # what an older Ninsei would have stored
+    e.store.set(f"names2:{ROOM}", None)
+    e._names.pop(ROOM, None); e._name_count.pop(ROOM, None); e._name_at.pop(ROOM, None)
+    assert e._names_reg(ROOM)["p:sam"] == sam.ppk
+    assert e.store.get(f"names:{ROOM}") is None
 
 
 def test_whos_the_agent_scoring_and_option_cap():

@@ -59,6 +59,9 @@ FAKES_WINDOW = 600
 MAX_PRESENCE = 64          # agents tracked per room
 MAX_CLAIM_TRIGGERS = 500
 LIVE_ROOM = 1800
+# Name registry keys in kv. "names2": since 2026-11-06 a bare join no longer claims a name, so registries
+# stored under the old "names" key (built when joins did) are dropped and rebuilt from history once.
+NAMES_KV = "names2"
 MSGS_DAILY = 60          # room messages my agent may say per day, on top of the token budget
 MAX_MSGS_DAILY = 2000           # seconds: a room with a message this recent counts as active now
 MAX_HIDDEN = 500           # people one owner can hide
@@ -571,7 +574,8 @@ class Engine:
         if _src != "history":
             self._note_arrival(ev["id"])
         self._seen_active(room, ev["pubkey"], min(created, now))
-        self._register_name(room, ev["pubkey"], c.get("name"), agent=self.owner_of(ev) is not None)
+        if c.get("t") != "join":  # only saying something claims a name; a bare join reserves nothing
+            self._register_name(room, ev["pubkey"], c.get("name"), agent=self.owner_of(ev) is not None)
         if self.owner_of(ev) and _src != "history":
             self._note_agent_name(room, ev["pubkey"], c.get("name"))
         # Wide enough for a peer whose clock is a few minutes off; dedupe by id stops replays.
@@ -625,19 +629,23 @@ class Engine:
         Arrival order, not created_at, so a backdated event can't take a name someone already holds."""
         reg = self._names.get(room)
         if reg is None:
-            stored = self.store.get(f"names:{room}")
+            stored = self.store.get(f"{NAMES_KV}:{room}")
             reg = {str(k): str(v) for k, v in stored.items()} if isinstance(stored, dict) else {}
             self._names[room] = reg
-            saved_at = self.store.get(f"names_at:{room}")
+            saved_at = self.store.get(f"{NAMES_KV}_at:{room}")
             saved_at = saved_at if isinstance(saved_at, dict) else {}
             # times are kept with the registry, so a restart can't make a name taken after an eviction
             # look as if it had always been held; names from before times were saved count as history
             self._name_at[room] = {k: float(saved_at.get(k, 0.0)) for k in reg}
             if not isinstance(stored, dict):  # first use: seed from history in created_at order
+                self.store.set(f"names:{room}", None)  # drop a pre-"names2" registry, if any
+                self.store.set(f"names_at:{room}", None)
                 for e in self._sorted(room):
+                    if self._content(e).get("t") == "join":
+                        continue  # a bare join claims no name (see _on_event)
                     self._register_name(room, e["pubkey"], self._content(e).get("name"),
                                         agent=self.owner_of(e) is not None, save=False)
-                self.store.set(f"names:{room}", reg)
+                self.store.set(f"{NAMES_KV}:{room}", reg)
         return reg
 
     def _register_name(self, room: str, pk: str, name, agent: bool, save: bool = True) -> None:
@@ -664,8 +672,8 @@ class Engine:
         counts[pk] = counts.get(pk, 0) + 1
         self._name_at.setdefault(room, {})[key] = time.time() if save else 0.0  # bounded like reg
         if save:
-            self.store.set(f"names:{room}", reg)
-            self.store.set(f"names_at:{room}", self._name_at[room])
+            self.store.set(f"{NAMES_KV}:{room}", reg)
+            self.store.set(f"{NAMES_KV}_at:{room}", self._name_at[room])
 
     def _seen_active(self, room: str, pk: str, at: float) -> None:
         """Last activity per key, for idle-name eviction. Trimming drops only keys that hold no name, so a
@@ -694,8 +702,8 @@ class Engine:
             if counts.get(holder):
                 counts[holder] -= 1
         if idle:
-            self.store.set(f"names:{room}", reg)
-            self.store.set(f"names_at:{room}", at)
+            self.store.set(f"{NAMES_KV}:{room}", reg)
+            self.store.set(f"{NAMES_KV}_at:{room}", at)
 
     def _held_since(self, room: str, pk: str, name: str) -> Optional[float]:
         """When `pk` became the holder of agent name `name` in this room (0 for names loaded from
@@ -1822,8 +1830,8 @@ class Engine:
     async def leave_room(self, room: str) -> None:
         await self._end_hosted(room)
         self.store.forget_room(room)
-        self.store.set(f"names:{room}", None)
-        self.store.set(f"names_at:{room}", None)
+        self.store.set(f"{NAMES_KV}:{room}", None)
+        self.store.set(f"{NAMES_KV}_at:{room}", None)
         self._names.pop(room, None)
         self._name_count.pop(room, None)
         self._name_at.pop(room, None)
@@ -2060,9 +2068,12 @@ class Engine:
         people: dict[str, dict] = {}
         agents: dict[str, dict] = {}
         offer_titles: dict[str, tuple] = {}
+        spoke: set[str] = set()  # keys that posted something besides a bare join
         for e in self._sorted(room):
             c = self._content(e)
             owner = self.owner_of(e)
+            if c.get("t") != "join":
+                spoke.add(e["pubkey"])
             if owner and c.get("t") == "offer":
                 offer_titles[e["id"]] = (e["pubkey"], str(c.get("title", ""))[:60])
             if owner:
@@ -2088,6 +2099,11 @@ class Engine:
             person["impostor"] = self._holder(who, person["name"]) not in (None, pk)
             for a in mine:
                 a["impostor"] = self._holder(who, a["name"], agent=True) not in (None, a["pk"])
+            # A lookalike who only ever joined has said nothing that could mislead anyone: leave it out.
+            # The moment it posts, or its agent goes live, it shows here with the flag.
+            quiet = pk not in spoke and not any(a["pk"] in spoke or a.get("seen") for a in mine)
+            if quiet and (person["impostor"] or (mine and all(a["impostor"] for a in mine))):
+                continue
             online = any(now - a.get("seen", 0) < ABSENT_AFTER for a in mine)
             if pk == ident["person_pk"]:
                 online = True
@@ -2183,6 +2199,8 @@ class Engine:
             elif owner and not owner_ok:
                 # "agent of Justin" from an owner key that doesn't hold the name Justin
                 item["impostor"] = {"claimed": owner_name, "real": self._holder(who, owner_name), "owner": True}
+            if t == "join" and item.get("impostor"):
+                continue  # a silent lookalike's join: nothing it says yet, so no line (its messages stay flagged)
             if c.get("system") == "budget" and owner:
                 item["system"] = "budget"
             if item["mine"] and self.pool:  # only our own events can be undelivered; "sent" stays implicit

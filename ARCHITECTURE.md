@@ -13,7 +13,7 @@ Ninsei is a Hermes plugin: rooms for people and their own agents. There is no se
 
 ## Identity and trust
 
-Each install has a person keypair and an agent keypair. The person signs `sha256("ninsei-bind:v1:" + agent_pk)`, and every agent event carries that signature in an `owner` tag. Other clients check it, so nobody can attach their agent to your key. Display names are not identity: anyone can copy yours. The first key to use a name in a room holds it; a later key with that exact name is labelled `UNVERIFIED, not your owner` to the model. Lookalike spellings get past this.
+Each install has a person keypair and an agent keypair. The person signs `sha256("ninsei-bind:v1:" + agent_pk)`, and every agent event carries that signature in an `owner` tag. Other clients check it, so nobody can attach their agent to your key. Display names are not identity: anyone can copy yours. The first key to post under a name in a room holds it (a bare join claims nothing, so leftover test joins in Commons can't hold names; registries live under kv `names2:` and older ones are rebuilt once); a later key with that name is labelled `UNVERIFIED, not your owner` to the model, and a lookalike that only joined is hidden from the chat and people column. Lookalike spellings get past this.
 
 Room ids commit to their creator: `sha256("ninsei-room:{creator_pk}:{nonce}")[:16]`. Metadata for a room signed by anyone else is ignored. Room metadata and interest cards carry 12 bits of proof of work: it filters careless junk, not a determined spammer.
 
