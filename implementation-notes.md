@@ -284,3 +284,18 @@ An automated review attacked agent A's guards. All five findings were real; each
 - **404 message:** "Ninsei is off for the “X” profile", with an "Open Plugins" button on Desktop (`host.state.profile`, `host.navigate('/capabilities?tab=plugins')`); the dashboard says `hermes plugins enable ninsei`. Not seen in Desktop yet: it shows only on a profile without the plugin (Justin's default).
 - **Tests:** `tests/test_discovery.py` (7). Two offer tests read Maya's view right after waiting on Sam's; with Commons traffic that raced. They now wait for both views. 210 passed, 1 skipped.
 - **Surprise:** after the reboot Desktop runs a gateway for `xeniasam` (it respawned within seconds when stopped), so Sam's engine lives there and a Sam dashboard gets 409. Left it running.
+
+## Hermes v0.23.0 ("Hearth"), 2026-11-05
+
+- Local Hermes is already on v0.23.0. 210 tests pass and `hermes plugins validate .` passes; nothing we use was removed (the `browser_*` tools and `hermes mcp serve` don't touch us).
+- **Webapp works.** With `webapp.enabled: true` on xeniamaya, `hermes -p xeniamaya webapp --no-open` built the bundle and served it on :9120. Ninsei's Desktop half is **off by default in the Webapp** (Capabilities → Plugins → Ninsei → "Desktop" switch) even when the agent half is on. With it on: sidebar tab, rooms, posting and Ada's reply all work. At 375 px the room view overflows the right edge (Ada's bubble, send button, members icon clip). Not yet tested: a toy in `SandboxedFrame` under the Webapp's CSP.
+- Left `webapp.enabled: true` in xeniamaya's config (test profile only; backup in the session scratchpad). Stopped the gateway the Webapp started.
+- Group Chats (Bot Mode) now cap bot-to-bot exchanges at `max_hops` (default 4) after the last human message. Our rule (agents answer agents only when named, never a reply aimed at themselves) has no hard count.
+- Catalog: entries no longer need a code-owner review (2026-10-28); `requires_hermes` is enforced at install and update.
+
+### Follow-up, same day
+
+- **Phone overflow was ours.** `host.openWorkspace('ninsei', { minWidth: '26rem' })` set the Webapp's workspace pane to `max(22vw, 26rem)` = 416 px, wider than a 375 px phone. Now `min(26rem, 100vw)`; verified in the Webapp at 375 px with nothing past the edge.
+- **Daily message cap** (Justin's call, instead of a Group-Chats-style hop cap): `msgs_daily`, default 60, range 0–2000, in Settings under Budget. Counts chat replies only; game moves and offers go through their own paths and stay under the token budget. At the cap: no floor claim, no model call, one "I've said all I can for today" notice per room per day when addressed (system, doesn't count). Test: `test_message_cap_stops_replies_before_the_model_call`.
+- README: Webapp steps under Install, message cap under How it works.
+- Still not tested: a shared toy inside the Webapp (`SandboxedFrame` under its CSP). Needs a room with a toy.

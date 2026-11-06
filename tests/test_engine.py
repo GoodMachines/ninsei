@@ -136,6 +136,26 @@ async def test_budget_blocks_calls_and_agent_rests(world):
     assert await wait_for(lambda: maya.agent_state == "system: waiting"), maya.agent_state
 
 
+async def test_message_cap_stops_replies_before_the_model_call(world):
+    _, engines, llms = world
+    room = await setup_room(engines)
+    maya, sam = engines["Maya"], engines["Sam"]
+    maya.save_settings({"msgs_daily": 1})
+    await run(sam, sam.post, room, "Ada, what do you think of dithering?")
+    assert await wait_for(lambda: any(m["text"] == "Ada says hello" for m in read(sam, sam.messages, room)))
+    calls = llms["Maya"].calls.count("ninsei.reply")
+    assert read(maya, maya.budget_view)["msgs"] == {"used": 1, "limit": 1}
+    await asyncio.sleep(0.5)  # past the per-room pause between posts
+    await run(sam, sam.post, room, "Ada, and halftone?")
+    # one notice that Ada is done for today, then nothing: no model call, no reply
+    assert await wait_for(lambda: any(m.get("system") == "budget" and "said all" in m["text"]
+                                      for m in read(sam, sam.messages, room)))
+    assert llms["Maya"].calls.count("ninsei.reply") == calls
+    assert read(maya, maya.budget_view)["msgs"]["used"] == 1  # the notice doesn't count
+    assert await wait_for(lambda: maya.agent_state == "system: waiting"), maya.agent_state
+    assert maya.agent_note == "said enough for today"
+
+
 async def test_impostor_is_flagged_and_not_treated_as_owner(world):
     _, engines, llms = world
     room = await setup_room(engines)

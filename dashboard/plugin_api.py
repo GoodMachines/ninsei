@@ -65,6 +65,7 @@ class Settings(BaseModel):
     interests: Optional[list[str]] = None
     line: Optional[str] = None
     budget_daily: Optional[int] = None
+    msgs_daily: Optional[int] = None
     chattiness: Optional[str] = None
     offers: Optional[bool] = None
     share_budget: Optional[bool] = None

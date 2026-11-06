@@ -192,10 +192,12 @@ export default {
       const r = v === 'room' && snap && (snap.rooms || []).find(x => x.id === store.room())
       return r ? '# ' + r.name : v === 'lobby' ? 'Ninsei Lobby' : v === 'hermes' ? 'Your Hermes' : 'Ninsei'
     }
+    // Room-sized on a desktop, but never wider than the screen: the Webapp on a phone is ~375 px wide.
+    const TAB_MIN_WIDTH = 'min(26rem, 100vw)'
     const open = () => {
       if (typeof host.openWorkspace !== 'function') { openPage(); return }
       try {
-        host.openWorkspace('ninsei', { title: tabTitle(), minWidth: '26rem', onClose: () => { tabOpen = false },
+        host.openWorkspace('ninsei', { title: tabTitle(), minWidth: TAB_MIN_WIDTH, onClose: () => { tabOpen = false },
           render: () => jsx(App, { store, embedded: true }) })
         tabOpen = true
       } catch (_) { openPage() }

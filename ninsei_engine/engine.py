@@ -58,7 +58,9 @@ FAKES_PER_HOST = 5         # tall-tale fakes my agent writes for one host per FA
 FAKES_WINDOW = 600
 MAX_PRESENCE = 64          # agents tracked per room
 MAX_CLAIM_TRIGGERS = 500
-LIVE_ROOM = 1800           # seconds: a room with a message this recent counts as active now
+LIVE_ROOM = 1800
+MSGS_DAILY = 60          # room messages my agent may say per day, on top of the token budget
+MAX_MSGS_DAILY = 2000           # seconds: a room with a message this recent counts as active now
 MAX_HIDDEN = 500           # people one owner can hide
 MAX_CLAIMS_PER_TRIGGER = 16
 MAX_PLAYED = 256
@@ -364,7 +366,7 @@ class Engine:
         defaults = {
             "onboarded": False, "display_name": "", "interests": [], "line": "",
             "agent_name": "", "vibe": "warm, curious, a little playful", "face": None,
-            "budget_daily": 40000, "chattiness": "normal", "offers": True, "share_budget": False,
+            "budget_daily": 40000, "msgs_daily": MSGS_DAILY, "chattiness": "normal", "offers": True, "share_budget": False,
             "relays": DEFAULT_RELAYS, "card_published_at": 0, "plan_pct": 0,
         }
         out = {**defaults, **s}
@@ -380,7 +382,7 @@ class Engine:
     def save_settings(self, patch: dict) -> dict:
         cur = self.settings()
         allowed = {"onboarded", "display_name", "interests", "line", "agent_name", "vibe", "face",
-                   "budget_daily", "chattiness", "offers", "share_budget", "relays", "plan_pct"}
+                   "budget_daily", "msgs_daily", "chattiness", "offers", "share_budget", "relays", "plan_pct"}
         for k, v in patch.items():
             if k not in allowed:
                 continue
@@ -393,6 +395,8 @@ class Engine:
                 v = str(v or "")[:200]
             elif k == "budget_daily":
                 v = max(0, min(int(v), 5_000_000))
+            elif k == "msgs_daily":
+                v = max(0, min(int(v), MAX_MSGS_DAILY))
             elif k == "plan_pct":
                 try:
                     v = max(0, min(int(v), 100))
@@ -941,6 +945,9 @@ class Engine:
             return
         if not self._can_post(room):
             return
+        if self._msgs_left() <= 0:
+            await self._rest_notice(room, addressed, "said enough for today")
+            return
         if not await self._win_floor(room, ev["id"], prio, always=addressed):
             return
         # Budget-drain guards: a cap on replies any one other team can trigger, and on model calls
@@ -970,12 +977,18 @@ class Engine:
         await self._say(room, text, reply_to=ev["id"], prio=prio)
 
     async def _say(self, room: str, text: str, reply_to: Optional[str] = None, prio: int = 0, extra: Optional[dict] = None):
+        system = bool((extra or {}).get("system"))
+        if not system and self._msgs_left() <= 0:  # the daily message cap, enforced where every reply posts
+            self._set_state("system: waiting", "said enough for today")
+            return
         self._set_state("activity: speaking")
         tags = []
         if reply_to:
             tb = hashlib.sha256((self._identity()["agent_pk"] + reply_to).encode()).hexdigest()[:8]
             tags = [["e", reply_to, "", "reply"], ["prio", str(prio), tb]]
         await self._publish_room(room, True, {"t": "msg", "text": text[:1200], **(extra or {})}, tags)
+        if not system:
+            self.store.set("said", {"day": today(), "n": self._said_today() + 1})
         self._last_spoke[room] = time.time()
         self._recent_posts.append(time.time())
         await asyncio.sleep(2.5 * self.ts)
@@ -1010,15 +1023,16 @@ class Engine:
         ranked.append((prio, tb, me))
         return max(ranked)[2] == me
 
-    async def _rest_notice(self, room: str, addressed: bool) -> None:
-        self._set_state("system: waiting", "out of budget for today")
+    async def _rest_notice(self, room: str, addressed: bool, why: str = "out of budget for today") -> None:
+        self._set_state("system: waiting", why)
         key = f"{room}:{today()}"
         if addressed and self._rested_notice.get(key) != today():
             self._rested_notice[key] = today()
             name = self.settings()["display_name"] or "my owner"
-            await self._say(room, f"I'm out of room budget for today ({name} sets it). Back tomorrow.",
-                            extra={"system": "budget"})
-            self._set_state("system: waiting", "out of budget for today")
+            line = (f"I've said all I can for today ({name} sets the limit). Back tomorrow." if why.startswith("said")
+                    else f"I'm out of room budget for today ({name} sets it). Back tomorrow.")
+            await self._say(room, line, extra={"system": "budget"})
+            self._set_state("system: waiting", why)
 
     def _add_claim(self, trigger: str, claim: tuple, own: bool = False) -> None:
         """claim = (prio, tiebreak, agent_pk, owner_pk). Bounded: at most MAX_CLAIM_TRIGGERS triggers
@@ -1036,7 +1050,7 @@ class Engine:
         self.claims[trigger] = lst
 
     def _set_state(self, state: str, note: str = "") -> None:
-        if self.agent_state == "system: waiting" and state == "activity: idle" and self._budget_left() <= 0:
+        if self.agent_state == "system: waiting" and state == "activity: idle" and self._resting():
             return
         self.agent_state, self.agent_note = state, note
         if state == "system: error":
@@ -1094,6 +1108,23 @@ class Engine:
             return 0
         return int(self.settings()["budget_daily"]) - sum(self.store.budget_used().values())
 
+    def _said_today(self) -> int:
+        s = self.store.get("said") or {}
+        return int(s.get("n", 0)) if s.get("day") == today() else 0
+
+    def _msgs_left(self) -> int:
+        """The second daily limit: how many more room messages my agent may say today. Enforced in
+        _say, and checked before the model call so a capped agent spends nothing."""
+        return int(self.settings()["msgs_daily"]) - self._said_today()
+
+    def _resting(self) -> str:
+        """Why my agent sits out the rest of today, or "" when it can talk."""
+        if self._budget_left() <= 0:
+            return "out of budget for today"
+        if self._msgs_left() <= 0:
+            return "said enough for today"
+        return ""
+
     def budget_view(self) -> dict:
         used = self.store.budget_used()
         limit = int(self.settings()["budget_daily"])
@@ -1102,7 +1133,8 @@ class Engine:
         plan = self.plan.view()
         if plan["plan_cap_usd"]:  # the ring shows whichever cap is closer
             pct = max(pct, min(1.0, plan["plan_used_usd"] / plan["plan_cap_usd"]))
-        return {"limit": limit, "used": total, "by": used, "pct": pct, **plan}
+        return {"limit": limit, "used": total, "by": used, "pct": pct,
+                "msgs": {"used": self._said_today(), "limit": int(self.settings()["msgs_daily"])}, **plan}
 
     # ============================================================================================
     # proactive offers and the build → share loop
@@ -1974,8 +2006,9 @@ class Engine:
             return
         if self.agent_state == "system: error" and time.time() > self._error_until:
             self.agent_state, self.agent_note = "activity: idle", ""
-        if self._budget_left() <= 0 and self.agent_state == "activity: idle":
-            self.agent_state, self.agent_note = "system: waiting", "out of budget for today"
+        why = self._resting()
+        if why and self.agent_state == "activity: idle":
+            self.agent_state, self.agent_note = "system: waiting", why
         s = self.settings()
         bv = self.budget_view()
         for room in list(self.store.rooms()):
@@ -2205,7 +2238,7 @@ class Engine:
                    "agent": {"pk": ident["agent_pk"], "name": s["agent_name"], "vibe": s["vibe"], "face": s["face"],
                              "state": self.agent_state, "note": self.agent_note}},
             "settings": {k: s[k] for k in ("onboarded", "display_name", "interests", "line", "agent_name", "vibe",
-                                           "face", "budget_daily", "chattiness", "offers", "share_budget", "relays",
+                                           "face", "budget_daily", "msgs_daily", "chattiness", "offers", "share_budget", "relays",
                                            "card_published_at", "plan_pct")},
             "budget": self.budget_view(),
             "model": self.brain.available(),
