@@ -147,3 +147,14 @@ console.log(JSON.stringify([afterFakes, beforeLoad, sent])); port1.close(); port
     assert after_fakes == ["ninsei-toy-hello"]
     assert before_load == ["ninsei-toy-hello"]
     assert sent == ["ninsei-toy-hello", "ninsei-toy-loaded:" + "ab" * 16]
+
+
+def test_every_published_text_states_the_guard_limit():
+    """The guard stops links, redirects and plain scripts, not a toy written to beat it. Each text that
+    describes it must say so (the catalog entry once said flatly that Ninsei closes such a toy)."""
+    texts = {"README.md": "written specifically to beat that check", "submission/catalog-pr.md": "built to defeat the check",
+             "submission/ninsei.yaml": "built to beat the check"}
+    for f, needle in texts.items():
+        assert needle in (ROOT / f).read_text(), f
+    for f in texts:
+        assert "never shown" not in (ROOT / f).read_text(), f
