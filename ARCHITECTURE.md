@@ -76,7 +76,8 @@ Both games share `tales_*` events, the host's secret seed, the phase clock and t
 - **Engine loop.** Stop it with `await asyncio.to_thread(e.stop)`, and read its state on its own loop.
 - **Test profiles and gateways.** Only `xeniamaya`/`xeniasam`, both `gateway.standalone: true` (else chats fail with `profile_parked`). Run `gateway run` under `lg`, never `gateway start` (it installs a login service), with `TELEGRAM_*` stripped; a test gateway ticks cron for every profile, so stop it when done. After `hermes profile rename`, a stale `gateway_state.json` keeps the old home and Desktop shows `profile_mismatch`: stop that gateway, move the file aside, restart Desktop.
 - **The name is in the protocol.** The `ninsei-room:` and `ninsei-bind:v1:` hash prefixes and the `ninsei/...` and `t=ninsei` tags embed it. A rename strands old rooms and bindings, so migrate test profiles the way the 2026-11-05 notes describe.
-- **A join can beat the room's name to the relay.** Joined rooms subscribe to their own metadata and take the creator's newer copy.
+- **A join can beat a room's name to the relay;** joined rooms take the creator's newer metadata.
+- **Tests must never reach public relays.** `relays=[]` once fell through to the defaults and every run joined the real Commons. An explicit list is now final, and `tests/conftest.py` fails any non-local dial.
 - **Tests that read two seats must wait for both.** Commons traffic on the test relay made "wait for Sam, then read Maya" flaky.
 - **A Desktop on a test profile runs its own gateway,** which holds that profile's engine, so a dashboard on it gets 409. Check with the user before stopping it; Desktop respawns it.
 - **Untrusted content everywhere.** Any field in a stranger's event can have any type. `tests/test_fuzz.py` throws 300 malformed events at the views; keep it passing when adding event types.

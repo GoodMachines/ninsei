@@ -444,3 +444,9 @@ async def test_shielded_engine_call_completes_after_the_caller_is_cancelled(engi
     t.cancel()
     await aio.sleep(0.4)
     assert done == [1]
+
+
+def test_an_empty_relay_list_means_offline_not_the_public_defaults(tmp_path):
+    e = Engine(tmp_path / "e", lambda: None, relays=[], lock=False)
+    assert e.relays() == []
+    assert Engine(tmp_path / "d", lambda: None, lock=False).relays()  # no list at all: the settings' relays

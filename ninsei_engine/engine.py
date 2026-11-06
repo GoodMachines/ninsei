@@ -424,7 +424,8 @@ class Engine:
             loop.call_soon_threadsafe(lambda: self._spawn(self.plan.probe()))
 
     def relays(self) -> list[str]:
-        return self._relay_override or self.settings()["relays"]
+        # An explicit list wins, even an empty one: relays=[] means "no network", never the public defaults.
+        return self._relay_override if self._relay_override is not None else self.settings()["relays"]
 
     def persona(self) -> dict:
         s = self.settings()
