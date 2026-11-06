@@ -103,7 +103,7 @@ async def test_the_room_sees_the_agent_building(world):  # noqa: F811
         await run(who, who.post, room, text)
         await asyncio.sleep(0.1)
     # the offer has to reach both views (whichever agent made it, the other side hears it a beat later)
-    assert await wait_for(lambda: all(any(m["t"] == "offer" for m in read(e, e.messages, room)) for e in (maya, sam)), 10)
+    assert await wait_for(lambda: all(any(m["t"] == "offer" for m in read(e, e.messages, room)) for e in (maya, sam)))
     offer = [m for m in read(maya, maya.messages, room) if m["t"] == "offer"][0]
     owner = maya if offer["owner"] == maya._identity()["person_pk"] else sam
     other = sam if owner is maya else maya
@@ -114,21 +114,22 @@ async def test_the_room_sees_the_agent_building(world):  # noqa: F811
     db.execute("INSERT INTO build_progress VALUES (?, 's', 3, 'working', ?)", (offer["id"], time.time()))
     db.commit()
     seen = lambda: (_agent(other, room, owner_pk) or {}).get("build")
-    assert await wait_for(lambda: seen() == {"title": offer["title"], "step": 3, "wait": False}, 8)
-    assert _agent(other, room, owner_pk)["state"] == "activity: working"
+    state = lambda: (_agent(other, room, owner_pk) or {}).get("state")
+    # build and state ride in one presence event; wait for both, so a heartbeat in between can't split them
+    assert await wait_for(lambda: seen() == {"title": offer["title"], "step": 3, "wait": False}
+                          and state() == "activity: working")
     assert read(owner, owner.members, room) and _agent(owner, room, owner_pk)["build"]["step"] == 3
 
     db.execute("UPDATE build_progress SET state='waiting', updated_at=?", (time.time(),))
     db.commit()
-    assert await wait_for(lambda: (seen() or {}).get("wait") is True, 8)
-    assert _agent(other, room, owner_pk)["state"] == "system: waiting"
+    assert await wait_for(lambda: (seen() or {}).get("wait") is True and state() == "system: waiting")
 
     db.execute("UPDATE build_progress SET state='working', updated_at=?", (time.time(),))
     db.commit()
-    assert await wait_for(lambda: (seen() or {}).get("wait") is False, 8)
+    assert await wait_for(lambda: (seen() or {}).get("wait") is False)
     owner.build_path(offer["id"]).write_text("<html><body>toy</body></html>")
-    assert await wait_for(lambda: seen() is None and _agent(other, room, owner_pk)["state"] == "activity: idle", 8)
-    assert owner.store.build_progress() == {}
+    assert await wait_for(lambda: seen() is None and _agent(other, room, owner_pk)["state"] == "activity: idle")
+    assert read(owner, owner.store.build_progress) == {}
 
 
 async def test_a_build_claim_for_someone_elses_offer_is_not_shown(world):  # noqa: F811
@@ -136,7 +137,7 @@ async def test_a_build_claim_for_someone_elses_offer_is_not_shown(world):  # noq
     room = await setup_room(engines)
     maya, sam = engines["Maya"], engines["Sam"]
     sam_agent = sam._identity()["agent_pk"]
-    assert await wait_for(lambda: read(maya, lambda: sam_agent in maya.presence.get(room, {})), 8)
+    assert await wait_for(lambda: read(maya, lambda: sam_agent in maya.presence.get(room, {})))
 
     async def forge():
         p = maya.presence[room][sam_agent]

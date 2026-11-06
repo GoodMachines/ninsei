@@ -3,6 +3,7 @@ still renders: a malformed event may be ignored, but it must never break the roo
 import asyncio
 import json
 import random
+import time
 
 from ninsei_engine import nostr
 from ninsei_engine.engine import KIND_LIVE, KIND_ROOM
@@ -25,9 +26,13 @@ def junk(rng, depth=0):
     return rng.choice(makers)()
 
 
-def _wrap(fn, *a):
+def _timed(fn, *a):
+    """Run fn on the engine's loop and return (result, CPU seconds the engine thread spent on it). CPU time,
+    not wall time: a loaded machine can stall the thread for seconds without the view getting any slower."""
     async def w():
-        return fn(*a)
+        t0 = time.thread_time()
+        out = fn(*a)
+        return out, time.thread_time() - t0
     return w
 
 
@@ -53,10 +58,8 @@ async def test_views_survive_malformed_events(world):
         ev = nostr.build_event(agent if as_agent else person, kind, content, tags)
         await run(maya, maya._on_event, ev, "history")  # "history": no reactions, no model calls
     # Every view the UI reads must still render.
-    import time as _t
-    t0 = _t.time()
-    snap = await asyncio.wrap_future(maya.call(_wrap(maya.snapshot, room)))
-    assert _t.time() - t0 < 1.0, "room views got slow"  # was ~2 s before binding checks were cached
+    snap, cpu = await asyncio.wrap_future(maya.call(_timed(maya.snapshot, room)))
+    assert cpu < 1.0, "room views got slow"  # was ~2 s before binding checks were cached
     assert snap["room"]["id"] == room
     json.dumps(snap)  # and stay JSON-serialisable for the API
     await asyncio.sleep(0)
@@ -69,7 +72,7 @@ async def test_hostile_game_and_claim_floods(world):
     import hashlib
     import time as _t
     from ninsei_engine.engine import FAKES_PER_HOST, MAX_CLAIM_TRIGGERS, MAX_CLAIMS_PER_TRIGGER, MAX_PLAYED
-    from test_engine import wait_for
+    from test_engine import quiet, wait_for
     _, engines, llms = world
     room = await setup_room(engines)
     maya = engines["Maya"]
@@ -90,16 +93,15 @@ async def test_hostile_game_and_claim_floods(world):
         ev = {"id": hashlib.sha256(f"c{i}".encode()).hexdigest(), "pubkey": apk, "created_at": int(_t.time()),
               "kind": KIND_LIVE, "tags": tags, "content": json.dumps(c), "sig": ""}
         await run(maya, maya._on_event, ev, "relay")
-    await asyncio.sleep(1.0)
+    await quiet(maya)  # every fake the flood could get written has been written (or refused) by now
     assert llms["Maya"].calls.count("ninsei.tales.fake") <= FAKES_PER_HOST
     assert len(maya.claims) <= MAX_CLAIM_TRIGGERS
     assert all(len(v) <= MAX_CLAIMS_PER_TRIGGER for v in maya.claims.values())
     assert len(maya._played) <= MAX_PLAYED
-    t0 = _t.time()
-    snap = await asyncio.wrap_future(maya.call(_wrap(maya.snapshot, room)))
-    assert _t.time() - t0 < 1.0
+    snap, cpu = await asyncio.wrap_future(maya.call(_timed(maya.snapshot, room)))
+    assert cpu < 1.0
     json.dumps(snap)
     # the flood's game counts as live (agents then answer only when addressed), and Maya still can talk
     # to her own agent through it
     await run(maya, maya.post, room, "Ada, know a good palette tool?")
-    assert await wait_for(lambda: llms["Maya"].calls.count("ninsei.reply") == 1, 5)
+    assert await wait_for(lambda: llms["Maya"].calls.count("ninsei.reply") == 1)

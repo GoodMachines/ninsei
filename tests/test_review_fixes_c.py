@@ -385,10 +385,12 @@ async def test_shielded_engine_call_completes_after_the_caller_is_cancelled(engi
         return await aio.shield(aio.wrap_future(engine.call(slow)))
 
     t = aio.ensure_future(route())
-    await aio.sleep(0.05)
-    t.cancel()
-    await aio.sleep(0.4)
-    assert done == [1]
+    await aio.sleep(0)  # route() runs up to its await: the engine call is dispatched, slow() has 0.2 s to go
+    t.cancel()  # no await since sleep(0) returned, so the route can't have finished: it is cancelled mid-call
+    with pytest.raises(aio.CancelledError):
+        await t
+    from test_engine import wait_for
+    assert await wait_for(lambda: done == [1])  # ...and the engine finishes the work anyway
 
 
 def test_an_empty_relay_list_means_offline_not_the_public_defaults(tmp_path):

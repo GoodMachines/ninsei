@@ -24,7 +24,7 @@ def count_checks(monkeypatch):
     return calls
 
 
-async def until(cond, timeout=8.0):
+async def until(cond, timeout=30.0):
     end = time.monotonic() + timeout
     while time.monotonic() < end:
         if cond():
@@ -52,12 +52,12 @@ async def test_query_verifies_each_event_once_across_relays_and_calls(monkeypatc
         pool = RelayPool([a.url, b.url])
         pool.start()
         try:
-            assert await pool.wait_open(at_least=2)
+            assert await pool.wait_open(30, at_least=2)
             calls = count_checks(monkeypatch)
-            got = await pool.query([{"kinds": [1]}], timeout=3)
+            got = await pool.query([{"kinds": [1]}], timeout=30)
             assert {e["id"] for e in got} == {e["id"] for e in evs}
             assert calls["n"] == 5          # not 10: the second relay's copies skip verification
-            await pool.query([{"kinds": [1]}], timeout=3)
+            await pool.query([{"kinds": [1]}], timeout=30)
             assert calls["n"] == 5          # and a repeat query doesn't re-verify either
         finally:
             await pool.stop()
@@ -155,8 +155,8 @@ async def test_future_dated_events_dropped_from_one_shot_query():
         pool = RelayPool([r.url])
         pool.start()
         try:
-            assert await pool.wait_open()
-            got = await pool.query([{"kinds": [1]}], timeout=3)
+            assert await pool.wait_open(30)
+            got = await pool.query([{"kinds": [1]}], timeout=30)
             assert [e["content"] for e in got] == ["near"]
         finally:
             await pool.stop()
@@ -238,7 +238,7 @@ async def test_message_published_while_relay_down_arrives_after_restart(tmp_path
         pool = RelayPool([relay.url], outbox=Store(tmp_path / "x.db"))
         pool.start()
         try:
-            assert await pool.wait_open()
+            assert await pool.wait_open(30)
             await relay.stop()
             assert await until(lambda: pool.open_count() == 0)
             ev = nostr.build_event(sk, 1, "sent into the void")
@@ -246,8 +246,8 @@ async def test_message_published_while_relay_down_arrives_after_restart(tmp_path
             assert pool.delivery(ev["id"]) == "pending"
             assert ev["id"] not in relay.events
             await relay.start()
-            assert await until(lambda: ev["id"] in relay.events, 12)
-            assert await until(lambda: pool.delivery(ev["id"]) == "sent", 5)
+            assert await until(lambda: ev["id"] in relay.events)
+            assert await until(lambda: pool.delivery(ev["id"]) == "sent")
         finally:
             await pool.stop()
 
@@ -266,8 +266,8 @@ async def test_pending_event_survives_an_app_restart(tmp_path):
         assert pool2.delivery(ev["id"]) == "pending"
         pool2.start()
         try:
-            assert await until(lambda: ev["id"] in relay.events, 8)
-            assert await until(lambda: pool2.delivery(ev["id"]) == "sent", 5)
+            assert await until(lambda: ev["id"] in relay.events)
+            assert await until(lambda: pool2.delivery(ev["id"]) == "sent")
         finally:
             await pool2.stop()
 
@@ -278,11 +278,11 @@ async def test_accepted_event_is_sent_and_rejected_event_is_failed():
         pool = RelayPool([relay.url])
         pool.start()
         try:
-            assert await pool.wait_open()
+            assert await pool.wait_open(30)
             good = nostr.build_event(sk, 1, "small")
             big = nostr.build_event(sk, 1, "x" * 5000)
-            await pool.publish(good)
-            await pool.publish(big)
+            await pool.publish(good, wait=30)  # returns at the relay's OK; the wait only bounds a hang
+            await pool.publish(big, wait=30)
             assert pool.delivery(good["id"]) == "sent"
             assert pool.delivery(big["id"]) == "failed"
             assert not pool._outbox   # a real rejection is final, not retried forever
@@ -305,8 +305,8 @@ async def test_outbox_is_capped_and_expires(tmp_path):
         p2._delivery[old["id"]] = "pending"
         p2.start()
         try:
-            assert await p2.wait_open()
-            assert await until(lambda: p2.delivery(old["id"]) == "failed", 5)
+            assert await p2.wait_open(30)
+            assert await until(lambda: p2.delivery(old["id"]) == "failed")
             assert old["id"] not in relay.events
         finally:
             await p2.stop()

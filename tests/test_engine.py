@@ -44,13 +44,15 @@ class StubLLM:
         return Result("ok", Usage(10))
 
 
-async def wait_for(pred, timeout=8.0):
-    end = time.time() + timeout
-    while time.time() < end:
+async def wait_for(pred, timeout=30.0):
+    """Poll until `pred()` holds. The timeout is generous on purpose: it only costs time when a test is
+    about to fail anyway, and a loaded machine (other suites, builds) can stretch a 1 s step to 10 s."""
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
         if pred():
             return True
         await asyncio.sleep(0.05)
-    return False
+    return bool(pred())
 
 
 async def run(engine, fn, *a, **k):
@@ -61,23 +63,47 @@ def read(engine, fn, *a):
     """Read engine state on its own loop (like the HTTP API does), never from the test thread directly."""
     async def wrap():
         return fn(*a)
-    return engine.call(wrap).result(5)
+    return engine.call(wrap).result(30)
+
+
+REACTIONS = ("_react", "_answer_as_host")  # what an engine spawns when an event makes its agent act
+
+
+def reacting(engine) -> bool:
+    """True while the engine has a reply, offer or game move in flight. Call on the engine's loop."""
+    return any(getattr(t.get_coro(), "__name__", "") in REACTIONS for t in list(engine._tasks) if not t.done())
+
+
+async def quiet(*engines, timeout=30.0):
+    """Wait until none of these engines is still reacting to anything. A count or a "stayed quiet" check is
+    only final after this: a fixed sleep can end before a slow reply has even made its model call."""
+    for e in engines:
+        busy = (lambda e=e: read(e, reacting, e)) if e.thread else (lambda e=e: reacting(e))
+        assert await wait_for(lambda: not busy(), timeout), f"{e} still reacting after {timeout}s"
 
 
 @pytest.fixture
-async def world(tmp_path):
+async def world(tmp_path, request, monkeypatch):
+    # Game tests (@pytest.mark.long_phases) get fakes and vote phases of 120 s. At the usual 2.25 s and 1.5 s a
+    # loaded machine (load 200 seen) missed the deadline between "phase is vote" and the votes reaching the
+    # host. Every player plays in these tests, so the host still ends each phase as soon as all are in.
+    if request.node.get_closest_marker("long_phases"):
+        from ninsei_engine import game
+        monkeypatch.setattr(game, "FAKE_SECONDS", 2400)
+        monkeypatch.setattr(game, "VOTE_SECONDS", 2400)
+    ts = 0.05
     async with LocalRelay(port=0) as relay:
         engines = {}
         llms = {}
         for name, agent in (("Maya", "Ada"), ("Sam", "Bo")):
             llm = StubLLM(agent)
-            e = Engine(tmp_path / name, lambda llm=llm: llm, relays=[relay.url], lock=False, timescale=0.05)
+            e = Engine(tmp_path / name, lambda llm=llm: llm, relays=[relay.url], lock=False, timescale=ts)
             e.save_settings({"display_name": name, "agent_name": agent, "interests": ["shaders", "synths"],
                              "onboarded": True, "chattiness": "quiet"})
             e.start()
             engines[name], llms[name] = e, llm
         for e in engines.values():
-            assert await asyncio.wrap_future(e.call(e.pool.wait_open, 5))
+            assert await asyncio.wrap_future(e.call(e.pool.wait_open, 30))
         yield relay, engines, llms
         for e in engines.values():
             await asyncio.to_thread(e.stop)
@@ -108,17 +134,19 @@ async def test_addressed_agent_replies_and_only_it(world):
     maya, sam = engines["Maya"], engines["Sam"]
     await run(sam, sam.post, room, "Ada, what do you think of dithering?")
     assert await wait_for(lambda: any(m["text"] == "Ada says hello" for m in read(sam, sam.messages, room)))
-    await asyncio.sleep(0.6)
+    await quiet(maya, sam)  # Bo heard the question at once (it's Sam's own post); his reaction has run out
     assert "ninsei.reply" not in llms["Sam"].calls  # Bo wasn't addressed and chattiness is quiet
 
 
 async def test_open_question_from_owner_one_agent_answers(world):
     _, engines, llms = world
     room = await setup_room(engines)
-    maya = engines["Maya"]
+    maya, sam = engines["Maya"], engines["Sam"]
     await run(maya, maya.post, room, "anyone know a good palette tool?")
-    assert await wait_for(lambda: any(m["role"] == "agent" and m["t"] == "msg" for m in read(maya, maya.messages, room)))
-    await asyncio.sleep(0.5)
+    # Sam's engine gets Maya's question before Ada's answer (one relay, in order), so once the answer is in
+    # Sam's view, Bo's reaction to the question has started; quiet() waits for it and Ada's to finish.
+    assert await wait_for(lambda: any(m["role"] == "agent" and m["t"] == "msg" for m in read(sam, sam.messages, room)))
+    await quiet(maya, sam)
     # Only Maya's own agent treats an open question from its owner as a cue; Bo stays quiet.
     assert llms["Maya"].calls.count("ninsei.reply") == 1
     assert llms["Sam"].calls.count("ninsei.reply") == 0
@@ -145,7 +173,7 @@ async def test_message_cap_stops_replies_before_the_model_call(world):
     assert await wait_for(lambda: any(m["text"] == "Ada says hello" for m in read(sam, sam.messages, room)))
     calls = llms["Maya"].calls.count("ninsei.reply")
     assert read(maya, maya.budget_view)["msgs"] == {"used": 1, "limit": 1}
-    await asyncio.sleep(0.5)  # past the per-room pause between posts
+    assert await wait_for(lambda: read(maya, maya._can_post, room))  # past the per-room pause between posts
     await run(sam, sam.post, room, "Ada, and halftone?")
     # one notice that Ada is done for today, then nothing: no model call, no reply
     assert await wait_for(lambda: any(m.get("system") == "budget" and "said all" in m["text"]
@@ -165,7 +193,7 @@ async def test_impostor_is_flagged_and_not_treated_as_owner(world):
     assert await wait_for(lambda: any(m.get("impostor") for m in read(maya, maya.messages, room)))
     flagged = [m for m in read(maya, maya.messages, room) if m.get("impostor")][-1]
     assert flagged["impostor"]["agent"] == "Ada"
-    lines = maya._transcript(room)
+    lines = read(maya, maya._transcript, room)
     assert any(l.role == "unverified" for l in lines)
     assert not any(l.role == "owner" and "API keys" in l.text for l in lines)
 
@@ -179,14 +207,18 @@ async def test_offer_build_share_loop(world, tmp_path):
         await run(who, who.post, room, text)
         await asyncio.sleep(0.1)
     # the offer has to reach both views (whichever agent made it, the other side hears it a beat later)
-    assert await wait_for(lambda: all(any(m["t"] == "offer" for m in read(e, e.messages, room)) for e in (maya, sam)), 10)
+    assert await wait_for(lambda: all(any(m["t"] == "offer" for m in read(e, e.messages, room)) for e in (maya, sam)))
     offer = [m for m in read(maya, maya.messages, room) if m["t"] == "offer"][0]
     assert offer["yours"] if offer["owner"] == maya._identity()["person_pk"] else True
     owner_engine = maya if offer["owner"] == maya._identity()["person_pk"] else sam
     other = sam if owner_engine is maya else maya
-    # the stranger never sees the private task text
-    other_view = [m for m in other.messages(room) if m["t"] == "offer"][0]
-    assert other_view["task"] is None
+    # the stranger never sees the private task text. Look the same offer up by id: if both agents pitched
+    # (two floors won at once on a slow machine), "the first offer" in the other view can be the other's own,
+    # whose task it rightly sees.
+    assert offer["task"] is not None if offer["yours"] else offer["task"] is None
+    assert await wait_for(lambda: any(m["id"] == offer["id"] for m in read(other, other.messages, room)))
+    other_view = next(m for m in read(other, other.messages, room) if m["id"] == offer["id"])
+    assert other_view["task"] is None and not other_view["yours"]
     res = await run(owner_engine, owner_engine.answer_offer, offer["id"], True, "Make it tiny.")
     assert "untrusted" in res["prompt"] and res["path"].endswith("index.html")
     # the owner's chat gets told to draw the offer card, and the directive fits a hidden-turn budget
@@ -194,25 +226,27 @@ async def test_offer_build_share_loop(world, tmp_path):
     assert directive in res["prompt"] and len(directive) < 500
     p = owner_engine.build_path(offer["id"])
     p.write_text("<html><body>toy</body></html>")
-    assert await wait_for(lambda: (owner_engine.store.get("offers") or {})[offer["id"]]["status"] == "ready", 5)
+    assert await wait_for(lambda: (read(owner_engine, owner_engine.store.get, "offers") or {})[offer["id"]]["status"]
+                          == "ready")
     await run(owner_engine, owner_engine.share_build, offer["id"], "Pixel sorter")
-    assert await wait_for(lambda: any(m["t"] == "share" for m in other.messages(room)))
-    share = [m for m in other.messages(room) if m["t"] == "share"][0]
-    shared = other.share_html(room, share["id"])
+    assert await wait_for(lambda: any(m["t"] == "share" for m in read(other, other.messages, room)))
+    share = [m for m in read(other, other.messages, room) if m["t"] == "share"][0]
+    shared = read(other, other.share_html, room, share["id"])
     assert shared.startswith('<meta http-equiv="Content-Security-Policy"') and shared.endswith("<html><body>toy</body></html>")
 
 
+@pytest.mark.long_phases
 async def test_tall_tales_round(world):
     _, engines, llms = world
     room = await setup_room(engines)
     maya, sam = engines["Maya"], engines["Sam"]
-    assert await wait_for(lambda: len(maya.presence.get(room, {})) >= 2)
+    assert await wait_for(lambda: len(read(maya, lambda: maya.presence.get(room, {}))) >= 2)
     await run(maya, maya.start_tales, room, 1)
     assert await wait_for(lambda: (read(sam, sam.game_view, room) or {}).get("phase") == "fakes")
     g = read(sam, sam.game_view, room)
     await run(sam, sam.submit_fake, room, g["gid"], g["n"], "seven")
     await run(maya, maya.submit_fake, room, g["gid"], g["n"], "nine")
-    assert await wait_for(lambda: (read(sam, sam.game_view, room) or {}).get("phase") == "vote", 10)
+    assert await wait_for(lambda: (read(sam, sam.game_view, room) or {}).get("phase") == "vote")
     g = read(sam, sam.game_view, room)
     texts = {o["text"] for o in g["options"]}
     assert "three" in texts and "Bo hearts" in texts and "seven" in texts
@@ -220,28 +254,29 @@ async def test_tall_tales_round(world):
     bo_fake = [o for o in g["options"] if o["text"] == "Bo hearts"][0]["id"]
     await run(sam, sam.submit_vote, room, g["gid"], g["n"], truth)
     await run(maya, maya.submit_vote, room, g["gid"], g["n"], bo_fake)  # Maya is fooled by Bo
-    assert await wait_for(lambda: (read(sam, sam.game_view, room) or {}).get("phase") in ("reveal", "end"), 10)
-    assert await wait_for(lambda: (read(sam, sam.game_view, room) or {}).get("phase") == "end", 10)
+    assert await wait_for(lambda: (read(sam, sam.game_view, room) or {}).get("phase") in ("reveal", "end"))
+    assert await wait_for(lambda: (read(sam, sam.game_view, room) or {}).get("phase") == "end")
     scores = read(sam, sam.game_view, room)["scores"]
     sam_pk = sam._identity()["person_pk"]
     assert scores[sam_pk] == 3  # 2 for the truth + 1 for Bo fooling Maya
     assert "ninsei.tales.fake" in llms["Sam"].calls and "ninsei.tales.fake" not in llms["Maya"].calls  # Ada hosts
 
 
+@pytest.mark.long_phases
 async def test_whos_the_agent_round(world):
     """Everyone answers (both agents too, the host's included), people flag the agents, the reveal says
     who wrote what. No question-writing model call: prompts are curated."""
     _, engines, llms = world
     room = await setup_room(engines)
     maya, sam = engines["Maya"], engines["Sam"]
-    assert await wait_for(lambda: len(maya.presence.get(room, {})) >= 2)
+    assert await wait_for(lambda: len(read(maya, lambda: maya.presence.get(room, {}))) >= 2)
     await run(maya, maya.start_tales, room, 1, mode="agent")
     assert await wait_for(lambda: (read(sam, sam.game_view, room) or {}).get("phase") == "fakes")
     g = read(sam, sam.game_view, room)
     assert g["mode"] == "agent" and g["q"]
     await run(sam, sam.submit_fake, room, g["gid"], g["n"], "a sandwich, honestly")
     await run(maya, maya.submit_fake, room, g["gid"], g["n"], "leftover curry")
-    assert await wait_for(lambda: (read(sam, sam.game_view, room) or {}).get("phase") == "vote", 10)
+    assert await wait_for(lambda: (read(sam, sam.game_view, room) or {}).get("phase") == "vote")
     g = read(sam, sam.game_view, room)
     by_text = {o["text"]: o["id"] for o in g["options"]}
     assert set(by_text) == {"a sandwich, honestly", "leftover curry", "cold pizza probably (Ada)", "cold pizza probably (Bo)"}
@@ -250,8 +285,8 @@ async def test_whos_the_agent_round(world):
     # Sam spots Ada and calls Maya a person: 2 right calls. Maya flags Sam (wrong) and misses Bo (wrong).
     await run(sam, sam.submit_vote, room, g["gid"], g["n"], "", [by_text["cold pizza probably (Ada)"]])
     await run(maya, maya.submit_vote, room, g["gid"], g["n"], "", [by_text["a sandwich, honestly"]])
-    assert await wait_for(lambda: (read(sam, sam.game_view, room) or {}).get("phase") in ("reveal", "end"), 10)
-    assert await wait_for(lambda: (read(sam, sam.game_view, room) or {}).get("phase") == "end", 10)
+    assert await wait_for(lambda: (read(sam, sam.game_view, room) or {}).get("phase") in ("reveal", "end"))
+    assert await wait_for(lambda: (read(sam, sam.game_view, room) or {}).get("phase") == "end")
     end = read(sam, sam.game_view, room)
     sam_pk, maya_pk = sam._identity()["person_pk"], maya._identity()["person_pk"]
     assert end["scores"] == {sam_pk: 4}  # 2 right calls + Sam passed as an agent + Bo passed as a person
@@ -264,21 +299,22 @@ async def test_whos_the_agent_round(world):
     assert lines and lines[-1]["mode"] == "agent"
 
 
+@pytest.mark.long_phases
 async def test_whos_the_agent_reveal_says_who_wrote_what(world):
     _, engines, _ = world
     room = await setup_room(engines)
     maya, sam = engines["Maya"], engines["Sam"]
-    assert await wait_for(lambda: len(maya.presence.get(room, {})) >= 2)
+    assert await wait_for(lambda: len(read(maya, lambda: maya.presence.get(room, {}))) >= 2)
     await run(maya, maya.start_tales, room, 1, mode="agent")
     assert await wait_for(lambda: (read(sam, sam.game_view, room) or {}).get("phase") == "fakes")
     g = read(sam, sam.game_view, room)
     await run(sam, sam.submit_fake, room, g["gid"], g["n"], "toast")
     await run(maya, maya.submit_fake, room, g["gid"], g["n"], "eggs")
-    assert await wait_for(lambda: (read(sam, sam.game_view, room) or {}).get("phase") == "vote", 10)
+    assert await wait_for(lambda: (read(sam, sam.game_view, room) or {}).get("phase") == "vote")
     g = read(sam, sam.game_view, room)
     await run(sam, sam.submit_vote, room, g["gid"], g["n"], "", [])
     await run(maya, maya.submit_vote, room, g["gid"], g["n"], "", [])
-    assert await wait_for(lambda: bool((read(sam, sam.game_view, room) or {}).get("reveal")), 10)
+    assert await wait_for(lambda: bool((read(sam, sam.game_view, room) or {}).get("reveal")))
     rv = read(sam, sam.game_view, room)["reveal"]
     text = {o["id"]: o["text"] for o in g["options"]}
     kinds = {text[k]: v for k, v in rv["kinds"].items()}
@@ -287,26 +323,27 @@ async def test_whos_the_agent_reveal_says_who_wrote_what(world):
     assert set(rv["voters"]) == {sam._identity()["person_pk"], maya._identity()["person_pk"]}
 
 
+@pytest.mark.long_phases
 async def test_tales_phase_secs_and_reveal_names(world):
     _, engines, _ = world
     room = await setup_room(engines)
     maya, sam = engines["Maya"], engines["Sam"]
-    assert await wait_for(lambda: len(maya.presence.get(room, {})) >= 2)
+    assert await wait_for(lambda: len(read(maya, lambda: maya.presence.get(room, {}))) >= 2)
     await run(maya, maya.start_tales, room, 1)
     assert await wait_for(lambda: (read(sam, sam.game_view, room) or {}).get("phase") == "fakes")
     g = read(sam, sam.game_view, room)
     assert g["secs"] > 0  # the countdown knows the phase length
     await run(sam, sam.submit_fake, room, g["gid"], g["n"], "seven")
     await run(maya, maya.submit_fake, room, g["gid"], g["n"], "nine")
-    assert await wait_for(lambda: (read(sam, sam.game_view, room) or {}).get("phase") == "vote", 10)
+    assert await wait_for(lambda: (read(sam, sam.game_view, room) or {}).get("phase") == "vote")
     g = read(sam, sam.game_view, room)
     assert g["secs"] > 0
     truth = [o for o in g["options"] if o["text"] == "three"][0]["id"]
     await run(sam, sam.submit_vote, room, g["gid"], g["n"], truth)
     await run(maya, maya.submit_vote, room, g["gid"], g["n"], truth)
-    assert await wait_for(lambda: (read(sam, sam.game_view, room) or {}).get("phase") in ("reveal", "end"), 10)
+    assert await wait_for(lambda: (read(sam, sam.game_view, room) or {}).get("phase") in ("reveal", "end"))
     assert await wait_for(lambda: (read(sam, sam.game_view, room) or {}).get("phase") == "reveal"
-                          or bool(((read(sam, sam.game_view, room) or {}).get("reveal") or {}).get("names")), 10)
+                          or bool(((read(sam, sam.game_view, room) or {}).get("reveal") or {}).get("names")))
     names = read(sam, sam.game_view, room)["reveal"]["names"]
     assert names.get(sam._identity()["person_pk"]) == "Sam"
 
@@ -378,4 +415,4 @@ async def test_a_join_that_beats_the_room_name_still_gets_it(world):
     real = nz.build_event(ident["person_sk"], KIND_META, json.dumps(meta), [["d", f"ninsei/room/{rid}"]], pow_bits=0)
     await run(maya, maya.pool.publish, forged)
     await run(maya, maya.pool.publish, real)
-    assert await wait_for(lambda: read(sam, sam.store.rooms)[rid]["name"] == "late club", 8)
+    assert await wait_for(lambda: read(sam, sam.store.rooms)[rid]["name"] == "late club")

@@ -14,7 +14,7 @@ async def relay():
         yield r
 
 
-async def rx(ws, timeout=2.0):
+async def rx(ws, timeout=15.0):
     return json.loads(await asyncio.wait_for(ws.recv(), timeout))
 
 
@@ -67,7 +67,8 @@ async def test_live_forwarding_and_close(relay):
         m = await rx(sub)
         assert m[:2] == ["EVENT", "live"] and m[2]["id"] == ev["id"]
         await sub.send(json.dumps(["CLOSE", "live"]))
-        await asyncio.sleep(0.05)
+        # The relay handles one connection's messages in order: once this REQ's EOSE is back, CLOSE is done.
+        assert await req(sub, "sync", {"kinds": [2]}) == []
         await publish(pub, nostr.build_event(sk, 1, "after close"))
         with pytest.raises(asyncio.TimeoutError):
             await rx(sub, 0.2)
@@ -147,7 +148,7 @@ async def test_drop_and_delay():
             await publish(pub, nostr.build_event(sk, 1, "dropped"))
             with pytest.raises(asyncio.TimeoutError):
                 await rx(sub, 0.2)
-    async with LocalRelay(port=0, delay_ms=300) as relay:
+    async with LocalRelay(port=0, delay_ms=1000) as relay:  # far past the 0.1 s "not yet" window, even under load
         async with connect(relay.url) as sub, connect(relay.url) as pub:
             await req(sub, "d", {"kinds": [1]})
             await publish(pub, nostr.build_event(sk, 1, "slow"))

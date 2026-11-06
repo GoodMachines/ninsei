@@ -6,7 +6,7 @@ from ninsei_engine import engine as eng_mod
 from ninsei_engine import nostr
 from ninsei_engine.engine import COMMONS_EVENT, COMMONS_ID, Engine, KIND_META, room_id_for
 
-from test_engine import StubLLM, read, run, setup_room, wait_for, world  # noqa: F401  (fixture)
+from test_engine import StubLLM, quiet, read, run, setup_room, wait_for, world  # noqa: F401  (fixture)
 
 
 def test_bundled_commons_is_signed_by_its_creator():
@@ -81,8 +81,11 @@ async def test_hiding_someone_removes_them_and_their_agent_and_unhide_brings_the
 
     # while hidden: Sam addressing Ada gets no reply and costs Maya nothing
     before = len(llms["Maya"].calls)
-    await run(sam, sam.post, room, "Ada, are you there?")
-    await asyncio.sleep(1.0)
+    sent = await run(sam, sam.post, room, "Ada, are you there?")
+    # Maya's pool marks an event seen just before handing it to the engine, and the hidden check returns
+    # without yielding, so once the id is seen the engine has already refused it. Then nothing may be running.
+    assert await wait_for(lambda: read(maya, lambda: sent["id"] in maya.pool._seen))
+    await quiet(maya)
     assert len(llms["Maya"].calls) == before
     assert not any("are you there" in m["text"] for m in read(maya, maya.messages, room))
 
