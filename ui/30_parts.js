@@ -79,10 +79,75 @@ function Notice(props) {
   ] })
 }
 
+// A toy may show one page: its own. Every platform's frame reports each load inside it (Desktop's
+// iframe, the Webapp's guest shell, the dashboard iframe). The frame stays hidden until its first
+// load comes with the key from the guard script the backend puts at the top of every toy document
+// (ninsei_engine/toy.py TOY_GUARD; the key itself never appears in the document). Any later load means the toy navigated (a link, location=,
+// a refresh tag, a reload), and the frame is closed. A toy that navigates while its own page is still
+// loading reports only the new page's load, without the key, so that page is never shown; after 10 s
+// the viewer is told it hasn't started (a slow honest toy still appears when its key arrives).
+// The request has already gone out either way, so that page may have seen the viewer's IP address.
+function toyGuard(key, show, leave, later, stuck) {
+  let loads = 0
+  let proved = false
+  let helloed = false
+  return {
+    hello() { if (helloed) return null; helloed = true; return key },
+    message(data) {
+      if (proved || data !== 'ninsei-toy-loaded:' + key || loads > 1) return
+      proved = true
+      if (loads === 1) show()
+    },
+    load() {
+      loads += 1
+      if (loads > 1) return leave()
+      if (proved) return show()
+      later(() => { if (!proved) stuck() }, 10000)
+    }
+  }
+}
+
+function toyKey() {
+  const a = new Uint8Array(16)
+  crypto.getRandomValues(a)
+  return Array.from(a, b => b.toString(16).padStart(2, '0')).join('')
+}
+
 // A toy someone shared: never loaded until the viewer presses Run, and then only inside an
 // opaque-origin sandbox (scripts on, no same-origin, no popups, no top navigation).
 function ToyFrame(props) {
-  return jsx('div', { className: 'h-frame', 'data-tall': !!props.tall, children: jsx(K.Toy, { html: props.html, title: props.title || 'Shared toy' }) })
+  return jsx(GuardedToy, { key: props.html, html: props.html, title: props.title, tall: props.tall })
+}
+
+function GuardedToy(props) {
+  const [state, setState] = useState('starting')
+  const frame = useRef(null)
+  const guard = useRef(null)
+  const timers = useRef([])
+  if (!guard.current) {
+    guard.current = toyGuard(toyKey(), () => setState(s => s === 'closed' ? s : 'shown'), () => setState('closed'),
+      (fn, ms) => timers.current.push(window.setTimeout(fn, ms)), () => setState(s => s === 'starting' ? 'stuck' : s))
+  }
+  useEffect(() => {
+    const onMessage = e => {
+      const win = frame.current && frame.current.contentWindow
+      if (!win || e.source !== win) return
+      if (e.data === 'ninsei-toy-hello') {
+        const key = guard.current.hello()
+        if (key) win.postMessage(key, '*')
+      } else if (typeof e.data === 'string') guard.current.message(e.data)
+    }
+    window.addEventListener('message', onMessage)
+    return () => { window.removeEventListener('message', onMessage); timers.current.forEach(t => window.clearTimeout(t)) }
+  }, [])
+  if (state === 'closed') {
+    return jsx(Notice, { icon: 'warning', role: 'alert', children: 'This toy tried to open a web page, so Ninsei closed it. That page may have seen your IP address.' })
+  }
+  return jsxs('div', { className: 'h-frame', 'data-tall': !!props.tall, 'data-starting': state !== 'shown', children: [
+    state === 'stuck' && jsx('div', { className: 'h-frame-note h-faint h-small', role: 'status',
+      children: 'This toy hasn’t finished starting. If it tried to open a web page, Ninsei is keeping that page hidden.' }),
+    jsx(K.Toy, { html: props.html, title: props.title || 'Shared toy', onLoad: () => guard.current.load(), frameRef: frame })
+  ] })
 }
 
 // A modal with the kit's own dialog. `footer` sits at the bottom right.

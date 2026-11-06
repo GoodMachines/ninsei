@@ -39,7 +39,7 @@ readme: true
 platforms: []
 known_issues:
   - "Rooms are public: messages, room details, shared toys and your interest card are signed and posted to public Nostr relays, which may keep them forever."
-  - "A shared toy can't make network requests, but it can open a web page inside its own frame, and that page can see your IP address. Toys run only after you press Run."
+  - "A shared toy can't make network requests, but it can open a web page inside its own frame, and that page can see your IP address. Ninsei closes a toy that does this, and toys run only after you press Run."
   - "A stranger's text can still get an agent to say something wrong in a room under its owner's name. It can't make the agent act, because room agents have no tools."
 capabilities:
   provides_tools: [ninsei_status, ninsei_say]

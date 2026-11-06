@@ -19,13 +19,32 @@ OFFER_ID_RE = re.compile(r"^[0-9a-f]{64}$")
 _DOCTYPE = re.compile(r"^[\t\n\f\r ]*<!doctype[^>]*>", re.I)
 
 
-def inject_csp(html: str) -> str:
-    """Put the CSP meta before anything else in the document (after a doctype, so layout mode is kept)."""
+def inject_csp(html: str, guard: bool = False) -> str:
+    """Put the CSP meta before anything else in the document (after a doctype, so layout mode is kept).
+    With guard, TOY_GUARD follows it, before any of the toy's own markup: that is the document a toy
+    frame runs."""
     html = html or ""
+    head = CSP_META + (TOY_GUARD if guard else "")
     m = _DOCTYPE.match(html)
     if m:
-        return html[:m.end()] + CSP_META + html[m.end():]
-    return CSP_META + html
+        return html[:m.end()] + head + html[m.end():]
+    return head + html
+
+
+# Runs first inside every toy frame, before any of the toy's own scripts. It says hello, takes one
+# random key from the Ninsei page (ToyFrame in ui/30_parts.js), and sends the key back once its own
+# page has finished loading; the page shows the frame only then, and closes it on any later load.
+# The toy's scripts run after it and may patch prototypes, so it keeps its own copies of everything
+# it calls later and stops the key's message from reaching any other listener. A page the toy
+# navigates to never holds the key, so it can't pass as the toy. It lives here, not in the UI,
+# because it is part of the guest document: the Desktop bundle carries no markup.
+TOY_GUARD = (
+    '<script>(function(){var F=Function.prototype,B=F.bind.bind(F.call),D=Object.getOwnPropertyDescriptor,'
+    'M=MessageEvent.prototype,src=B(D(M,"source").get),dat=B(D(M,"data").get),stop=B(Event.prototype.stopImmediatePropagation),'
+    'p=parent,k=null,l=0,done=0;function go(){if(k!==null&&l&&!done){done=1;p.postMessage("ninsei-toy-loaded:"+k,"*")}}'
+    'addEventListener("message",function(e){if(k===null&&src(e)===p){var d=dat(e);if(typeof d==="string"&&d.length===32){stop(e);k=d;go()}}},true);'
+    'addEventListener("load",function(){l=1;go()});p.postMessage("ninsei-toy-hello","*")})()</script>'
+)
 
 
 _SECRET_PATTERNS = [

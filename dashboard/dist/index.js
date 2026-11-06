@@ -651,6 +651,9 @@ const CSS = TOKENS + `
 .h-frame{width:100%;height:340px;border:1px solid var(--h-line);border-radius:8px;background:var(--h-bg);display:block}
 .h-frame[data-tall=true]{height:620px}
 .h-frame iframe{width:100%;height:100%;border:0;border-radius:8px;display:block}
+.h-frame[data-starting=true] iframe{visibility:hidden}
+.h-frame{position:relative}
+.h-frame-note{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;padding:16px;text-align:center}
 
 .h-composer{padding:10px 18px 14px;max-width:860px;width:100%;margin:0 auto;flex:none}
 .h-pinned{max-height:min(44vh,520px);overflow-y:auto;overscroll-behavior:contain}
@@ -881,10 +884,75 @@ function Notice(props) {
   ] })
 }
 
+// A toy may show one page: its own. Every platform's frame reports each load inside it (Desktop's
+// iframe, the Webapp's guest shell, the dashboard iframe). The frame stays hidden until its first
+// load comes with the key from the guard script the backend puts at the top of every toy document
+// (ninsei_engine/toy.py TOY_GUARD; the key itself never appears in the document). Any later load means the toy navigated (a link, location=,
+// a refresh tag, a reload), and the frame is closed. A toy that navigates while its own page is still
+// loading reports only the new page's load, without the key, so that page is never shown; after 10 s
+// the viewer is told it hasn't started (a slow honest toy still appears when its key arrives).
+// The request has already gone out either way, so that page may have seen the viewer's IP address.
+function toyGuard(key, show, leave, later, stuck) {
+  let loads = 0
+  let proved = false
+  let helloed = false
+  return {
+    hello() { if (helloed) return null; helloed = true; return key },
+    message(data) {
+      if (proved || data !== 'ninsei-toy-loaded:' + key || loads > 1) return
+      proved = true
+      if (loads === 1) show()
+    },
+    load() {
+      loads += 1
+      if (loads > 1) return leave()
+      if (proved) return show()
+      later(() => { if (!proved) stuck() }, 10000)
+    }
+  }
+}
+
+function toyKey() {
+  const a = new Uint8Array(16)
+  crypto.getRandomValues(a)
+  return Array.from(a, b => b.toString(16).padStart(2, '0')).join('')
+}
+
 // A toy someone shared: never loaded until the viewer presses Run, and then only inside an
 // opaque-origin sandbox (scripts on, no same-origin, no popups, no top navigation).
 function ToyFrame(props) {
-  return jsx('div', { className: 'h-frame', 'data-tall': !!props.tall, children: jsx(K.Toy, { html: props.html, title: props.title || 'Shared toy' }) })
+  return jsx(GuardedToy, { key: props.html, html: props.html, title: props.title, tall: props.tall })
+}
+
+function GuardedToy(props) {
+  const [state, setState] = useState('starting')
+  const frame = useRef(null)
+  const guard = useRef(null)
+  const timers = useRef([])
+  if (!guard.current) {
+    guard.current = toyGuard(toyKey(), () => setState(s => s === 'closed' ? s : 'shown'), () => setState('closed'),
+      (fn, ms) => timers.current.push(window.setTimeout(fn, ms)), () => setState(s => s === 'starting' ? 'stuck' : s))
+  }
+  useEffect(() => {
+    const onMessage = e => {
+      const win = frame.current && frame.current.contentWindow
+      if (!win || e.source !== win) return
+      if (e.data === 'ninsei-toy-hello') {
+        const key = guard.current.hello()
+        if (key) win.postMessage(key, '*')
+      } else if (typeof e.data === 'string') guard.current.message(e.data)
+    }
+    window.addEventListener('message', onMessage)
+    return () => { window.removeEventListener('message', onMessage); timers.current.forEach(t => window.clearTimeout(t)) }
+  }, [])
+  if (state === 'closed') {
+    return jsx(Notice, { icon: 'warning', role: 'alert', children: 'This toy tried to open a web page, so Ninsei closed it. That page may have seen your IP address.' })
+  }
+  return jsxs('div', { className: 'h-frame', 'data-tall': !!props.tall, 'data-starting': state !== 'shown', children: [
+    state === 'stuck' && jsx('div', { className: 'h-frame-note h-faint h-small', role: 'status',
+      children: 'This toy hasn’t finished starting. If it tried to open a web page, Ninsei is keeping that page hidden.' }),
+    jsx(K.Toy, { html: props.html, title: props.title || 'Shared toy', onLoad: () => guard.current.load(), frameRef: frame })
+  ] })
 }
 
 // A modal with the kit's own dialog. `footer` sits at the bottom right.
@@ -1482,7 +1550,7 @@ function ShareDialog(props) {
       err ? jsx(Notice, { icon: 'warning', role: 'alert', children: err })
         : !build ? jsx('div', { className: 'h-faint', children: 'Reading the build…' })
         : jsxs(Fragment, { children: [
-          jsx(ToyFrame, { html: build.html, title: title }),
+          jsx(ToyFrame, { html: build.frame || '', title: title }),
           jsx(Field, { label: 'Title', id: 'h-share-title', children: jsx(K.Input, { id: 'h-share-title', value: title, maxLength: 80, onChange: e => setTitle(e.target.value) }) }),
           jsx(Notice, { icon: 'globe', children: jsxs('span', { children: [
             'This exact file (', jsx('b', { children: fmtBytes(build.bytes) }), ') is published publicly to the room’s relays. Everyone in the room can run it in a sandbox. Public relays keep messages effectively forever.'
@@ -2918,7 +2986,7 @@ function StatusChip(props) {
     Toggle,
     Tip: props => jsx('span', { title: typeof props.label === 'string' ? props.label : undefined, style: { display: 'inline-flex' }, children: props.children }),
     // a shared toy: opaque origin (no allow-same-origin), scripts only
-    Toy: props => jsx('iframe', { title: props.title, sandbox: 'allow-scripts', srcDoc: withCsp(props.html), referrerPolicy: 'no-referrer' })
+    Toy: props => jsx('iframe', { title: props.title, sandbox: 'allow-scripts', srcDoc: withCsp(props.html), referrerPolicy: 'no-referrer', onLoad: props.onLoad, ref: props.frameRef })
   }
 
   const DASH_CSS = `

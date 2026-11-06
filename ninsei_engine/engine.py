@@ -1312,7 +1312,7 @@ class Engine:
         raw = self._read_build_raw(offer_id)
         o = (self.store.get("offers") or {}).get(offer_id) or {}
         size = serialized_size(self._share_content(o, raw, title))
-        return {"html": inject_csp(raw), "bytes": len(raw.encode("utf-8")), "serialized_bytes": size,
+        return {"html": inject_csp(raw), "frame": inject_csp(raw, guard=True), "bytes": len(raw.encode("utf-8")), "serialized_bytes": size,
                 "limit": SHARE_SERIALIZED_LIMIT, "fits": size <= SHARE_SERIALIZED_LIMIT,
                 "secrets": scan_secrets(raw)}
 
@@ -2244,7 +2244,7 @@ class Engine:
         c = self._content(e)
         if c.get("t") != "share" or self.owner_of(e):
             raise KeyError("not a share")
-        return inject_csp(str(c.get("html", ""))[:MAX_SHARE_BYTES])
+        return inject_csp(str(c.get("html", ""))[:MAX_SHARE_BYTES], guard=True)
 
     def snapshot(self, room: Optional[str] = None) -> dict:
         ident = self._identity()

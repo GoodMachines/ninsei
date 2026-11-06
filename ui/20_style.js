@@ -98,6 +98,9 @@ const CSS = TOKENS + `
 .h-frame{width:100%;height:340px;border:1px solid var(--h-line);border-radius:8px;background:var(--h-bg);display:block}
 .h-frame[data-tall=true]{height:620px}
 .h-frame iframe{width:100%;height:100%;border:0;border-radius:8px;display:block}
+.h-frame[data-starting=true] iframe{visibility:hidden}
+.h-frame{position:relative}
+.h-frame-note{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;padding:16px;text-align:center}
 
 .h-composer{padding:10px 18px 14px;max-width:860px;width:100%;margin:0 auto;flex:none}
 .h-pinned{max-height:min(44vh,520px);overflow-y:auto;overscroll-behavior:contain}

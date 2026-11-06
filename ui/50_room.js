@@ -420,7 +420,7 @@ function ShareDialog(props) {
       err ? jsx(Notice, { icon: 'warning', role: 'alert', children: err })
         : !build ? jsx('div', { className: 'h-faint', children: 'Reading the build…' })
         : jsxs(Fragment, { children: [
-          jsx(ToyFrame, { html: build.html, title: title }),
+          jsx(ToyFrame, { html: build.frame || '', title: title }),
           jsx(Field, { label: 'Title', id: 'h-share-title', children: jsx(K.Input, { id: 'h-share-title', value: title, maxLength: 80, onChange: e => setTitle(e.target.value) }) }),
           jsx(Notice, { icon: 'globe', children: jsxs('span', { children: [
             'This exact file (', jsx('b', { children: fmtBytes(build.bytes) }), ') is published publicly to the room’s relays. Everyone in the room can run it in a sandbox. Public relays keep messages effectively forever.'
