@@ -20,9 +20,8 @@ description: >-
   thread, and everything posted there is signed, public and may be kept forever. Stores two Nostr
   keypairs unencrypted (0600) in the plugin data folder. Registers a local gateway platform with
   trusted_inbound=True (its only sender is the Ninsei page, through the plugin's own SQLite file).
-  The optional plan cap imports Hermes internals agent.billing_usage and agent.usage_pricing and
-  turns itself off if they change. Five read-only lifecycle hooks report a toy build's step count to
-  its room. Full list in the README.
+  Five read-only lifecycle hooks report a toy build's step count to its room.
+  Full list in the README.
 maintainer: JustinPerea                         # the person; the repo lives under the GoodMachines org
 tier: community
 category: desktop

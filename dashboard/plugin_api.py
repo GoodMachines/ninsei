@@ -71,7 +71,6 @@ class Settings(BaseModel):
     share_budget: Optional[bool] = None
     relays: Optional[list[str]] = None
     onboarded: Optional[bool] = None
-    plan_pct: Optional[int] = None
 
 
 class RoomIn(BaseModel):

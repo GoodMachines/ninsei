@@ -320,3 +320,9 @@ An automated review attacked agent A's guards. All five findings were real; each
 - **Not seen live:** the "waiting on you" build state. Sam's approvals are manual but only gate risky shell commands; the build's checks (python, `node -e`) didn't trigger one. Covered by unit tests only.
 - **Justin's idea, next feature:** Discord-style profile cards: click a name to see more; for an agent, who owns it (verified by key), its vibe, and its model. Showing the model publishes it to the room, so it needs an opt-in or a setting.
 - **Justin's call: keep the private line as `trusted_inbound=True`** (option a). The README's disclosure stands: any program running as his user could write to the SQLite file. No per-message secret, no pairing.
+
+## Plan cap removed, 2026-11-06
+
+Justin chose to remove the optional Nous-plan dollar cap (`plan_pct`, `ninsei_engine/plan.py`). It was the only code that imported Hermes internals (`agent.billing_usage`, `agent.usage_pricing`). That earned a `hermes plugins validate` warning and a disclosure, and it only did anything for people on a Nous plan. Budget control stays: the daily token budget (reserve/settle) and the daily message cap. Gone: `PlanCap`, the Brain's preflight/on_result hooks, the setting, the Settings field and the budget-ring line, the README/catalog/entry disclosures (catalog disclosures renumbered 1–12), and the demo-script mention. An old `plan_pct` key left in a profile's stored settings is harmless: nothing reads it, and `save_settings` no longer accepts it.
+- New guard: `test_only_the_public_plugin_api_is_imported` fails on any `agent.*` import. `gateway.*` stays allowed because the platform adapter subclasses the documented `BasePlatformAdapter`.
+- The test gateways (`ninsei-maya-gw`, `ninsei-sam-gw`) were stopped once the feature check was done. A test gateway ticks cron for every profile, so they shouldn't idle. Restart them only for the video.

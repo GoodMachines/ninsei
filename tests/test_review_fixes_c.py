@@ -1,4 +1,4 @@
-"""Regression tests for the pre-submission review, findings 4, 5, 9, 11, 12, 16, 18, 19, 21."""
+"""Regression tests for the pre-submission review, findings 4, 5, 9, 11, 16, 18, 19, 21."""
 import ast
 import asyncio
 import json
@@ -11,7 +11,6 @@ import pytest
 from ninsei_engine import nostr, toy
 from ninsei_engine.brain import MAX_TRANSCRIPT_BYTES, BudgetExhausted, Line, _clean, est_tokens, render_transcript
 from ninsei_engine.engine import Engine, SHARE_SERIALIZED_LIMIT
-from ninsei_engine.plan import PlanCap
 
 ROOT = Path(__file__).resolve().parent.parent
 OID = "ab" * 32
@@ -54,7 +53,7 @@ def engine(tmp_path):
     e.stop()
 
 
-# ---- finding 4: plan_pct must survive the settings route ------------------------------------------------
+# ---- finding 4: every setting must survive the settings route ------------------------------------------------
 
 def test_settings_model_accepts_every_field_the_engine_saves():
     tree = ast.parse((ROOT / "dashboard" / "plugin_api.py").read_text())
@@ -62,11 +61,10 @@ def test_settings_model_accepts_every_field_the_engine_saves():
     names = {st.target.id for st in fields.body if isinstance(st, ast.AnnAssign)}
     src = (ROOT / "ninsei_engine" / "engine.py").read_text()
     allowed = set(re.findall(r'"(\w+)"', re.search(r"allowed = \{(.*?)\}", src, re.S).group(1)))
-    assert "plan_pct" in names
     assert allowed <= names, f"the route would drop: {allowed - names}"
 
 
-def test_settings_route_keeps_plan_pct(tmp_path):
+def test_settings_route_keeps_msgs_daily(tmp_path):
     fastapi = pytest.importorskip("fastapi")
     pytest.importorskip("httpx")
     from fastapi.testclient import TestClient
@@ -84,9 +82,9 @@ def test_settings_route_keeps_plan_pct(tmp_path):
         api._engine = eng
         app = fastapi.FastAPI()
         app.include_router(api.router)
-        r = TestClient(app).post("/settings", json={"plan_pct": 15})
-        assert r.status_code == 200 and r.json()["plan_pct"] == 15
-        assert e.settings()["plan_pct"] == 15
+        r = TestClient(app).post("/settings", json={"msgs_daily": 15})
+        assert r.status_code == 200 and r.json()["msgs_daily"] == 15
+        assert e.settings()["msgs_daily"] == 15
     finally:
         e.stop()
 
@@ -242,72 +240,6 @@ def test_transcript_is_hard_capped_and_keeps_the_newest():
     assert "199 " in out and "\n[P · person] 0 " not in out
 
 
-# ---- finding 12: plan cap reserves, counts failures, never waits ----------------------------------------
-
-def _cap(tmp_path, source=None, cost=1.0):
-    from ninsei_engine.store import Store
-    st = Store(tmp_path / "s.db")
-    return PlanCap(st, lambda: 10, source=source or (lambda: 100.0), cost=lambda r: (cost, "reported")), st
-
-
-async def test_preflight_reserves_so_concurrent_calls_cannot_all_pass(tmp_path):
-    cap, _ = _cap(tmp_path)
-    await cap.probe()                                   # cap = $10
-    cap._last_cost = 4.0                                # calls have been costing $4
-    t1, t2 = await cap.preflight(100), await cap.preflight(100)
-    with pytest.raises(BudgetExhausted):                # 4 + 4 in flight, a third would pass $10
-        await cap.preflight(100)
-    t1.release()
-    assert await cap.preflight(100)                     # the released slot is free again
-
-
-async def test_failed_calls_still_count(tmp_path):
-    cap, _ = _cap(tmp_path)
-    await cap.probe()
-    t = await cap.preflight(1_000_000)                  # reserves about $10 at the fallback rate
-    t.fail()
-    assert cap.used_usd() > 0 and cap._pending == 0
-    with pytest.raises(BudgetExhausted):
-        await cap.preflight(1_000_000)
-
-
-async def test_released_unrun_call_is_free(tmp_path):
-    cap, _ = _cap(tmp_path)
-    await cap.probe()
-    (await cap.preflight(1000)).release()
-    assert cap.used_usd() == 0 and cap._pending == 0
-
-
-async def test_preflight_does_not_wait_for_a_slow_plan_read(tmp_path):
-    import threading
-    gate = threading.Event()
-
-    def slow():
-        gate.wait(5)
-        return 100.0
-    cap, _ = _cap(tmp_path, source=slow)
-    t0 = time.monotonic()
-    assert await cap.preflight(100) is None             # no snapshot yet: fail open, refresh in the background
-    assert time.monotonic() - t0 < 0.5
-    gate.set()
-    for _ in range(50):
-        if cap.snapshot():
-            break
-        await asyncio.sleep(0.05)
-    assert cap.snapshot() and cap.cap_usd() == pytest.approx(10.0)
-
-
-async def test_engine_failed_model_call_is_charged_to_the_plan(tmp_path):
-    llm = LLM(fail=True)
-    e = Engine(tmp_path / "e", lambda: llm, relays=[], lock=False, plan_source=lambda: 100.0,
-               plan_cost=lambda r: (1.0, "reported"))
-    e.save_settings({"plan_pct": 10})
-    await e.plan.probe()
-    with pytest.raises(RuntimeError):
-        await e.brain._complete("chat", [{"role": "user", "content": "hi"}], 20, "reply")
-    assert e.plan.used_usd() > 0 and e.plan._pending == 0
-
-
 # ---- finding 18: offer ids and lobby tags ---------------------------------------------------------------
 
 @pytest.mark.parametrize("bad", ["../..", "../../etc", "x" * 64, "AB" * 32, "ab" * 31, "ab" * 33, ""])
@@ -406,17 +338,30 @@ def test_disclosures_are_in_readme_and_catalog_entry():
     readme = (ROOT / "README.md").read_text()
     entry = (ROOT / "submission" / "ninsei.yaml").read_text()
     pr = (ROOT / "submission" / "catalog-pr.md").read_text()  # catalog rule 13: the PR description + README
-    for needle in ("agent.billing_usage", "agent.usage_pricing", "trusted_inbound", "window.hermes.send",
-                   "ninsei_room_engine", "your user account", "turns on the `ninsei` platform", "Plan cap"):
+    for needle in ("trusted_inbound", "window.hermes.send",
+                   "ninsei_room_engine", "your user account", "turns on the `ninsei` platform"):
         assert needle in readme, needle
-    for needle in ("agent.billing_usage", "agent.usage_pricing", "trusted_inbound=True", "window.hermes.send",
+    for needle in ("trusted_inbound=True", "window.hermes.send",
                    "ninsei_room_engine", "same user", "turns itself on", "IP address"):
         assert needle in pr, needle
     # the entry itself stays short but still names the risky parts and points at the full list
-    for needle in ("agent.billing_usage", "agent.usage_pricing", "trusted_inbound=True", "Full list in the README",
+    for needle in ("trusted_inbound=True", "Full list in the README",
                    "IP address"):
         assert needle in entry, needle
     assert "full tools" not in readme and "can't make it do anything" not in readme
+
+
+def test_only_the_public_plugin_api_is_imported():
+    """Ninsei uses what register(ctx) hands it, plus the documented platform-adapter base classes (gateway.*).
+    The agent.* modules are Hermes internals that can change under a plugin; the old plan cap imported
+    agent.billing_usage and agent.usage_pricing and was removed."""
+    internal = re.compile(r"^\s*(?:from|import)\s+agent(?:\.|\s|$)", re.M)
+    offenders = []
+    for f in [ROOT / "__init__.py", ROOT / "_loader.py", *ROOT.glob("ninsei_*.py"), *(ROOT / "ninsei_engine").glob("*.py"),
+              ROOT / "dashboard" / "plugin_api.py"]:
+        if f.exists() and internal.search(f.read_text()):
+            offenders.append(f.name)
+    assert not offenders, offenders
 
 
 def test_engine_work_survives_the_browser_hanging_up():

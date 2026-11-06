@@ -94,13 +94,10 @@ def persona_system(persona: dict, owner_name: str) -> str:
 
 class Brain:
     def __init__(self, llm_getter: Callable[[], Any], reserve: Callable[[str, int], Optional[str]],
-                 settle: Callable[[str, int], None], *,
-                 preflight: Optional[Callable[[], Any]] = None, on_result: Optional[Callable[[Any], None]] = None):
+                 settle: Callable[[str, int], None]):
         self._llm = llm_getter
         self._reserve = reserve
         self._settle = settle
-        self._preflight = preflight      # async; raises BudgetExhausted (the optional Nous plan cap)
-        self._on_result = on_result      # sync; sees each finished result (plan dollars)
 
     def available(self) -> bool:
         return self._llm() is not None
@@ -110,14 +107,10 @@ class Brain:
         if llm is None:
             raise RuntimeError("model access is not available in this process")
         est = sum(est_tokens(m["content"]) for m in messages) + max_tokens
-        plan_t = await self._preflight(est) if self._preflight else None   # reserves; may raise BudgetExhausted
         ticket = self._reserve(category, est)
         if ticket is None:
-            if plan_t is not None:
-                plan_t.release()
             raise BudgetExhausted()
         used = est
-        done = False
         try:
             kwargs = dict(messages=messages, max_tokens=max_tokens, purpose=f"ninsei.{purpose}")
             try:
@@ -128,16 +121,8 @@ class Brain:
             total = getattr(u, "total_tokens", None) if u else None
             if total:
                 used = int(total)
-            if self._on_result:
-                try:
-                    self._on_result(res, plan_t)
-                    done = True
-                except Exception:
-                    pass  # accounting must never break a reply
             return (res.text or "").strip()
         finally:
-            if plan_t is not None and not done:
-                plan_t.fail()   # a failed call still counts, at the reserved estimate
             self._settle(ticket, used)
 
     async def _json(self, category: str, system: str, user: str, max_tokens: int, purpose: str) -> Optional[dict]:

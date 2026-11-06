@@ -958,22 +958,13 @@ function Settings(props) {
   return jsx(SettingsForm, { store, snap, key: snap.me && snap.me.pk })
 }
 
-// One line under the budget ring about the optional Nous plan cap.
-function planLine(b) {
-  if (!b || !b.plan_pct) return null
-  let text
-  if (!b.available) text = b.checked ? 'Plan cap: Not on a Nous plan' : 'Plan cap: checking your Nous plan…'
-  else text = 'Plan cap ' + b.plan_pct + '%: $' + (b.plan_used_usd || 0).toFixed(2) + ' of $' + (b.plan_cap_usd || 0).toFixed(2) + ' today'
-  return jsx('div', { className: 'h-faint h-small', children: text })
-}
-
 function SettingsForm(props) {
   const store = props.store
   const snap = props.snap
   const s = snap.settings
   const agentPk = snap.me && snap.me.agent && snap.me.agent.pk
   const initial = () => ({ display_name: s.display_name, line: s.line || '', agent_name: s.agent_name, vibe: s.vibe,
-    face: faceFor(s.face, agentPk), interests: s.interests || [], budget_daily: s.budget_daily, msgs_daily: s.msgs_daily, plan_pct: s.plan_pct || 0,
+    face: faceFor(s.face, agentPk), interests: s.interests || [], budget_daily: s.budget_daily, msgs_daily: s.msgs_daily,
     relays: (s.relays || []).join('\n') })
   const [form, setForm] = useState(initial)
   const [busy, setBusy] = useState(false)
@@ -985,8 +976,7 @@ function SettingsForm(props) {
     setBusy(true)
     const body = Object.assign({}, form, { relays: form.relays.split(/\s+/).filter(Boolean),
       budget_daily: Math.max(0, parseInt(form.budget_daily, 10) || 0),
-      msgs_daily: Math.max(0, parseInt(form.msgs_daily, 10) || 0),
-      plan_pct: Math.max(0, Math.min(100, parseInt(form.plan_pct, 10) || 0)) })
+      msgs_daily: Math.max(0, parseInt(form.msgs_daily, 10) || 0) })
     try { await store.post('/settings', body, 'Saved') } catch (_) { /* toasted */ }
     setBusy(false)
   }
@@ -1017,7 +1007,6 @@ function SettingsForm(props) {
         jsxs('div', { className: 'h-grow', children: [
           jsx('div', { children: fmtTokens(snap.budget.used) + ' of ' + fmtTokens(snap.budget.limit) + ' tokens used today' }),
           jsx('div', { className: 'h-faint h-small', children: Object.keys(snap.budget.by || {}).map(k => k + ' ' + fmtTokens(snap.budget.by[k])).join(' · ') || 'Nothing spent yet' }),
-          planLine(snap.budget),
           snap.budget.msgs && jsx('div', { className: 'h-faint h-small', children: snap.budget.msgs.used + ' of ' + snap.budget.msgs.limit + ' messages said today' })
         ] })
       ] }),
@@ -1030,11 +1019,7 @@ function SettingsForm(props) {
       jsx(Field, { label: 'Daily limit (messages)', id: 'h-s-msgs',
         hint: 'How many messages your agent may say in rooms each day, across all rooms. At the limit it rests until tomorrow, even with tokens left.',
         children: jsx(K.Input, { id: 'h-s-msgs', type: 'number', min: 0, max: 2000, step: 10, value: form.msgs_daily, style: { width: 120 },
-          onChange: e => set({ msgs_daily: e.target.value }) }) }),
-      jsx(Field, { label: 'Daily cap, % of my Nous plan (0 = off)', id: 'h-s-plan',
-        hint: 'Optional second limit for Hermes on a Nous subscription: at most this share of what is left of your plan at the start of the day. The token limit still applies.',
-        children: jsx(K.Input, { id: 'h-s-plan', type: 'number', min: 0, max: 100, step: 1, value: form.plan_pct, style: { width: 120 },
-          onChange: e => set({ plan_pct: e.target.value }) }) })
+          onChange: e => set({ msgs_daily: e.target.value }) }) })
     ] }),
     jsxs('section', { className: 'h-col', style: { gap: 14 }, children: [
       jsx('div', { className: 'h-sec', children: 'You' }),

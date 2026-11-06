@@ -23,7 +23,6 @@ from typing import Any, Callable, Optional
 
 from . import game, nostr
 from .brain import Brain, BudgetExhausted, Line
-from .plan import PlanCap
 from .relays import RelayPool
 from .store import Store, today
 from .topics import TopicTracker
@@ -210,9 +209,7 @@ def _team_key(pk: str, owner: Optional[str]) -> str:
 class Engine:
     def __init__(self, data_dir: Path, llm_getter: Callable[[], Any], *,
                  notify: Optional[Callable[[int], None]] = None, relays: Optional[list[str]] = None,
-                 lock: bool = True, timescale: float = 1.0,
-                 plan_source: Optional[Callable[[], Optional[float]]] = None,
-                 plan_cost: Optional[Callable[[Any], tuple]] = None):
+                 lock: bool = True, timescale: float = 1.0):
         self.data_dir = Path(data_dir)
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.store = Store(self.data_dir / "ninsei.db")
@@ -230,9 +227,7 @@ class Engine:
         self._start_error: Optional[BaseException] = None
         self._tasks: set[asyncio.Task] = set()
 
-        self.plan = PlanCap(self.store, lambda: int(self.settings()["plan_pct"]), source=plan_source, cost=plan_cost)
-        self.brain = Brain(llm_getter, self._reserve, self.store.settle,
-                           preflight=self.plan.preflight, on_result=self.plan.record)
+        self.brain = Brain(llm_getter, self._reserve, self.store.settle)
         # live, in-memory room state (rebuilt from the store + relays)
         self.events: dict[str, dict[str, dict]] = {}       # room -> id -> event
         self.presence: dict[str, dict[str, dict]] = {}     # room -> pk -> {state, budget, at}
@@ -370,7 +365,7 @@ class Engine:
             "onboarded": False, "display_name": "", "interests": [], "line": "",
             "agent_name": "", "vibe": "warm, curious, a little playful", "face": None,
             "budget_daily": 40000, "msgs_daily": MSGS_DAILY, "chattiness": "normal", "offers": True, "share_budget": False,
-            "relays": DEFAULT_RELAYS, "card_published_at": 0, "plan_pct": 0,
+            "relays": DEFAULT_RELAYS, "card_published_at": 0,
         }
         out = {**defaults, **s}
         if not out.get("face"):
@@ -385,7 +380,7 @@ class Engine:
     def save_settings(self, patch: dict) -> dict:
         cur = self.settings()
         allowed = {"onboarded", "display_name", "interests", "line", "agent_name", "vibe", "face",
-                   "budget_daily", "msgs_daily", "chattiness", "offers", "share_budget", "relays", "plan_pct"}
+                   "budget_daily", "msgs_daily", "chattiness", "offers", "share_budget", "relays"}
         for k, v in patch.items():
             if k not in allowed:
                 continue
@@ -400,11 +395,6 @@ class Engine:
                 v = max(0, min(int(v), 5_000_000))
             elif k == "msgs_daily":
                 v = max(0, min(int(v), MAX_MSGS_DAILY))
-            elif k == "plan_pct":
-                try:
-                    v = max(0, min(int(v), 100))
-                except (TypeError, ValueError):
-                    v = cur["plan_pct"]
             elif k == "chattiness":
                 v = v if v in CHATTINESS else "normal"
             elif k == "face":
@@ -416,15 +406,7 @@ class Engine:
                 v = bool(v)
             cur[k] = v
         self.store.set("settings", cur)
-        if cur["plan_pct"] and "plan_pct" in patch:
-            self._kick_plan()
         return cur
-
-    def _kick_plan(self) -> None:
-        """Read the plan balance in the background (it can take seconds) so Settings can say if it's usable."""
-        loop = self.loop
-        if loop and loop.is_running():
-            loop.call_soon_threadsafe(lambda: self._spawn(self.plan.probe()))
 
     def relays(self) -> list[str]:
         # An explicit list wins, even an empty one: relays=[] means "no network", never the public defaults.
@@ -451,7 +433,6 @@ class Engine:
         self.pool.start()
         await self._resubscribe()
         self._spawn(self._presence_loop())
-        self._spawn(self.plan.probe())
         self._spawn(self._watch_builds())
         self._spawn(self.ensure_commons())
 
@@ -1145,8 +1126,6 @@ class Engine:
         return self.store.reserve(category, tokens, int(self.settings()["budget_daily"]))
 
     def _budget_left(self) -> int:
-        if self.plan.exhausted():
-            return 0
         return int(self.settings()["budget_daily"]) - sum(self.store.budget_used().values())
 
     def _said_today(self) -> int:
@@ -1171,11 +1150,8 @@ class Engine:
         limit = int(self.settings()["budget_daily"])
         total = sum(used.values())
         pct = min(1.0, total / limit) if limit else 1.0
-        plan = self.plan.view()
-        if plan["plan_cap_usd"]:  # the ring shows whichever cap is closer
-            pct = max(pct, min(1.0, plan["plan_used_usd"] / plan["plan_cap_usd"]))
         return {"limit": limit, "used": total, "by": used, "pct": pct,
-                "msgs": {"used": self._said_today(), "limit": int(self.settings()["msgs_daily"])}, **plan}
+                "msgs": {"used": self._said_today(), "limit": int(self.settings()["msgs_daily"])}}
 
     # ============================================================================================
     # proactive offers and the build → share loop
@@ -2290,7 +2266,7 @@ class Engine:
                              "state": self.agent_state, "note": self.agent_note}},
             "settings": {k: s[k] for k in ("onboarded", "display_name", "interests", "line", "agent_name", "vibe",
                                            "face", "budget_daily", "msgs_daily", "chattiness", "offers", "share_budget", "relays",
-                                           "card_published_at", "plan_pct")},
+                                           "card_published_at")},
             "budget": self.budget_view(),
             "model": self.brain.available(),
             "rooms": rooms,

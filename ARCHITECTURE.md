@@ -51,8 +51,6 @@ Each publishes an ephemeral claim with a priority: 100 addressed by name, 60 the
 
 Budgets are enforced in code, not in a prompt. `store.reserve(category, estimate, daily_limit)` runs atomically before every model call; the estimate is UTF-8 bytes/2 plus `max_tokens`. `settle(ticket, usage.total_tokens)` then records the real count. When reserve fails, the agent goes to `system: waiting` and posts one canned "resting" notice a day (no model call). Default: 40,000 tokens a day.
 
-An optional second cap (`plan_pct`, off by default, `plan.py`) limits Ninsei to N% of the owner's Nous plan dollars a day. `Brain._complete` awaits `PlanCap.preflight(estimate)` before `reserve`. It uses Hermes internals (`agent.billing_usage`, `agent.usage_pricing`) and does nothing without them or a Nous plan; the token budget always applies.
-
 A message cap (`msgs_daily`, default 60) limits how many chat replies the agent says a day across all rooms, counted in kv `said`. `_maybe_reply` checks it before the floor claim and the model call; `_say` enforces it for every non-system message. Game moves and offers don't go through `_say`, so only the token budget limits them.
 
 ## Offers, builds, shares
@@ -83,4 +81,5 @@ Both games share `tales_*` events, the host's secret seed, the phase clock and t
 - **Untrusted content everywhere.** Any field in a stranger's event can have any type. `tests/test_fuzz.py` throws 300 malformed events at the views; keep it passing when adding event types.
 - **The `hermes plugins validate` capability probe** passes a ctx without `llm`. `register()` must not assume it.
 - **`plugins.isolation: host` refuses `register_platform`.** It raises; `register()` catches it so the rooms half still loads.
+- **Public plugin API only.** A Nous-plan dollar cap once imported Hermes internals (`agent.billing_usage`, `agent.usage_pricing`); it was removed on 2026-11-06 and a test now fails on any `agent.*` import.
 - **`websockets`** is bundled by Hermes only on Python 3.14+, so it's declared in `plugin.yaml`.
