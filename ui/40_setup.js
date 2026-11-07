@@ -28,11 +28,13 @@ function Onboarding(props) {
   const s = snap.settings || {}
   const [form, setForm] = useState(() => ({
     display_name: s.display_name || '', agent_name: s.agent_name || '', vibe: s.vibe || '',
+    persona: s.persona || '', persona_source: s.persona_source || '',
     face: faceFor(s.face && s.face.shape ? s.face : null, snap.me && snap.me.agent && snap.me.agent.pk),
     interests: s.interests || [], budget_daily: BUDGET_PRESETS.includes(s.budget_daily) ? s.budget_daily : 40000,
     person_face: s.person_face || null, avatar: ''   // your own face and picture (optional); the picture waits here until setup is finished
   }))
   const [busy, setBusy] = useState(false)
+  const [pick, setPick] = useState({ flags: [], truncated: false, open: false })   // page-only: never posted
   const set = patch => setForm(Object.assign({}, form, patch))
   const ready = form.display_name.trim() && form.agent_name.trim()
   const agentPk = snap.me && snap.me.agent && snap.me.agent.pk
@@ -57,18 +59,20 @@ function Onboarding(props) {
       jsx('div', { className: 'h-muted', style: { maxWidth: 420 }, children:
         'Rooms where people and their own agents hang out. Your agent comes with you, speaks politely, and only spends the budget you give it.' })
     ] }),
+    jsx(HermesPicker, { onPick: p => applyProposal(p, set, setPick) }),
     jsxs('div', { className: 'h-two', children: [
       jsx(Field, { label: 'Your name', id: 'h-on-name', children: jsx(K.Input, { id: 'h-on-name', value: form.display_name, maxLength: 32,
         placeholder: 'Maya', autoFocus: true, onChange: e => set({ display_name: e.target.value }) }) }),
       jsx(Field, { label: "Your agent's name", id: 'h-on-agent', children: jsx(K.Input, { id: 'h-on-agent', value: form.agent_name, maxLength: 32,
         placeholder: 'Ada', onChange: e => set({ agent_name: e.target.value }) }) })
     ] }),
-    jsx(Field, { label: 'Its vibe, in one line', id: 'h-on-vibe', hint: 'This is the whole persona your agent brings into rooms, and it can repeat it there, so keep it free of anything private. It never sees your files or chats.',
+    jsx(Field, { label: 'Its vibe, in one line', id: 'h-on-vibe', hint: 'This short line is public: your agent brings it into rooms and can repeat it there, so keep it free of anything private. It never sees your files or chats.',
       children: jsxs('div', { className: 'h-col', style: { gap: 8 }, children: [
         jsx(K.Input, { id: 'h-on-vibe', value: form.vibe, maxLength: 200, placeholder: 'dry wit, loves color theory',
           onChange: e => set({ vibe: e.target.value }) }),
         jsx(VibePresets, { value: form.vibe, onPick: vibe => set({ vibe }) })
       ] }) }),
+    jsx(PersonaField, { id: 'h-on-persona', value: form.persona, source: form.persona_source, pick, setPick, onChange: set }),
     jsx(Field, { label: 'Its face', children: jsxs('div', { className: 'h-col', style: { gap: 14 }, children: [
       jsx('div', { style: { maxWidth: 380 }, children: jsx(IdCard, { kind: 'agent', name: form.agent_name || 'Your agent', pk: agentPk, face: form.face,
         fields: [['Owner', form.display_name || 'You'], ['Status', 'New']] }) }),
@@ -103,10 +107,12 @@ function SettingsForm(props) {
   const s = snap.settings
   const agentPk = snap.me && snap.me.agent && snap.me.agent.pk
   const initial = () => ({ display_name: s.display_name, line: s.line || '', agent_name: s.agent_name, vibe: s.vibe,
+    persona: s.persona || '', persona_source: s.persona_source || '',
     face: faceFor(s.face, agentPk), interests: s.interests || [], budget_daily: s.budget_daily, msgs_daily: s.msgs_daily,
     person_face: s.person_face || null, relays: (s.relays || []).join('\n') })
   const [form, setForm] = useState(initial)
   const [busy, setBusy] = useState(false)
+  const [pick, setPick] = useState({ flags: [], truncated: false, open: false })   // page-only: never posted
   // An empty relay list means offline, so saving one takes a second press that says so.
   const [confirmOffline, setConfirmOffline] = useState(false)
   useFaceEditorFocus()
@@ -138,7 +144,11 @@ function SettingsForm(props) {
     setBusy(true)
     const body = Object.assign({}, form, { relays: relayList, person_face: form.person_face || {},
       budget_daily: parseCount(form.budget_daily), msgs_daily: parseCount(form.msgs_daily) })
-    try { await store.post('/settings', body, 'Saved') } catch (_) { /* toasted */ }
+    try {
+      const out = await store.post('/settings', body, 'Saved')
+      // the engine looks the saved text over once more: what it finds (also anything typed since the import) shows now
+      if (out && out.flags) setPick(prev => Object.assign({}, prev, { flags: out.flags }))
+    } catch (_) { /* toasted */ }
     setBusy(false)
   }
 
@@ -148,11 +158,13 @@ function SettingsForm(props) {
   return jsxs('div', { className: 'hx h-pane', style: { padding: props.inset ? '4px 0 24px' : undefined }, children: [
     jsxs('section', { className: 'h-col', style: { gap: 14 }, children: [
       jsx('div', { className: 'h-sec', children: 'Your agent' }),
+      jsx(HermesPicker, { onPick: p => applyProposal(p, set, setPick) }),
       jsxs('div', { className: 'h-two', children: [
         jsx(Field, { label: 'Name', id: 'h-s-agent', children: jsx(K.Input, { id: 'h-s-agent', value: form.agent_name, maxLength: 32, onChange: e => set({ agent_name: e.target.value }) }) }),
         jsx(Field, { label: 'Vibe', id: 'h-s-vibe', children: jsx(K.Input, { id: 'h-s-vibe', value: form.vibe, maxLength: 200, onChange: e => set({ vibe: e.target.value }) }) })
       ] }),
       jsx(VibePresets, { value: form.vibe || '', onPick: vibe => set({ vibe }) }),
+      jsx(PersonaField, { id: 'h-s-persona', value: form.persona, source: form.persona_source, pick, setPick, onChange: set }),
       jsx(Field, { label: 'Face', hint: 'Its card is what people see when they click its name.', children: jsxs('div', { className: 'h-col', style: { gap: 14 }, children: [
         jsx('div', { style: { maxWidth: 380 }, children: jsx(IdCard, { kind: 'agent', name: form.agent_name || 'Your agent', pk: agentPk, face: form.face,
           state: snap.me.agent.state, fields: [['Owner', form.display_name || 'You'],

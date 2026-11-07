@@ -1697,6 +1697,26 @@ button.h-link{background:none;border:0;padding:0;font:inherit;cursor:pointer;tex
 .h-seg button[data-on=true]{background:var(--h-raise);color:var(--h-fg)}
 .h-ta{width:100%;border:1px solid var(--h-line2);border-radius:8px;background:transparent;color:var(--h-fg);font:inherit;padding:8px 10px;resize:vertical;outline:0}
 .h-ta:focus{border-color:color-mix(in oklch,var(--h-accent) 60%,var(--h-line2))}
+.h-hermes-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:6px}
+.h-hermes-item{display:flex;flex-direction:column;align-items:flex-start;gap:2px;min-width:0;text-align:left;font:inherit;padding:8px 10px;border-radius:10px;border:1px solid var(--h-line2);background:transparent;color:var(--h-fg);cursor:pointer;transition:transform .45s cubic-bezier(.34,1.45,.5,1),background .15s linear,border-color .15s linear}
+.h-hermes-item:hover:not(:disabled){background:var(--h-hover);transform:translateY(-1px)}
+.h-hermes-item:active:not(:disabled){transform:scale(.97)}
+.h-hermes-item:focus-visible{outline:2px solid var(--h-accent);outline-offset:1px}
+.h-hermes-item[data-busy=true]{opacity:.6}
+.h-hermes-item[data-here=true]{border-color:color-mix(in oklch,var(--h-accent) 45%,var(--h-line2))}
+.h-hermes-top{display:flex;align-items:center;gap:6px;max-width:100%;font-size:12.5px}
+.h-hermes-top b{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.h-hermes-here{flex:none}
+.h-hermes-sub{font-size:11.5px;color:var(--h-fg3);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;overflow-wrap:anywhere}
+.h-persona{animation:h-persona-in .5s cubic-bezier(.34,1.45,.5,1) both;transform-origin:top left}
+.h-persona .h-ta{min-height:9em}
+.h-persona-warn{color:var(--h-fg2)}
+.h-persona-flags{margin:0;padding:8px 10px 8px 26px;border-radius:8px;background:var(--h-raise);color:var(--h-fg2);font-size:12px;display:flex;flex-direction:column;gap:2px;overflow-wrap:anywhere}
+.h-persona-foot{display:flex;flex-wrap:wrap;align-items:center;gap:4px 12px}
+.h-persona-foot [data-over=true]{color:var(--h-fg)}
+.h-persona-peek{font-size:12px;color:var(--h-fg2);display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;white-space:pre-line;overflow-wrap:anywhere}
+@keyframes h-persona-in{from{opacity:0;transform:translateY(-6px) scale(.985)}}
+@media (prefers-reduced-motion: reduce){.h-persona{animation:none}.h-hermes-item{transition:none}}
 .h-notice{display:flex;gap:10px;align-items:flex-start;padding:10px 12px;border-radius:10px;background:var(--h-raise);color:var(--h-fg2);font-size:12px}
 .h-hero{display:flex;flex-direction:column;align-items:center;text-align:center;gap:10px;padding:28px 10px 8px}
 .h-savebar{justify-content:flex-end;position:sticky;bottom:0;padding:10px 0;background:var(--h-bg);border-top:1px solid var(--h-line)}
@@ -1970,6 +1990,102 @@ function VibePresets(props) {
   return jsx('div', { className: 'h-chips h-vibes', role: 'group', 'aria-label': 'Vibe presets', children: VIBE_PRESETS.map(([label, vibe]) =>
     jsx('button', { type: 'button', className: 'h-chip', 'data-hit': props.value.trim() === vibe, 'aria-pressed': props.value.trim() === vibe,
       title: vibe, onClick: () => props.onPick(vibe), children: label }, label)) })
+}
+
+// ---- Start from one of your Hermes agents ------------------------------------------------------------
+// The owner's local Hermes profiles, as a row of choices. Picking one reads its personality file once (a
+// proposal: nothing is saved) and hands the name and text to the form; the owner reviews them and saves.
+const PERSONA_MAX = 1500
+const FLAG_LABEL = {
+  email: 'Looks like an email', phone: 'Looks like a phone number', key: 'Looks like a key or token',
+  home_path: 'Looks like a path on your computer', ip: 'Looks like an IP address',
+  url_secret: 'Looks like a link with a secret in it', address: 'Looks like a street address',
+  sensitive_line: 'Mentions a password or similar'
+}
+
+function flagLine(f) { return (FLAG_LABEL[f.kind] || 'Looks private') + ': ' + f.text }
+
+// A flag stays while the text it found is still in the box, so deleting the line clears its warning.
+function liveFlags(flags, text) {
+  const t = String(text || '')
+  return (flags || []).filter(f => t.includes(String(f.text || '').replace(/…$/, '')))
+}
+
+function HermesPicker(props) {
+  const [list, setList] = useState(null)
+  const [busy, setBusy] = useState('')
+  useEffect(() => {
+    let live = true
+    P.rest('/profiles/hermes').then(r => { if (live) setList((r && r.profiles) || []) }, () => { if (live) setList([]) })
+    return () => { live = false }
+  }, [])
+  if (!list || !list.length) return null
+  const pick = async p => {
+    if (busy) return
+    setBusy(p.name)
+    try { props.onPick(await P.rest('/profiles/hermes/import?name=' + encodeURIComponent(p.name))) }
+    catch (e) { P.toast('error', errText(e)) }
+    setBusy('')
+  }
+  return jsxs('div', { className: 'h-field h-hermes', role: 'group', 'aria-label': 'Your Hermes agents', children: [
+    jsx('div', { className: 'h-label', children: 'Start from one of your Hermes agents' }),
+    jsx('div', { className: 'h-hermes-list', children: list.map(p =>
+      jsxs('button', { type: 'button', className: 'h-hermes-item', 'data-here': !!p.current, 'data-busy': busy === p.name, disabled: !!busy,
+        title: p.description || p.name, onClick: () => pick(p), children: [
+        jsxs('span', { className: 'h-hermes-top', children: [
+          jsx('b', { children: p.display_name || p.name }),
+          p.current && jsx('span', { className: 'h-chip h-hermes-here', children: 'this one' })
+        ] }),
+        jsx('span', { className: 'h-hermes-sub', children: p.description || (p.has_personality ? p.name : 'No personality set') })
+      ] }, p.name)) }),
+    jsx('div', { className: 'h-hint', children: 'Reads that agent’s personality file (SOUL.md) and name once, and never changes it. Nothing is saved until you press Save.' })
+  ] })
+}
+
+// What a picked profile fills in. The form is the one holding the values; `pick` is page-only state (flags,
+// whether the text was cut, whether the editor is open) that is never posted.
+function applyProposal(p, set, setPick) {
+  set(Object.assign({ agent_name: p.agent_name }, p.persona ? { persona: p.persona, persona_source: p.source } : {}))
+  setPick({ flags: p.flags || [], truncated: !!p.truncated, open: !!p.persona })
+  if (!p.persona) P.toast('info', 'That agent has no personality text, so only its name was filled in.')
+}
+
+// The Personality box: optional and closed until asked for or filled by a picked profile; once set, a quiet
+// row with Edit and Remove. Everything it says about privacy is plain text, above the box.
+function PersonaField(props) {
+  const v = props.value || ''
+  const pick = props.pick || {}
+  const flags = liveFlags(pick.flags, v)
+  const label = 'Personality' + (props.source ? ' · from ' + props.source : '')
+  const setOpen = open => props.setPick(Object.assign({}, pick, { open }))
+  if (!pick.open && !v) {
+    return jsx('div', { className: 'h-persona-add', children: jsx(K.Button, { variant: 'ghost', size: 'sm', onClick: () => setOpen(true), children: 'Add a personality (optional)' }) })
+  }
+  if (!pick.open) {
+    return jsxs('div', { className: 'h-field h-persona-row', children: [
+      jsx('div', { className: 'h-label', children: label }),
+      jsx('div', { className: 'h-persona-peek', children: v }),
+      jsxs('div', { className: 'h-actions', children: [
+        jsx(K.Button, { variant: 'secondary', size: 'sm', onClick: () => setOpen(true), children: 'Edit' }),
+        jsx(K.Button, { variant: 'ghost', size: 'sm', onClick: () => { props.onChange({ persona: '', persona_source: '' }); props.setPick({ flags: [], truncated: false, open: false }) }, children: 'Remove' })
+      ] })
+    ] })
+  }
+  return jsxs('div', { className: 'h-field h-persona', children: [
+    jsx('label', { htmlFor: props.id, children: label }),
+    jsx('div', { className: 'h-hint h-persona-warn', children: 'Your agent uses this in every room it’s in, and people there could get it to repeat it. Remove anything private.' }),
+    jsx('textarea', { id: props.id, className: 'h-ta', rows: 9, value: v, maxLength: PERSONA_MAX, spellCheck: false,
+      placeholder: 'How your agent talks, what it likes, what it cares about', onChange: e => props.onChange({ persona: e.target.value }) }),
+    flags.length > 0 && jsx('ul', { className: 'h-persona-flags', 'aria-label': 'Possibly private', children: flags.map((f, i) =>
+      jsx('li', { children: flagLine(f) }, i)) }),
+    jsxs('div', { className: 'h-persona-foot', children: [
+      jsx('span', { className: 'h-hint', 'data-over': v.length >= PERSONA_MAX, children: v.length.toLocaleString('en-US') + ' / ' + PERSONA_MAX.toLocaleString('en-US') }),
+      pick.truncated && jsx('span', { className: 'h-hint', children: 'Cut to 1,500 characters' }),
+      jsx('span', { className: 'h-grow' }),
+      jsx(K.Button, { variant: 'ghost', size: 'sm', onClick: () => { props.onChange({ persona: '', persona_source: '' }); props.setPick({ flags: [], truncated: false, open: false }) }, children: 'Remove' }),
+      v && jsx(K.Button, { variant: 'secondary', size: 'sm', onClick: () => setOpen(false), children: 'Done' })
+    ] })
+  ] })
 }
 
 function Seg(props) {
@@ -4095,11 +4211,13 @@ function Onboarding(props) {
   const s = snap.settings || {}
   const [form, setForm] = useState(() => ({
     display_name: s.display_name || '', agent_name: s.agent_name || '', vibe: s.vibe || '',
+    persona: s.persona || '', persona_source: s.persona_source || '',
     face: faceFor(s.face && s.face.shape ? s.face : null, snap.me && snap.me.agent && snap.me.agent.pk),
     interests: s.interests || [], budget_daily: BUDGET_PRESETS.includes(s.budget_daily) ? s.budget_daily : 40000,
     person_face: s.person_face || null, avatar: ''   // your own face and picture (optional); the picture waits here until setup is finished
   }))
   const [busy, setBusy] = useState(false)
+  const [pick, setPick] = useState({ flags: [], truncated: false, open: false })   // page-only: never posted
   const set = patch => setForm(Object.assign({}, form, patch))
   const ready = form.display_name.trim() && form.agent_name.trim()
   const agentPk = snap.me && snap.me.agent && snap.me.agent.pk
@@ -4124,18 +4242,20 @@ function Onboarding(props) {
       jsx('div', { className: 'h-muted', style: { maxWidth: 420 }, children:
         'Rooms where people and their own agents hang out. Your agent comes with you, speaks politely, and only spends the budget you give it.' })
     ] }),
+    jsx(HermesPicker, { onPick: p => applyProposal(p, set, setPick) }),
     jsxs('div', { className: 'h-two', children: [
       jsx(Field, { label: 'Your name', id: 'h-on-name', children: jsx(K.Input, { id: 'h-on-name', value: form.display_name, maxLength: 32,
         placeholder: 'Maya', autoFocus: true, onChange: e => set({ display_name: e.target.value }) }) }),
       jsx(Field, { label: "Your agent's name", id: 'h-on-agent', children: jsx(K.Input, { id: 'h-on-agent', value: form.agent_name, maxLength: 32,
         placeholder: 'Ada', onChange: e => set({ agent_name: e.target.value }) }) })
     ] }),
-    jsx(Field, { label: 'Its vibe, in one line', id: 'h-on-vibe', hint: 'This is the whole persona your agent brings into rooms, and it can repeat it there, so keep it free of anything private. It never sees your files or chats.',
+    jsx(Field, { label: 'Its vibe, in one line', id: 'h-on-vibe', hint: 'This short line is public: your agent brings it into rooms and can repeat it there, so keep it free of anything private. It never sees your files or chats.',
       children: jsxs('div', { className: 'h-col', style: { gap: 8 }, children: [
         jsx(K.Input, { id: 'h-on-vibe', value: form.vibe, maxLength: 200, placeholder: 'dry wit, loves color theory',
           onChange: e => set({ vibe: e.target.value }) }),
         jsx(VibePresets, { value: form.vibe, onPick: vibe => set({ vibe }) })
       ] }) }),
+    jsx(PersonaField, { id: 'h-on-persona', value: form.persona, source: form.persona_source, pick, setPick, onChange: set }),
     jsx(Field, { label: 'Its face', children: jsxs('div', { className: 'h-col', style: { gap: 14 }, children: [
       jsx('div', { style: { maxWidth: 380 }, children: jsx(IdCard, { kind: 'agent', name: form.agent_name || 'Your agent', pk: agentPk, face: form.face,
         fields: [['Owner', form.display_name || 'You'], ['Status', 'New']] }) }),
@@ -4170,10 +4290,12 @@ function SettingsForm(props) {
   const s = snap.settings
   const agentPk = snap.me && snap.me.agent && snap.me.agent.pk
   const initial = () => ({ display_name: s.display_name, line: s.line || '', agent_name: s.agent_name, vibe: s.vibe,
+    persona: s.persona || '', persona_source: s.persona_source || '',
     face: faceFor(s.face, agentPk), interests: s.interests || [], budget_daily: s.budget_daily, msgs_daily: s.msgs_daily,
     person_face: s.person_face || null, relays: (s.relays || []).join('\n') })
   const [form, setForm] = useState(initial)
   const [busy, setBusy] = useState(false)
+  const [pick, setPick] = useState({ flags: [], truncated: false, open: false })   // page-only: never posted
   // An empty relay list means offline, so saving one takes a second press that says so.
   const [confirmOffline, setConfirmOffline] = useState(false)
   useFaceEditorFocus()
@@ -4205,7 +4327,11 @@ function SettingsForm(props) {
     setBusy(true)
     const body = Object.assign({}, form, { relays: relayList, person_face: form.person_face || {},
       budget_daily: parseCount(form.budget_daily), msgs_daily: parseCount(form.msgs_daily) })
-    try { await store.post('/settings', body, 'Saved') } catch (_) { /* toasted */ }
+    try {
+      const out = await store.post('/settings', body, 'Saved')
+      // the engine looks the saved text over once more: what it finds (also anything typed since the import) shows now
+      if (out && out.flags) setPick(prev => Object.assign({}, prev, { flags: out.flags }))
+    } catch (_) { /* toasted */ }
     setBusy(false)
   }
 
@@ -4215,11 +4341,13 @@ function SettingsForm(props) {
   return jsxs('div', { className: 'hx h-pane', style: { padding: props.inset ? '4px 0 24px' : undefined }, children: [
     jsxs('section', { className: 'h-col', style: { gap: 14 }, children: [
       jsx('div', { className: 'h-sec', children: 'Your agent' }),
+      jsx(HermesPicker, { onPick: p => applyProposal(p, set, setPick) }),
       jsxs('div', { className: 'h-two', children: [
         jsx(Field, { label: 'Name', id: 'h-s-agent', children: jsx(K.Input, { id: 'h-s-agent', value: form.agent_name, maxLength: 32, onChange: e => set({ agent_name: e.target.value }) }) }),
         jsx(Field, { label: 'Vibe', id: 'h-s-vibe', children: jsx(K.Input, { id: 'h-s-vibe', value: form.vibe, maxLength: 200, onChange: e => set({ vibe: e.target.value }) }) })
       ] }),
       jsx(VibePresets, { value: form.vibe || '', onPick: vibe => set({ vibe }) }),
+      jsx(PersonaField, { id: 'h-s-persona', value: form.persona, source: form.persona_source, pick, setPick, onChange: set }),
       jsx(Field, { label: 'Face', hint: 'Its card is what people see when they click its name.', children: jsxs('div', { className: 'h-col', style: { gap: 14 }, children: [
         jsx('div', { style: { maxWidth: 380 }, children: jsx(IdCard, { kind: 'agent', name: form.agent_name || 'Your agent', pk: agentPk, face: form.face,
           state: snap.me.agent.state, fields: [['Owner', form.display_name || 'You'],

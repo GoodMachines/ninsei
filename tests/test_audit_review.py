@@ -203,6 +203,7 @@ SETTINGS_JS = lambda: (fn(SETUP, "parseCount") + const(SETUP, "BUDGET_MAX") + co
                        + fn(SETUP, "limitError") + fn(SETUP, "SettingsForm") + """
 function Field() {}; function Seg() {}; function VibePresets() {}; function IdCard() {}; function FacePicker() {}; function BudgetRing() {}
 function InterestInput() {}; function Notice() {}; function PersonLook() {}
+function HermesPicker() {}; function PersonaField() {}; function applyProposal() {}
 K.Toggle = function Toggle() {}
 const useFaceEditorFocus = () => {}
 const faceFor = f => f || {}

@@ -9,7 +9,7 @@ from typing import Any, Optional
 
 log = logging.getLogger("ninsei")
 
-STATE: dict[str, Any] = {"llm": None}
+STATE: dict[str, Any] = {"llm": None, "profile_name": None}
 _engine = None
 _engine_error: Optional[str] = None
 _lock = threading.Lock()
@@ -51,7 +51,7 @@ def get_engine():
     with _lock:
         if _engine is None:
             from .engine import Engine
-            eng = Engine(data_dir(), lambda: STATE["llm"], notify=_push)
+            eng = Engine(data_dir(), lambda: STATE["llm"], notify=_push, profile_name=lambda: STATE.get("profile_name"))
             eng.start()
             _engine = eng
         return _engine

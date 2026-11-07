@@ -24,7 +24,7 @@ import unicodedata
 from pathlib import Path
 from typing import Any, Callable, Iterable, Optional
 
-from . import avatar, dm, game, nip44, nostr
+from . import avatar, dm, game, nip44, nostr, persona as personas
 from .brain import Brain, BudgetExhausted, Line
 from .relays import RelayPool
 from .store import DM_PER_PEER, EVENT_ROOM_CAP, FRIEND_REQUESTS, Store, today
@@ -537,8 +537,9 @@ def open_vote(sk: str, peer_pk: str, payload: Any) -> Optional[dict]:
 class Engine:
     def __init__(self, data_dir: Path, llm_getter: Callable[[], Any], *,
                  notify: Optional[Callable[[int], None]] = None, relays: Optional[list[str]] = None,
-                 lock: bool = True, timescale: float = 1.0):
+                 lock: bool = True, timescale: float = 1.0, profile_name: Optional[Callable[[], Optional[str]]] = None):
         self.data_dir = Path(data_dir)
+        self._profile_name = profile_name   # the Hermes profile this process runs in (ctx.profile_name)
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.store = Store(self.data_dir / "ninsei.db")
         self._llm_getter = llm_getter
@@ -776,7 +777,7 @@ class Engine:
         s = self.store.get("settings") or {}
         defaults = {
             "onboarded": False, "display_name": "", "interests": [], "line": "",
-            "agent_name": "", "vibe": "warm, curious, a little playful", "face": None,
+            "agent_name": "", "vibe": "warm, curious, a little playful", "face": None, "persona": "", "persona_source": "",
             "budget_daily": 40000, "msgs_daily": MSGS_DAILY, "chattiness": "normal", "offers": True, "share_budget": False,
             "card_details": False, "relays": DEFAULT_RELAYS, "card_published_at": 0,
             "person_face": None, "show_avatars": "everyone", "room_prefs": {},
@@ -797,7 +798,7 @@ class Engine:
     def save_settings(self, patch: dict) -> dict:
         cur = self.settings()
         allowed = {"onboarded", "display_name", "interests", "line", "agent_name", "vibe", "face",
-                   "budget_daily", "msgs_daily", "chattiness", "offers", "share_budget", "card_details", "relays",
+                   "persona", "persona_source", "budget_daily", "msgs_daily", "chattiness", "offers", "share_budget", "card_details", "relays",
                    "person_face", "show_avatars"}
         before = cur["show_avatars"]
         for k, v in patch.items():
@@ -810,6 +811,10 @@ class Engine:
                 v = [x for x in dict.fromkeys(v) if x][:8]
             elif k in ("line", "vibe"):
                 v = str(v or "")[:200]
+            elif k == "persona":   # private-ish: only ever read into this agent's own prompts
+                v = personas.cut_persona(v)[0]
+            elif k == "persona_source":   # a profile name, for Settings to say "From archivist"
+                v = _name_ok(v, "")[:64]
             elif k == "budget_daily":
                 v = max(0, min(int(v), 5_000_000))
             elif k == "msgs_daily":
@@ -827,10 +832,12 @@ class Engine:
             elif k in ("offers", "share_budget", "card_details", "onboarded"):
                 v = bool(v)
             cur[k] = v
+        if not cur.get("persona"):
+            cur["persona_source"] = ""
         self.store.set("settings", cur)
         if cur["show_avatars"] != before:
             self._art_shown_changed(cur["show_avatars"])
-        return cur
+        return {**cur, "flags": personas.scan_private(cur.get("persona"))}   # flags are advice, never stored
 
     def room_chattiness(self, room: str) -> str:
         """How chatty my agent is in this room: the room's own setting, else the global one."""
@@ -873,7 +880,36 @@ class Engine:
 
     def persona(self) -> dict:
         s = self.settings()
-        return {"name": s["agent_name"] or "Agent", "vibe": s["vibe"], "face": s["face"]}
+        return {"name": s["agent_name"] or "Agent", "vibe": s["vibe"], "face": s["face"], "persona": s["persona"]}
+
+    # --- importing a personality from a Hermes profile (read only; nothing is saved here) -----------
+    def current_profile(self) -> str:
+        """The Hermes profile this engine runs in: the plugin context's, else read off the data folder
+        (`<home>/plugin-data/ninsei`, with a named profile's home at `<default>/profiles/<name>`)."""
+        try:
+            name = self._profile_name() if self._profile_name else None
+        except Exception:
+            name = None
+        if isinstance(name, str) and name.strip():
+            return name.strip()
+        home = self.data_dir.parent.parent
+        return home.name if home.parent.name == "profiles" else "default"
+
+    def hermes_profiles(self) -> list[dict]:
+        return personas.list_profiles(self.current_profile())
+
+    def import_profile(self, name: str) -> dict:
+        """A proposal from one profile's SOUL.md (and its name): nothing is saved. Only a name that
+        `hermes_profiles()` lists is accepted, so no path ever comes from the caller."""
+        rec = next((r for r in personas.profile_records() if r["name"] == str(name or "")), None)
+        if rec is None:
+            raise ValueError("no such Hermes profile")
+        soul = personas.read_soul(rec["path"])
+        text, truncated = personas.cut_persona(soul)
+        agent_name = _name_ok(rec["display_name"], "") or _name_ok(personas.soul_name(text), "") \
+            or _name_ok(personas.fallback_name(rec["name"]), "Agent")
+        return {"source": rec["name"], "agent_name": agent_name, "persona": text, "truncated": truncated,
+                "flags": personas.scan_private(text)}
 
     # ============================================================================================
     # boot and subscriptions
@@ -4994,7 +5030,7 @@ class Engine:
                              "state": self.agent_state, "note": self.agent_note,
                              "model": self.store.get("model_last") or ""}},
             "settings": {k: s[k] for k in ("onboarded", "display_name", "interests", "line", "agent_name", "vibe",
-                                           "face", "budget_daily", "msgs_daily", "chattiness", "offers", "share_budget", "relays",
+                                           "persona", "persona_source", "face", "budget_daily", "msgs_daily", "chattiness", "offers", "share_budget", "relays",
                                            "card_details", "card_published_at", "person_face", "show_avatars")},
             "budget": self.budget_view(),
             "model": self.brain.available(),

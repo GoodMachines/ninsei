@@ -68,6 +68,8 @@ class Settings(BaseModel):
     display_name: Optional[str] = None
     agent_name: Optional[str] = None
     vibe: Optional[str] = None
+    persona: Optional[str] = Field(None, max_length=20000)   # "" takes it away; the engine cuts it to 1,500
+    persona_source: Optional[str] = Field(None, max_length=200)
     face: Optional[dict] = None
     interests: Optional[list[str]] = None
     line: Optional[str] = None
@@ -217,6 +219,20 @@ async def settings(body: Settings):
         await _run(eng.publish_face)  # only when it differs from what was last published
     eng._bump()
     return out
+
+
+@router.get("/profiles/hermes")
+async def hermes_profiles():
+    """The owner's local Hermes profiles (names and descriptions only), for "Start from one of your Hermes agents"."""
+    eng = await _engine()
+    return {"profiles": await _sync(eng.hermes_profiles)}
+
+
+@router.get("/profiles/hermes/import")
+async def hermes_profile_import(name: str = Query("", max_length=100)):
+    """A proposal read from one profile's SOUL.md. Nothing is saved: the owner reviews it and saves through /settings."""
+    eng = await _engine()
+    return await _sync(eng.import_profile, name)
 
 
 class PersonRef(BaseModel):

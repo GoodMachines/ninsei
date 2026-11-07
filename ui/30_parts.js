@@ -18,6 +18,102 @@ function VibePresets(props) {
       title: vibe, onClick: () => props.onPick(vibe), children: label }, label)) })
 }
 
+// ---- Start from one of your Hermes agents ------------------------------------------------------------
+// The owner's local Hermes profiles, as a row of choices. Picking one reads its personality file once (a
+// proposal: nothing is saved) and hands the name and text to the form; the owner reviews them and saves.
+const PERSONA_MAX = 1500
+const FLAG_LABEL = {
+  email: 'Looks like an email', phone: 'Looks like a phone number', key: 'Looks like a key or token',
+  home_path: 'Looks like a path on your computer', ip: 'Looks like an IP address',
+  url_secret: 'Looks like a link with a secret in it', address: 'Looks like a street address',
+  sensitive_line: 'Mentions a password or similar'
+}
+
+function flagLine(f) { return (FLAG_LABEL[f.kind] || 'Looks private') + ': ' + f.text }
+
+// A flag stays while the text it found is still in the box, so deleting the line clears its warning.
+function liveFlags(flags, text) {
+  const t = String(text || '')
+  return (flags || []).filter(f => t.includes(String(f.text || '').replace(/…$/, '')))
+}
+
+function HermesPicker(props) {
+  const [list, setList] = useState(null)
+  const [busy, setBusy] = useState('')
+  useEffect(() => {
+    let live = true
+    P.rest('/profiles/hermes').then(r => { if (live) setList((r && r.profiles) || []) }, () => { if (live) setList([]) })
+    return () => { live = false }
+  }, [])
+  if (!list || !list.length) return null
+  const pick = async p => {
+    if (busy) return
+    setBusy(p.name)
+    try { props.onPick(await P.rest('/profiles/hermes/import?name=' + encodeURIComponent(p.name))) }
+    catch (e) { P.toast('error', errText(e)) }
+    setBusy('')
+  }
+  return jsxs('div', { className: 'h-field h-hermes', role: 'group', 'aria-label': 'Your Hermes agents', children: [
+    jsx('div', { className: 'h-label', children: 'Start from one of your Hermes agents' }),
+    jsx('div', { className: 'h-hermes-list', children: list.map(p =>
+      jsxs('button', { type: 'button', className: 'h-hermes-item', 'data-here': !!p.current, 'data-busy': busy === p.name, disabled: !!busy,
+        title: p.description || p.name, onClick: () => pick(p), children: [
+        jsxs('span', { className: 'h-hermes-top', children: [
+          jsx('b', { children: p.display_name || p.name }),
+          p.current && jsx('span', { className: 'h-chip h-hermes-here', children: 'this one' })
+        ] }),
+        jsx('span', { className: 'h-hermes-sub', children: p.description || (p.has_personality ? p.name : 'No personality set') })
+      ] }, p.name)) }),
+    jsx('div', { className: 'h-hint', children: 'Reads that agent’s personality file (SOUL.md) and name once, and never changes it. Nothing is saved until you press Save.' })
+  ] })
+}
+
+// What a picked profile fills in. The form is the one holding the values; `pick` is page-only state (flags,
+// whether the text was cut, whether the editor is open) that is never posted.
+function applyProposal(p, set, setPick) {
+  set(Object.assign({ agent_name: p.agent_name }, p.persona ? { persona: p.persona, persona_source: p.source } : {}))
+  setPick({ flags: p.flags || [], truncated: !!p.truncated, open: !!p.persona })
+  if (!p.persona) P.toast('info', 'That agent has no personality text, so only its name was filled in.')
+}
+
+// The Personality box: optional and closed until asked for or filled by a picked profile; once set, a quiet
+// row with Edit and Remove. Everything it says about privacy is plain text, above the box.
+function PersonaField(props) {
+  const v = props.value || ''
+  const pick = props.pick || {}
+  const flags = liveFlags(pick.flags, v)
+  const label = 'Personality' + (props.source ? ' · from ' + props.source : '')
+  const setOpen = open => props.setPick(Object.assign({}, pick, { open }))
+  if (!pick.open && !v) {
+    return jsx('div', { className: 'h-persona-add', children: jsx(K.Button, { variant: 'ghost', size: 'sm', onClick: () => setOpen(true), children: 'Add a personality (optional)' }) })
+  }
+  if (!pick.open) {
+    return jsxs('div', { className: 'h-field h-persona-row', children: [
+      jsx('div', { className: 'h-label', children: label }),
+      jsx('div', { className: 'h-persona-peek', children: v }),
+      jsxs('div', { className: 'h-actions', children: [
+        jsx(K.Button, { variant: 'secondary', size: 'sm', onClick: () => setOpen(true), children: 'Edit' }),
+        jsx(K.Button, { variant: 'ghost', size: 'sm', onClick: () => { props.onChange({ persona: '', persona_source: '' }); props.setPick({ flags: [], truncated: false, open: false }) }, children: 'Remove' })
+      ] })
+    ] })
+  }
+  return jsxs('div', { className: 'h-field h-persona', children: [
+    jsx('label', { htmlFor: props.id, children: label }),
+    jsx('div', { className: 'h-hint h-persona-warn', children: 'Your agent uses this in every room it’s in, and people there could get it to repeat it. Remove anything private.' }),
+    jsx('textarea', { id: props.id, className: 'h-ta', rows: 9, value: v, maxLength: PERSONA_MAX, spellCheck: false,
+      placeholder: 'How your agent talks, what it likes, what it cares about', onChange: e => props.onChange({ persona: e.target.value }) }),
+    flags.length > 0 && jsx('ul', { className: 'h-persona-flags', 'aria-label': 'Possibly private', children: flags.map((f, i) =>
+      jsx('li', { children: flagLine(f) }, i)) }),
+    jsxs('div', { className: 'h-persona-foot', children: [
+      jsx('span', { className: 'h-hint', 'data-over': v.length >= PERSONA_MAX, children: v.length.toLocaleString('en-US') + ' / ' + PERSONA_MAX.toLocaleString('en-US') }),
+      pick.truncated && jsx('span', { className: 'h-hint', children: 'Cut to 1,500 characters' }),
+      jsx('span', { className: 'h-grow' }),
+      jsx(K.Button, { variant: 'ghost', size: 'sm', onClick: () => { props.onChange({ persona: '', persona_source: '' }); props.setPick({ flags: [], truncated: false, open: false }) }, children: 'Remove' }),
+      v && jsx(K.Button, { variant: 'secondary', size: 'sm', onClick: () => setOpen(false), children: 'Done' })
+    ] })
+  ] })
+}
+
 function Seg(props) {
   return jsx('div', { className: 'h-seg', role: 'radiogroup', 'aria-label': props.label, children:
     props.options.map(o => jsx('button', { type: 'button', role: 'radio', 'aria-checked': props.value === o.id,

@@ -207,6 +207,10 @@ def register(ctx):
     eng = _loader.load_engine()
     eng.STATE["llm"] = getattr(ctx, "llm", None)  # absent in capability probes
     try:
+        eng.STATE["profile_name"] = getattr(ctx, "profile_name", None)   # which Hermes profile this is (for "this one")
+    except Exception:
+        pass
+    try:
         ctx.register_auxiliary_task(
             "ninsei", display_name="Ninsei rooms",
             description="Your agent's chat, offers and game moves in Ninsei rooms. Point it at a fast, cheap model.")
