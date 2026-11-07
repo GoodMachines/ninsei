@@ -219,3 +219,124 @@ async def test_a_relay_that_refuses_the_connection_with_429_waits_like_a_rate_li
     finally:
         await pool.stop()
         srv.close()
+
+
+# --- review fixes, 2026-11-07 ---------------------------------------------------------------------------------
+
+async def test_the_wait_still_doubles_against_a_relay_that_refills_an_allowance():
+    """It accepts one event per window and refuses the rest: the accepted one must not reset the doubling."""
+    stamps = []
+
+    async def handler(ws):
+        async for raw in ws:
+            m = json.loads(raw)
+            if m[0] == "EVENT":
+                now = asyncio.get_running_loop().time()
+                ok = not [t for t in stamps if now - t < 0.5]
+                if ok:
+                    stamps.append(now)
+                await ws.send(json.dumps(["OK", m[1]["id"], ok, "" if ok else "rate-limited: slow down"]))
+            elif m[0] == "REQ":
+                await ws.send(json.dumps(["EOSE", m[1]]))
+    srv, url = await _server(handler)
+    pool = RelayPool([url], cool_base=0.1, cool_max=5.0, flush_gap=0)
+    pool.start()
+    try:
+        assert await pool.wait_open(30)
+        for i in range(8):
+            await pool.publish(nostr.build_event(SK, 4242, f"m{i}", [["h", "r"]]), wait=0.2)
+        assert await until(lambda: pool._cool_step.get(url, 0) >= 3)
+    finally:
+        await pool.stop()
+        srv.close()
+
+
+async def test_a_backlog_is_resent_paced_and_stops_when_the_relay_says_slow_down():
+    handler, got = _limited_relay(reject_first=1)
+    srv, url = await _server(handler)
+    pool = RelayPool([url], cool_base=0.3, flush_gap=0.1)
+    pool.start()
+    try:
+        assert await pool.wait_open(30)
+        evs = [nostr.build_event(SK, 4242, f"q{i}", [["h", "r"]]) for i in range(4)]
+        for ev in evs:
+            await pool.publish(ev, wait=0.2)
+        assert await until(lambda: all(pool.delivery(e["id"]) == "sent" for e in evs))
+        # one refused, three skipped while cooling, then four resent one at a time
+        assert len(got) == 5
+    finally:
+        await pool.stop()
+        srv.close()
+
+
+async def test_a_drop_while_cooling_reconnects_at_once_so_reads_go_on():
+    conns = []
+
+    async def handler(ws):
+        conns.append(asyncio.get_running_loop().time())
+        async for raw in ws:
+            m = json.loads(raw)
+            if m[0] == "EVENT":
+                await ws.send(json.dumps(["OK", m[1]["id"], False, "rate-limited: slow down"]))
+                await ws.close()
+                return
+            if m[0] == "REQ":
+                await ws.send(json.dumps(["EOSE", m[1]]))
+    srv, url = await _server(handler)
+    pool = RelayPool([url], cool_base=60, backoff_base=0.01, backoff_max=0.05)
+    pool.start()
+    try:
+        assert await pool.wait_open(30)
+        await pool.publish(nostr.build_event(SK, 4242, "x", [["h", "r"]]), wait=5)
+        assert pool.cooling(url) > 50
+        assert await until(lambda: len(conns) >= 2, 5)   # not 60 s later
+    finally:
+        await pool.stop()
+        srv.close()
+
+
+async def test_a_publish_that_settles_after_a_flush_delivered_it_stays_sent():
+    got_a = []
+
+    async def relay_a(ws):   # refuses the first event as rate-limited, then takes everything
+        async for raw in ws:
+            m = json.loads(raw)
+            if m[0] == "EVENT":
+                got_a.append(m[1]["id"])
+                ok = len(got_a) > 1
+                await ws.send(json.dumps(["OK", m[1]["id"], ok, "" if ok else "rate-limited: slow down"]))
+            elif m[0] == "REQ":
+                await ws.send(json.dumps(["EOSE", m[1]]))
+
+    async def relay_b(ws):   # open, never answers an EVENT
+        async for raw in ws:
+            m = json.loads(raw)
+            if m[0] == "REQ":
+                await ws.send(json.dumps(["EOSE", m[1]]))
+    sa, ua = await _server(relay_a)
+    sb, ub = await _server(relay_b)
+    pool = RelayPool([ua, ub], cool_base=0.3)
+    pool.start()
+    try:
+        assert await pool.wait_open(30, at_least=2)
+        await pool.publish(nostr.build_event(SK, 4242, "zero", [["h", "r"]]), wait=0.2)
+        e = nostr.build_event(SK, 4242, "E", [["h", "r"]])
+        await pool.publish(e, wait=1.5)     # A cools, B is silent; A's flush after the cool delivers E meanwhile
+        assert e["id"] in got_a and pool.delivery(e["id"]) == "sent" and e["id"] not in pool._outbox
+    finally:
+        await pool.stop()
+        sa.close()
+        sb.close()
+
+
+def test_the_probe_survives_hostile_events():
+    import importlib.util
+    from pathlib import Path
+    spec = importlib.util.spec_from_file_location("relay_probe", Path(__file__).parent.parent / "scripts/relay_probe.py")
+    probe = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(probe)
+    evs = [{"pubkey": "a", "content": json.dumps({"t": []})}, {"pubkey": ["x"], "content": json.dumps({"t": {}})},
+           {"pubkey": "b", "content": json.dumps({"t": "msg\x1b[2J"})}, {"content": "[1, 2]"}, "junk", None,
+           {"pubkey": "c", "content": json.dumps({"t": "msg"})}]
+    out = probe.summarize(evs)
+    assert "\x1b" not in out and "5 events from 3 keys" in out

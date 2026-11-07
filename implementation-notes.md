@@ -560,3 +560,12 @@ Out of scope, noticed:
 - Join by code returns `found: false` when neither metadata nor any history turned up, and the dialog says to check the code or ask which relays the sharer uses. Codes still don't carry relays: everyone on the defaults shares five, and putting relays in the code would make it long. Revisit if people use custom lists.
 - `scripts/relay_probe.py ninsei:<code>`: read-only per-relay counts by type, flags a relay with fewer events. Meant to be run from another machine or network.
 - Not done: the cross-network test itself (a second machine or person). Damus's ban on this Mac will lift on its own; until then its count stays low here.
+
+## Review fixes, 2026-11-07 (overnight Opus review of a3783da..828db90)
+
+1. Lucky spelling (medium): the truth went out in the host's spelling while a merged fake goes out in its first writer's, so a lucky writer reading the raw `tales_vote_open` saw their token on an option not spelled their way: the truth. A second team (fresh keys are a new team) could then vote for it. Now the truth goes out in the first lucky writer's spelling (`game.build_options`), the same rule as merged fakes. The reveal still names the host's answer.
+2. Cooling never doubled (medium) against a relay that refills an allowance: the first accepted event after a wait reset the step, and the after-cool flush sent the whole backlog in one burst, so it broke the limit once a minute. Now the step resets only after `cool_max` with no "slow down", the flush waits `FLUSH_GAP_S` (0.25 s) between events, and it stops as soon as the relay starts cooling again.
+3. Re-queue race (low-medium): a publish whose own sends got no answer re-queued an event that a flush had already delivered, so it read "not delivered". `_settle` no longer re-queues an event marked sent.
+4. Reads paused during a cool (low): any disconnect waited out the cool before reconnecting. Now only a connect refused with 429/503 waits; other drops reconnect as usual.
+5. `relay_probe.py` crashed on an event whose `t` was a list, and printed control characters raw. `t` must be a string, non-printables become `?`.
+Each has a test (`test_relay_limits.py`, `test_game_secrecy.py`). Checked sound by the review: NIP-44 against the spec, sealed sizes, replay and forgery, claim tokens, decrypt cost, lucky scoring, agent turns, cooling scope, `_beat_soon`, `found`.

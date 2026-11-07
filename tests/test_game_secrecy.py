@@ -389,13 +389,13 @@ async def test_a_lucky_match_reads_as_your_own_answer_and_cant_be_voted_for(bare
     assert await wait_for(lambda: (eve.game_view(ROOM) or {}).get("phase") == "vote")
     options = _eve_sees_no_answer(eve, host, ("Three", "nine"))
     by_text = {o["text"]: o["id"] for o in options}
-    truth = by_text["three"]
+    truth = by_text["Three"]
     sv, hv = sam.game_view(ROOM), host.game_view(ROOM)
     assert truth in sv["blocked"] and by_text["nine"] not in sv["blocked"]
-    # the truth shows Sam his own spelling: "three" (the host's) next to his "Three" would give it away
-    assert {o["id"]: o["text"] for o in sv["options"]}[truth] == "Three"
-    assert {o["id"]: o["text"] for o in hv["options"]}[truth] == "three"
-    assert {o["id"]: o["text"] for o in eve.game_view(ROOM)["options"]}[truth] == "three"
+    # the truth goes out in the lucky writer's spelling, as a merged fake goes out in its first writer's:
+    # the host's "three" next to Sam's token would tell a modified client it's the truth
+    for view in (sv, hv, eve.game_view(ROOM)):
+        assert {o["id"]: o["text"] for o in view["options"]}[truth] == "Three"
     assert truth not in hv["blocked"] and hv["blocked"] == [by_text["nine"]]
     await sam.submit_vote(ROOM, gid, 1, truth)  # a modified client votes for it anyway: the host refuses it
     await host.submit_vote(ROOM, gid, 1, truth)
@@ -497,3 +497,19 @@ async def test_my_own_answer_and_blocks_survive_a_restart(bare):
         await asyncio.gather(*e2._tasks, return_exceptions=True)
         await e2.pool.stop()
         e2.store.close()
+
+
+def test_a_lucky_writer_cant_tell_the_truth_from_their_own_fake_in_the_raw_event():
+    """Review 2026-11-07: the truth showed the host's spelling while a fake shows its first writer's, so a
+    lucky writer who posted first could spot the truth by their token on an option not spelled their way."""
+    import secrets as _s
+    from ninsei_engine import game as _g
+    from ninsei_engine.engine import Engine as _E, _claim_token as _tok
+    guess = "pArIs"
+    for truth in ("Paris", "Rome"):
+        fakes = {"A": guess, "C": "Lyon", "D": "Marseille"}
+        nonces = {pk: _s.token_hex(16) for pk in fakes}
+        options, truth_id, author_of, lucky = _g.build_options(truth, fakes, _s.token_hex(16))
+        claims = _E._option_claims(options, author_of, nonces, truth_id, lucky)
+        mine = [o for o in options if _tok(o["id"], nonces["A"]) in claims[o["id"]]]
+        assert len(mine) == 1 and mine[0]["text"] == guess      # the same either way

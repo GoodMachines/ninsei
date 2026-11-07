@@ -31,14 +31,21 @@ def room_id(code: str) -> str:
     return room
 
 
-def summarize(events: list[dict]) -> str:
-    keys = {e.get("pubkey") for e in events}
+def _type_of(e) -> str:
+    """The event's `t`, printable: anyone can post to a room, so any field can be any type or text."""
+    try:
+        t = json.loads(e.get("content") or "{}").get("t", "?")
+    except (ValueError, AttributeError, TypeError):
+        return "?"
+    return re.sub(r"[^\x21-\x7e]", "?", t)[:24] if isinstance(t, str) else "?"
+
+
+def summarize(events: list) -> str:
+    events = [e for e in events if isinstance(e, dict)]
+    keys = {e.get("pubkey") for e in events if isinstance(e.get("pubkey"), str)}
     kinds: dict[str, int] = {}
     for e in events:
-        try:
-            t = json.loads(e.get("content") or "{}").get("t", "?")
-        except (ValueError, AttributeError):
-            t = "?"
+        t = _type_of(e)
         kinds[t] = kinds.get(t, 0) + 1
     by_type = ", ".join(f"{k} {v}" for k, v in sorted(kinds.items()))
     return f"{len(events):4} events from {len(keys)} keys" + (f"  ({by_type})" if by_type else "")

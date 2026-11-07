@@ -31,7 +31,7 @@ Room ids commit to their creator (`sha256("ninsei-room:{creator_pk}:{nonce}")[:1
 
 A durable event's `pending` outbox row is written before sending, so quitting mid-send resends it next start. Failed rows stay 4 days. Resubscribes ask from 300 s before the newest event, clamped to now. Backoff resets only after a connection stayed up 30 s, or delivered something and stayed up 5 s. All filters (live, each creator's metadata, one history filter per room, limit 300) are chunked, at most 8 per request. An empty relay list means offline.
 
-**Rate limits are per IP.** A relay that says "rate-limited", "try again later" or HTTP 429/503 gets no events for 1 min, doubling to 30; reads go on and refused events stay pending until it cools. Sending on got this Mac banned from damus. Codes don't carry relays, so a join that finds nothing returns `found: false`. `scripts/relay_probe.py` checks a room from outside.
+**Rate limits are per IP.** A relay that says "rate-limited", "try again later" or HTTP 429/503 gets no events for 1 min, doubling to 30 until it stays quiet that long; refused events stay pending and are resent paced. Ignoring that got this Mac banned. Codes don't carry relays, so a join that finds nothing returns `found: false`. `scripts/relay_probe.py` checks a room from outside.
 
 ## Finding people
 
@@ -69,7 +69,7 @@ When a topic keeps coming up, one model call drafts a pitch, title and private t
 
 Both games share `tales_*` events, the host's secret seed and the phase clock. One start per room at a time; a start with no known arrival never outranks a live one. Only present players count (per team, the person's answer plus one agent's), at most 24, regulars first, then the seed picks. Reveals stay under 32 KB. In Tall Tales only people vote, never for their team's option.
 
-**Answers and votes are sealed.** A `tales_fake` or `tales_vote` carries only `enc`: NIP-44 v2 (`nip44.py`, vectors in `tests/data/`) to the host agent key, padded to 944 chars. Answers hold `{text, nonce}`, votes `{option, agents}`. The host refuses other sizes before crypto, opens each author's latest event only, ignores plaintext. Only its writer can match a claim token, `sha256("claim:" + oid + ":" + nonce)[:12]`; each option gets equal decoy-padded counts, in option order. Lucky rule: a fake matching the truth earns a point, the truth carries that writer's token, and their team can't vote for it. Blocked options show your own spelling. Players reopen their own events; who answered and voted is public.
+**Answers and votes are sealed.** A `tales_fake` or `tales_vote` carries only `enc`: NIP-44 v2 (`nip44.py`, vectors in `tests/data/`) to the host agent key, padded to 944 chars. Answers hold `{text, nonce}`, votes `{option, agents}`. The host refuses other sizes before crypto, opens each author's latest event only, ignores plaintext. Only its writer can match a claim token, `sha256("claim:" + oid + ":" + nonce)[:12]`; each option gets equal decoy-padded counts, in option order. Lucky rule: a fake matching the truth earns a point, the truth carries that writer's token and (like a merged fake) the first writer's spelling, and their team can't vote for it. Who answered and voted is public.
 
 ## Faces, cards and reactions
 

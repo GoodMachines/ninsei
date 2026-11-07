@@ -62,7 +62,10 @@ def build_options(truth: str, fakes: dict[str, str], seed: str,
 
     A fake that matches the truth (after normalising) is dropped and its author is "lucky": they
     guessed the real answer while trying to bluff. Duplicate fakes collapse into one option, credited
-    to everyone who wrote it. At most MAX_OPTIONS options go out and the truth is always one of them.
+    to everyone who wrote it, shown in the first writer's spelling. The truth follows the same rule
+    when someone matched it: it shows the first lucky writer's spelling, not the host's. Otherwise a
+    lucky writer could read the raw event, see their claim token on an option that isn't spelled
+    their way, and know it is the truth (and tell a second team to vote for it). At most MAX_OPTIONS options go out and the truth is always one of them.
     When there are more fakes than fit, fakes by `preferred` authors (the players present when the
     round opened) go first, and the rest are picked by a shuffle seeded with the host's secret: never
     by arrival order, which whoever floods the round first would control."""
@@ -71,6 +74,7 @@ def build_options(truth: str, fakes: dict[str, str], seed: str,
     by_text: dict[str, list[str]] = {}
     shown: dict[str, str] = {}
     lucky = []
+    lucky_text = ""
     for author, text in fakes.items():
         text = text if isinstance(text, str) else ("" if text is None else str(text))
         n = norm(text)
@@ -78,6 +82,7 @@ def build_options(truth: str, fakes: dict[str, str], seed: str,
             continue
         if n == truth_n:
             lucky.append(author)
+            lucky_text = lucky_text or text.strip()[:80]
             continue
         by_text.setdefault(n, []).append(author)
         shown.setdefault(n, text.strip()[:80])
@@ -88,7 +93,7 @@ def build_options(truth: str, fakes: dict[str, str], seed: str,
         keys.sort(key=lambda k: not any(a in preferred for a in by_text[k]))  # stable: preferred first
         by_text = {k: by_text[k] for k in keys[:MAX_OPTIONS - 1]}
     rng = random.Random(seed)
-    items = [("truth", truth.strip()[:80], [])] + [(n, shown[n], a) for n, a in by_text.items()]
+    items = [("truth", lucky_text or truth.strip()[:80], [])] + [(n, shown[n], a) for n, a in by_text.items()]
     rng.shuffle(items)
     options, author_of, truth_id = [], {}, ""
     for i, (key, text, authors) in enumerate(items):
