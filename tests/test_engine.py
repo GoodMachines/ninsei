@@ -169,7 +169,7 @@ async def test_message_cap_stops_replies_before_the_model_call(world):
     room = await setup_room(engines)
     maya, sam = engines["Maya"], engines["Sam"]
     maya.save_settings({"msgs_daily": 1})
-    await run(sam, sam.post, room, "Ada, what do you think of dithering?")
+    await run(maya, maya.post, room, "Ada, what do you think of dithering?")   # my owner's message: the cap is the total
     assert await wait_for(lambda: any(m["text"] == "Ada says hello" for m in read(sam, sam.messages, room)))
     calls = llms["Maya"].calls.count("ninsei.reply")
     assert read(maya, maya.budget_view)["msgs"] == {"used": 1, "limit": 1}

@@ -893,7 +893,7 @@ async def test_a_conversation_is_in_every_snapshot_without_its_text(bare):
     snap = e.snapshot()
     d = snap["dms"]
     assert set(d) == {"threads", "unread", "requests", "pending", "rel", "rev"}
-    assert set(d["threads"][0]) == {"pk", "name", "impostor", "friend", "unread", "ts", "last_unread"}
+    assert set(d["threads"][0]) == {"pk", "name", "impostor", "friend", "unread", "ts", "last_unread", "status", "online"}
     assert len(d["threads"][0]["last_unread"]["text"]) <= 60 and "a long private thing" in d["threads"][0]["last_unread"]["text"]
     assert long.strip() not in json.dumps(snap)                                  # never the whole message
 

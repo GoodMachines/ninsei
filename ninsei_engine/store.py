@@ -21,7 +21,7 @@ CREATE INDEX IF NOT EXISTS events_room ON events(room, created_at);
 CREATE TABLE IF NOT EXISTS rooms (id TEXT PRIMARY KEY, meta TEXT NOT NULL, joined_at INTEGER, last_read INTEGER DEFAULT 0);
 CREATE TABLE IF NOT EXISTS ledger (
   id TEXT PRIMARY KEY, day TEXT NOT NULL, category TEXT NOT NULL, reserved INTEGER NOT NULL,
-  used INTEGER, created_at REAL NOT NULL, settled_at REAL);
+  used INTEGER, created_at REAL NOT NULL, settled_at REAL, stranger INTEGER NOT NULL DEFAULT 0);
 CREATE INDEX IF NOT EXISTS ledger_day ON ledger(day);
 CREATE TABLE IF NOT EXISTS outbox (
   id TEXT PRIMARY KEY, room TEXT NOT NULL, text TEXT NOT NULL, origin TEXT, status TEXT NOT NULL, created_at REAL NOT NULL);
@@ -128,6 +128,7 @@ class Store:
         self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         os.chmod(self.path.parent, 0o700)
         self._lock = threading.RLock()
+        self.refused = ""   # why the last `reserve` said no: "total" or "share"
         old_umask = os.umask(0o077)
         try:
             self._db = sqlite3.connect(str(self.path), check_same_thread=False, timeout=10)
@@ -144,6 +145,11 @@ class Store:
             try:
                 self._db.execute("ALTER TABLE events ADD COLUMN arrived_at REAL")
             except sqlite3.OperationalError:  # another process (ninsei_say) added it first
+                pass
+        if "stranger" not in {r[1] for r in self._db.execute("PRAGMA table_info(ledger)")}:  # before the stranger share
+            try:
+                self._db.execute("ALTER TABLE ledger ADD COLUMN stranger INTEGER NOT NULL DEFAULT 0")
+            except sqlite3.OperationalError:
                 pass
         self._db.commit()
         self._dm_migrate()
@@ -299,19 +305,38 @@ class Store:
                 (day,)).fetchall()
         return {r[0]: int(r[1] or 0) for r in rows}
 
-    def reserve(self, category: str, tokens: int, limit: int) -> Optional[str]:
-        """Atomically reserve `tokens` against today's limit. Returns a ticket, or None if it won't fit."""
+    def reserve(self, category: str, tokens: int, limit: int, stranger_limit: Optional[int] = None) -> Optional[str]:
+        """Atomically reserve `tokens` against today's limit. Returns a ticket, or None if it won't fit.
+        With `stranger_limit` the call was triggered by someone other than the owner: the same transaction
+        also checks the day's other-triggered subtotal against it, and marks the row, so no number of
+        concurrent strangers can overshoot their share. Owner calls pass none and count against the total only."""
         day = today()
         with self._lock:
             (spent,) = self._db.execute(
                 "SELECT COALESCE(SUM(COALESCE(used, reserved)),0) FROM ledger WHERE day=?", (day,)).fetchone()
             if spent + tokens > limit:
+                self.refused = "total"
                 return None
+            if stranger_limit is not None:
+                (theirs,) = self._db.execute(
+                    "SELECT COALESCE(SUM(COALESCE(used, reserved)),0) FROM ledger WHERE day=? AND stranger=1",
+                    (day,)).fetchone()
+                if theirs + tokens > stranger_limit:
+                    self.refused = "share"   # the total had room: only others' share is gone
+                    return None
             tid = uuid.uuid4().hex
-            self._db.execute("INSERT INTO ledger(id,day,category,reserved,created_at) VALUES(?,?,?,?,?)",
-                             (tid, day, category, tokens, time.time()))
+            self._db.execute("INSERT INTO ledger(id,day,category,reserved,created_at,stranger) VALUES(?,?,?,?,?,?)",
+                             (tid, day, category, tokens, time.time(), 0 if stranger_limit is None else 1))
             self._db.commit()
             return tid
+
+    def stranger_used(self, day: Optional[str] = None) -> int:
+        """Tokens today's other-triggered calls have used (or hold reserved)."""
+        with self._lock:
+            (n,) = self._db.execute(
+                "SELECT COALESCE(SUM(COALESCE(used, reserved)),0) FROM ledger WHERE day=? AND stranger=1",
+                (day or today(),)).fetchone()
+        return int(n or 0)
 
     def settle(self, ticket: str, used: int) -> None:
         with self._lock:

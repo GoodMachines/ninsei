@@ -7,6 +7,7 @@ routes in `dashboard/plugin_api.py` talk to it through `Engine.call()`.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import fcntl
 import functools
 import hashlib
@@ -151,6 +152,20 @@ DEFAULT_RELAYS = ["wss://nos.lol", "wss://relay.primal.net", "wss://nostr.mom",
                   "wss://relay.snort.social", "wss://relay.damus.io"]
 
 CHATTINESS = {"quiet": 0.0, "normal": 0.12, "lively": 0.3}
+
+# A person's status. The page says it is open (`here`); everything else follows from these times.
+PRESENT_FOCUS = 180        # s: focused this recently means present
+IDLE_OPEN = 900            # s: the page open this recently means idle (and "around": the owner is not away)
+IDLE_FOCUS = 1800          # s: or focused this recently
+STATUS_BEAT_GAP = 30       # s: status changes may cost at most one extra presence beat per this long, overall
+STATUS_MODES = ("auto", "present", "idle", "dnd", "invisible")
+PERSON_STATUSES = ("present", "idle", "dnd", "away")   # what a beat may carry; anything else is ignored
+STATUS_RANK = {"present": 0, "idle": 1, "dnd": 1, "unknown": 1, "away": 2}   # members list order
+AWAY_MODES = ("chat", "named", "quiet")
+STRANGER_SHARES = (0.25, 0.5, 0.75)   # of budget_daily (and msgs_daily) that calls others trigger may use
+# Who triggered the model call being made: "stranger" (anyone but the owner) or "owner". Set around each
+# brain call; `_reserve` reads it, so Brain needs no extra argument and every call site names its trigger.
+_TRIGGER = contextvars.ContextVar("ninsei_trigger", default="owner")
 MAX_ROOM_PREFS = 200  # rooms with a per-room setting (mute, chattiness); far more than anyone joins
 FACE_SHAPES = ["round", "soft", "tall", "wide", "drop", "bean"]
 # The rest of a face. Every list starts with its default, and ui/00_core.js keeps the same lists
@@ -285,6 +300,22 @@ def _build_claim(b: Any) -> Optional[dict]:
     if not isinstance(step, int) or isinstance(step, bool):
         step = 0
     return {"offer": b["offer"], "step": max(0, min(step, MAX_BUILD_STEPS)), "wait": b.get("wait") is True}
+
+
+def _person_claim(v: Any) -> Optional[str]:
+    """A peer's published status, parsed strictly: one of PERSON_STATUSES, else nothing (an older client, or junk)."""
+    return v if isinstance(v, str) and v in PERSON_STATUSES else None
+
+
+def _share_ok(v: Any) -> float:
+    """The stranger share, snapped to the nearest allowed value (a quarter, half or three quarters)."""
+    try:
+        x = float(v)
+    except (TypeError, ValueError):
+        return 0.5
+    if x != x:
+        return 0.5
+    return min(STRANGER_SHARES, key=lambda o: abs(o - x))
 
 
 def _gave_up_claim(b: Any) -> Optional[tuple]:
@@ -550,6 +581,12 @@ class Engine:
         self.ts = timescale  # tests shrink game and claim timers
         self._last_beat = 0.0
         self._beat_waiting = False
+        self._last_focused_at = 0.0          # the last `here` with focused=true, or a post (0: none since the engine started)
+        self._last_open_at = 0.0             # the last `here` of any kind
+        self._person_pub: Optional[str] = None   # the status my last presence beat carried
+        self._status_beat_at = 0.0           # when a status change last cost an extra beat
+        self._status_beat_waiting = False
+        self._refused = ""                   # why the last reservation was refused: "total" or "share" (others' part)
         self.loop: Optional[asyncio.AbstractEventLoop] = None
         self.thread: Optional[threading.Thread] = None
         self.pool: Optional[RelayPool] = None
@@ -778,13 +815,17 @@ class Engine:
         defaults = {
             "onboarded": False, "display_name": "", "interests": [], "line": "",
             "agent_name": "", "vibe": "warm, curious, a little playful", "face": None, "persona": "", "persona_source": "",
-            "budget_daily": 40000, "msgs_daily": MSGS_DAILY, "chattiness": "normal", "offers": True, "share_budget": False,
+            "budget_daily": 40000, "msgs_daily": MSGS_DAILY, "stranger_share": 0.5, "away_mode": "named",
+            "status_mode": "auto", "chattiness": "normal", "offers": True, "share_budget": False,
             "card_details": False, "relays": DEFAULT_RELAYS, "card_published_at": 0,
             "person_face": None, "show_avatars": "everyone", "room_prefs": {},
         }
         out = {**defaults, **s}
         out["person_face"] = clean_face(out["person_face"]) if isinstance(out.get("person_face"), dict) and out["person_face"] else None
         out["show_avatars"] = "nobody" if out.get("show_avatars") == "nobody" else "everyone"
+        out["status_mode"] = out["status_mode"] if out.get("status_mode") in STATUS_MODES else "auto"
+        out["away_mode"] = out["away_mode"] if out.get("away_mode") in AWAY_MODES else "named"
+        out["stranger_share"] = _share_ok(out.get("stranger_share"))
         out["room_prefs"] = _clean_room_prefs(out.get("room_prefs"))
         # a face saved before a key existed (the card style, say) gains its default here
         out["face"] = clean_face(out["face"]) if out.get("face") else self._default_face()
@@ -799,7 +840,7 @@ class Engine:
         cur = self.settings()
         allowed = {"onboarded", "display_name", "interests", "line", "agent_name", "vibe", "face",
                    "persona", "persona_source", "budget_daily", "msgs_daily", "chattiness", "offers", "share_budget", "card_details", "relays",
-                   "person_face", "show_avatars"}
+                   "person_face", "show_avatars", "status_mode", "away_mode", "stranger_share"}
         before = cur["show_avatars"]
         for k, v in patch.items():
             if k not in allowed:
@@ -821,6 +862,12 @@ class Engine:
                 v = max(0, min(int(v), MAX_MSGS_DAILY))
             elif k == "chattiness":
                 v = v if v in CHATTINESS else "normal"
+            elif k == "status_mode":
+                v = v if v in STATUS_MODES else cur[k]
+            elif k == "away_mode":
+                v = v if v in AWAY_MODES else cur[k]
+            elif k == "stranger_share":
+                v = _share_ok(v)
             elif k == "face":
                 v = clean_face(v)
             elif k == "person_face":  # the person's own built face; an empty one means "use my initial"
@@ -837,6 +884,7 @@ class Engine:
         self.store.set("settings", cur)
         if cur["show_avatars"] != before:
             self._art_shown_changed(cur["show_avatars"])
+        self._status_check()
         return {**cur, "flags": personas.scan_private(cur.get("persona"))}   # flags are advice, never stored
 
     def room_chattiness(self, room: str) -> str:
@@ -1373,6 +1421,7 @@ class Engine:
                 "state": str(c.get("state", "activity: idle"))[:32], "budget": _budget_share(c.get("budget")),
                 "at": time.time(), "owner": owner, "name": name, "face": _face_or(c.get("face"), None),
                 "build": _build_claim(c.get("build")), "gave_up": _gave_up_claim(c.get("gave_up")),
+                "person": _person_claim(c.get("person")),
                 "vibe": str(c.get("vibe"))[:200] if isinstance(c.get("vibe"), str) else "",
                 "model": _model_ok(c.get("model"))}
             self._seen_active(room, ev["pubkey"], time.time())
@@ -1866,6 +1915,11 @@ class Engine:
             prio = 20
         else:
             return
+        # While my owner is away (by the local rule, whatever status they publish) the agent follows away_mode.
+        # My owner's own messages always pass (they are plainly here); everything else is a stranger's trigger.
+        stranger = not from_owner
+        if stranger and self.owner_away() and not self._away_allows(addressed and not from_agent):
+            return   # before any claim: an agent that won't answer must not hold the floor either
         if self._game_running(room) and not addressed:
             return
         if not self.brain.available():
@@ -1883,6 +1937,8 @@ class Engine:
         if self._msgs_left() <= 0:
             await self._rest_notice(room, addressed, "said enough for today")
             return
+        if stranger and self._strangers_spent():
+            return   # others' share of the day is used up: no claim, no notice, nothing in the room
         if team is not None and not self._rate_ok(f"claims:{room}", ROOM_STRANGER_CLAIMS, STRANGER_WINDOW):
             return  # floors lost to other agents cost no call, so claims have their own room-wide cap
         if not await self._win_floor(room, ev["id"], prio, always=addressed):
@@ -1894,11 +1950,15 @@ class Engine:
         if (self._msg_fx(room).get(ev["id"]) or {}).get("deleted") or ev["id"] not in self.events.get(room, {}):
             return  # its author took it back (or discarded it) while the floor was being decided: nothing to answer
         self._inflight += 1
+        trigger = _TRIGGER.set("stranger" if stranger else "owner")
         try:
             self._set_state("activity: working")
             text = await self.brain.reply(self.persona(), self.settings()["display_name"] or "your owner",
                                           self._transcript(room), self._line(room, ev))
         except BudgetExhausted:
+            if stranger and self._refused == "share":   # only others' share is gone: say nothing in the room
+                self._set_state("activity: idle")
+                return
             await self._rest_notice(room, addressed)
             return
         except Exception as e:
@@ -1906,17 +1966,27 @@ class Engine:
             self._set_state("system: error", str(e)[:120])
             return
         finally:
+            _TRIGGER.reset(trigger)
             self._inflight -= 1
         if not text:
             self._set_state("activity: idle")
             return
-        await self._say(room, text, reply_to=ev["id"], prio=prio)
+        await self._say(room, text, reply_to=ev["id"], prio=prio, stranger=stranger)
 
-    async def _say(self, room: str, text: str, reply_to: Optional[str] = None, prio: int = 0, extra: Optional[dict] = None):
+    def _away_allows(self, named_by_person: bool) -> bool:
+        """What my agent may do for someone else while my owner is away: "chat" anything, "named" only a reply to
+        a person who named it or replied to it (priority 100), "quiet" nothing."""
+        mode = self.settings()["away_mode"]
+        return mode == "chat" or (mode == "named" and named_by_person)
+
+    async def _say(self, room: str, text: str, reply_to: Optional[str] = None, prio: int = 0, extra: Optional[dict] = None,
+                   stranger: bool = False):
         system = bool((extra or {}).get("system"))
         if not system and self._msgs_left() <= 0:  # the daily message cap, enforced where every reply posts
             self._set_state("system: waiting", "said enough for today")
             return
+        if stranger and not system and self._stranger_msgs_left() <= 0:
+            return   # what others may use of the day's messages is spent: nothing said, nothing announced
         self._set_state("activity: speaking")
         tags = []
         if reply_to:
@@ -1924,7 +1994,8 @@ class Engine:
             tags = [["e", reply_to, "", "reply"], ["prio", str(prio), tb]]
         await self._publish_room(room, True, {"t": "msg", "text": text[:1200], **(extra or {})}, tags)
         if not system:
-            self.store.set("said", {"day": today(), "n": self._said_today() + 1})
+            self.store.set("said", {"day": today(), "n": self._said_today() + 1,
+                                    "ns": self._said_strangers() + (1 if stranger else 0)})
         self._last_spoke[room] = time.time()
         self._recent_posts.append(time.time())
         await asyncio.sleep(2.5 * self.ts)
@@ -2051,7 +2122,31 @@ class Engine:
     # budget
     # ============================================================================================
     def _reserve(self, category: str, tokens: int) -> Optional[str]:
-        return self.store.reserve(category, tokens, int(self.settings()["budget_daily"]))
+        """Every model call reserves here, atomically. A call whose trigger is anyone but my owner also has to
+        fit the stranger share (the same transaction checks both); my owner's counts against the total only."""
+        limit = int(self.settings()["budget_daily"])
+        if _TRIGGER.get() == "stranger":
+            ticket = self.store.reserve(category, tokens, limit, int(limit * self._share_now()))
+        else:
+            ticket = self.store.reserve(category, tokens, limit)
+        self._refused = "" if ticket else self.store.refused   # "share" only when the total had room: said nothing, then
+        return ticket
+
+    def _share_now(self) -> float:
+        """The part of the day's budget (and messages) others may use: the setting, halved while the owner is
+        away by the local rule, so a stranger can't spend the night."""
+        share = self.settings()["stranger_share"]
+        return share / 2 if self.owner_away() else share
+
+    def _stranger_budget_left(self) -> int:
+        return int(int(self.settings()["budget_daily"]) * self._share_now()) - self.store.stranger_used()
+
+    def _stranger_msgs_left(self) -> int:
+        return int(int(self.settings()["msgs_daily"]) * self._share_now()) - self._said_strangers()
+
+    def _strangers_spent(self) -> bool:
+        """Has what others may use today run out (tokens or messages)? Then my agent stops answering them, silently."""
+        return self._stranger_budget_left() <= 0 or self._stranger_msgs_left() <= 0
 
     def _budget_left(self) -> int:
         return int(self.settings()["budget_daily"]) - sum(self.store.budget_used().values())
@@ -2059,6 +2154,11 @@ class Engine:
     def _said_today(self) -> int:
         s = self.store.get("said") or {}
         return int(s.get("n", 0)) if s.get("day") == today() else 0
+
+    def _said_strangers(self) -> int:
+        """Of today's messages, those that someone other than my owner triggered."""
+        s = self.store.get("said") or {}
+        return int(s.get("ns", 0)) if s.get("day") == today() else 0
 
     def _msgs_left(self) -> int:
         """The second daily limit: how many more room messages my agent may say today. Enforced in
@@ -2078,8 +2178,13 @@ class Engine:
         limit = int(self.settings()["budget_daily"])
         total = sum(used.values())
         pct = min(1.0, total / limit) if limit else 1.0
+        share = self._share_now()
+        theirs = self.store.stranger_used()
         return {"limit": limit, "used": total, "by": used, "pct": pct,
-                "msgs": {"used": self._said_today(), "limit": int(self.settings()["msgs_daily"])}}
+                "msgs": {"used": self._said_today(), "limit": int(self.settings()["msgs_daily"])},
+                "others": {"used": theirs, "limit": int(limit * share), "share": share, "away": self.owner_away(),
+                           "msgs": self._said_strangers(), "msgs_limit": int(int(self.settings()["msgs_daily"]) * share),
+                           "spent": self._strangers_spent()}}
 
     # ============================================================================================
     # proactive offers and the build → share loop
@@ -2108,6 +2213,10 @@ class Engine:
         tracker = self.topics[room]
         if self._game_running(room) or not self.brain.available():
             return
+        if self.owner_away() and self.settings()["away_mode"] != "chat":
+            return   # no offers drafted while my owner is away, in "named" or "quiet"
+        if self._strangers_spent():
+            return   # a drafted offer is a call a room's talk triggered: it needs others' share too
         last = self.store.get(f"offer_at:{room}", 0)
         if time.time() - last < 600 * self.ts:
             return
@@ -2126,17 +2235,22 @@ class Engine:
             return
         self.store.set(f"offer_at:{room}", time.time())
         self._inflight += 1
+        trigger = _TRIGGER.set("stranger")
         try:
             self._set_state("activity: working")
             offer = await self.brain.offer(self.persona(), self.settings()["display_name"] or "my owner",
                                            self._transcript(room), topic)
         except BudgetExhausted:
-            self._set_state("system: waiting", "out of budget for today")
+            if self._refused == "share":   # only others' share is gone
+                self._set_state("activity: idle")
+            else:
+                self._set_state("system: waiting", "out of budget for today")
             return
         except Exception as e:
             self._set_state("system: error", str(e)[:120])
             return
         finally:
+            _TRIGGER.reset(trigger)
             self._inflight -= 1
         if not offer:
             self._set_state("activity: idle")
@@ -2701,6 +2815,8 @@ class Engine:
         came with the questions, so there is no model call and no delay; one that matches the truth is dropped
         (my agent knows the truth, so a match is no bluff) and one more is asked for, which cannot see the truth.
         Who's the Agent?: one call, a few seconds in, so it isn't always first (that's a tell). My owner's budget."""
+        if self.owner_away() and self.settings()["away_mode"] == "quiet":
+            return   # "quiet": no game turns while my owner is away (my own choice: nothing is announced for it)
         tales = g.get("mode") != "agent"
         text = str(q.get("fake") or "") if tales else ""
         if tales and game.norm(text) == game.norm(q.get("a", "")):
@@ -2779,6 +2895,10 @@ class Engine:
         key = f"{ev['pubkey']}:{c.get('gid')}:{c.get('n')}"
         if key in self._played:
             return
+        if self.owner_away() and self.settings()["away_mode"] == "quiet":
+            return   # no game turns while my owner is away, in "quiet" ("named" keeps playing: no offers, no chatter)
+        if self._stranger_budget_left() <= 0:
+            return   # others' share of the day is spent: my own limit, so nothing is announced (no gave_up)
         if not self._rate_ok(f"fake:{room}:{_team_key(ev['pubkey'], self.owner_of(ev))}", FAKES_PER_HOST, FAKES_WINDOW):
             return   # my own cap: no model call and nothing announced
         if not self._stranger_call_ok(room, None, 0):
@@ -2794,6 +2914,7 @@ class Engine:
         if self._inflight >= MAX_INFLIGHT:
             return
         self._inflight += 1
+        trigger = _TRIGGER.set("stranger")
         try:
             owner_name = self.settings()["display_name"] or "my owner"
             if (self.game_view(room) or {}).get("mode") == "agent":
@@ -2805,13 +2926,17 @@ class Engine:
                 fake = await self.brain.fake(self.persona(), owner_name, str(c.get("q", "")),
                                              retry_ok=lambda: self._stranger_retry_ok(room))
         except BudgetExhausted:
-            self._set_state("system: waiting", "out of budget for today")
+            if self._refused == "share":   # only others' share is gone
+                self._set_state("activity: idle")
+            else:
+                self._set_state("system: waiting", "out of budget for today")
             return
         except Exception as e:
             self._set_state("system: error", str(e)[:120])
             self._gave_up_round(room, c.get("gid"), c.get("n"), note=False)
             return
         finally:
+            _TRIGGER.reset(trigger)
             self._inflight -= 1
         if fake:
             await self._publish_fake(room, True, c.get("gid"), c.get("n"), fake, ev["pubkey"])  # ev: the host's round
@@ -3465,6 +3590,113 @@ class Engine:
         return sum(1 for p in self.presence.get(room, {}).values() if now - p["at"] < ABSENT_AFTER)
 
     # ============================================================================================
+    # a person's status
+    # ============================================================================================
+    def _touch(self, focused: bool) -> None:
+        now = time.time()
+        self._last_open_at = now
+        if focused:
+            self._last_focused_at = now
+
+    def here(self, focused: bool) -> dict:
+        """The page says it is open (and whether it is the window the owner is looking at). Records two times;
+        publishes nothing itself, but a changed status asks for one extra beat (see _status_check)."""
+        self._touch(bool(focused))
+        self._status_check()
+        return self.status_view()
+
+    def auto_status(self, now: Optional[float] = None) -> str:
+        now = time.time() if now is None else now
+        if self._last_focused_at and now - self._last_focused_at < PRESENT_FOCUS:
+            return "present"
+        if (self._last_open_at and now - self._last_open_at < IDLE_OPEN) or \
+                (self._last_focused_at and now - self._last_focused_at < IDLE_FOCUS):
+            return "idle"
+        return "away"
+
+    def owner_around(self, now: Optional[float] = None) -> bool:
+        """Is the owner at their page: open within IDLE_OPEN? The local rule behind both a manual status
+        (only honoured while this holds) and away_mode (which follows it, whatever is published)."""
+        now = time.time() if now is None else now
+        return bool(self._last_open_at) and now - self._last_open_at < IDLE_OPEN
+
+    def owner_away(self, now: Optional[float] = None) -> bool:
+        return not self.owner_around(now)
+
+    def person_status(self, now: Optional[float] = None) -> str:
+        """What I publish: present, idle, dnd or away. A manual choice holds only while the owner is around;
+        invisible always shows away."""
+        now = time.time() if now is None else now
+        mode = self.settings()["status_mode"]
+        if mode == "invisible":
+            return "away"
+        if mode == "auto":
+            return self.auto_status(now)
+        return mode if self.owner_around(now) else "away"
+
+    def status_view(self) -> dict:
+        now = time.time()
+        return {"mode": self.settings()["status_mode"], "shown": self.person_status(now),
+                "auto": self.auto_status(now), "around": self.owner_around(now)}
+
+    def _status_check(self) -> None:
+        """If the status I would publish differs from the last beat's, send a beat soon: at most one extra per
+        STATUS_BEAT_GAP overall (a later change waits for the gap and sends whatever is true then). The regular
+        60 s beat covers the rest, and a status that drifts with the clock needs no extra."""
+        if not self.pool or self._person_pub is None or self.person_status() == self._person_pub:
+            return   # (before the first beat, that beat says it)
+        wait = self._status_beat_at + STATUS_BEAT_GAP * self.ts - time.time()
+        if wait <= 0:
+            self._status_beat_at = time.time()
+            self._spawn(self._presence_once())
+            return
+        if self._status_beat_waiting:
+            return
+        self._status_beat_waiting = True
+
+        async def later():
+            try:
+                await asyncio.sleep(wait)
+            finally:
+                self._status_beat_waiting = False
+            if self.person_status() != self._person_pub:
+                self._status_beat_at = time.time()
+                await self._presence_once()
+        self._spawn(later())
+
+    def _status_of(self, entries: list[dict], now: float) -> tuple[str, bool]:
+        """(status, online by the old rule) of one person from their agents' presence entries: the newest fresh
+        beat that carries a status decides; fresh beats without one make it "unknown" (an older client, shown as
+        the agent-based online/away it always was); none fresh is "away"."""
+        fresh = sorted((p for p in entries if now - p["at"] < ABSENT_AFTER), key=lambda p: -p["at"])
+        if not fresh:
+            return "away", False
+        for p in fresh:
+            if p.get("person"):
+                return p["person"], True
+        return "unknown", True
+
+    def _status_map(self, room: Optional[str] = None) -> dict[str, tuple[str, bool]]:
+        """owner pk -> (status, online) over one room's presence, or over every joined room's, where the newest
+        beat anywhere decides: the status of a friend I share any room with."""
+        now = time.time()
+        by: dict[str, list[dict]] = {}
+        for r in ([room] if room else list(self.store.rooms())):
+            for p in self.presence.get(r, {}).values():
+                by.setdefault(p["owner"], []).append(p)
+        return {o: self._status_of(es, now) for o, es in by.items()}
+
+    def _here_in(self, room: str) -> int:
+        """People here: present or idle (a person whose client sends no status counts by the old rule: an agent
+        beat in the last ABSENT_AFTER seconds). Me by what I publish."""
+        me = self._identity()["person_pk"]
+        n = 1 if self.person_status() in ("present", "idle") else 0
+        for o, (st, online) in self._status_map(room).items():
+            if o != me and (st in ("present", "idle") or (st == "unknown" and online)):
+                n += 1
+        return n
+
+    # ============================================================================================
     # presence
     # ============================================================================================
     async def _presence_loop(self) -> None:
@@ -3505,9 +3737,10 @@ class Engine:
             self.agent_state, self.agent_note = "system: waiting", why
         s = self.settings()
         bv = self.budget_view()
+        person = self._person_pub = self.person_status()   # my status rides in the beat that is already sent
         for room in ([only] if only else list(self.store.rooms())):
             content = {"t": "presence", "state": self.agent_state,
-                       "budget": round(bv["pct"], 2) if s["share_budget"] else None}
+                       "budget": round(bv["pct"], 2) if s["share_budget"] else None, "person": person}
             if self._gave_up and self._gave_up[2] == room:   # "couldn't answer" in the game panel, for this one round and room (checked on receipt)
                 content["gave_up"] = {"gid": self._gave_up[0], "n": self._gave_up[1]}
             if s["card_details"]:  # the owner chose to show these on the agent's card
@@ -3543,6 +3776,7 @@ class Engine:
     # owner actions from the UI
     # ============================================================================================
     async def post(self, room: str, text: str, reply: Optional[str] = None) -> dict:
+        self._touch(True)   # sending is activity, whichever client sent it
         text = (text or "").strip()[:1200]
         if not text:
             raise ValueError("empty message")
@@ -3735,6 +3969,7 @@ class Engine:
         is here to see it. Never an error to the UI: a signal that isn't sent says why."""
         if room not in self.events or not self.settings()["onboarded"]:
             return {"sent": False, "why": "not in that room"}
+        self._touch(True)   # typing is activity
         now = time.time()
         if now - self._typing_at.get(room, 0.0) < TYPING_GAP:
             return {"sent": False, "why": "just sent one"}
@@ -4362,6 +4597,7 @@ class Engine:
         pend = lists["requests"][:FRIEND_REQUESTS]
         book = self._dm_book({t["peer"] for t in threads} | {r["peer"] for r in pend})
         remembered = self.store.friend_names()
+        statuses = self._status_map()   # a friend's status from any room we share
         rows, unread = [], 0
         for t in threads:
             pk = t["peer"]
@@ -4369,7 +4605,8 @@ class Engine:
             if t["friend"] and info["name"] and not info["flag"] and remembered.get(pk) != info["name"]:
                 self.store.friend_name_set(pk, info["name"])   # so a lookalike can be told apart while they're quiet
             row = {"pk": pk, "name": self._dm_label(pk, info), "impostor": bool(info["flag"]), "friend": t["friend"],
-                   "unread": t["unread"], "ts": t["last_ts"]}
+                   "unread": t["unread"], "ts": t["last_ts"],
+                   "status": statuses.get(pk, ("away", False))[0], "online": statuses.get(pk, ("away", False))[1]}
             if t["unread"]:
                 nu = self.store.dm_newest_unread(pk)
                 if nu:
@@ -4642,6 +4879,7 @@ class Engine:
                 a["build"] = {"title": offer_titles[b["offer"]][1], "step": b["step"], "wait": b["wait"]}
             people.setdefault(p["owner"], {"pk": p["owner"], "name": _short(p["owner"]), "last": 0})
         who = self._who(room)
+        statuses = self._status_map(room)
         out = []
         for pk, person in people.items():
             mine = [a for a in agents.values() if a["owner"] == pk]
@@ -4657,7 +4895,11 @@ class Engine:
             online = any(now - a.get("seen", 0) < ABSENT_AFTER for a in mine)
             if pk == ident["person_pk"]:
                 online = True
-            entry = {**person, "you": pk == ident["person_pk"], "online": online, "npub": nostr.npub(pk)[:16],
+                status = self.person_status(now)
+            else:
+                status = statuses.get(pk, ("away", False))[0]
+            entry = {**person, "you": pk == ident["person_pk"], "online": online, "status": status,
+                     "npub": nostr.npub(pk)[:16],
                      "first": seen[pk][0] if pk in seen else None, "posts": seen[pk][1] if pk in seen else 0,
                      "agents": []}
             for a in mine:
@@ -4673,7 +4915,9 @@ class Engine:
                 entry["agents"].append({**a, "state": state, "yours": a["pk"] == ident["agent_pk"],
                                         "first": sa[0] if sa else None, "posts": sa[1] if sa else 0})
             out.append(entry)
-        out.sort(key=lambda p: (not p["you"], not p["online"], p["name"].lower()))
+        # Present first, then idle, do not disturb and people whose client sends no status, then away.
+        out.sort(key=lambda p: (not p["you"], STATUS_RANK[p["status"]] if p["status"] != "unknown" or p["online"] else 2,
+                                p["name"].lower()))
         return out
 
     def _reaction_states(self, evs: list[dict]) -> dict:
@@ -5002,7 +5246,7 @@ class Engine:
                            and self._mentions_me(str((fx.get(e["id"]) or {}).get("text") or c.get("text", ""))[:1200])),
                           key=lambda h: self._order(h[0]))
             mentions = len(hits)
-            online = sum(1 for p in self.presence.get(rid, {}).values() if time.time() - p["at"] < ABSENT_AFTER)
+            online = self._here_in(rid)
             rooms.append({"id": rid, "name": meta.get("name", ""), "about": meta.get("about", ""),
                           "interests": meta.get("interests", []), "unread": unread, "mentions": mentions,
                           "online": online, "last_read": int(meta.get("last_read") or 0),
@@ -5031,7 +5275,9 @@ class Engine:
                              "model": self.store.get("model_last") or ""}},
             "settings": {k: s[k] for k in ("onboarded", "display_name", "interests", "line", "agent_name", "vibe",
                                            "persona", "persona_source", "face", "budget_daily", "msgs_daily", "chattiness", "offers", "share_budget", "relays",
-                                           "card_details", "card_published_at", "person_face", "show_avatars")},
+                                           "card_details", "card_published_at", "person_face", "show_avatars",
+                                           "status_mode", "away_mode", "stranger_share")},
+            "status": self.status_view(),
             "budget": self.budget_view(),
             "model": self.brain.available(),
             "rooms": rooms,

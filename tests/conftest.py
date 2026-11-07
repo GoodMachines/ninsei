@@ -52,3 +52,19 @@ def _no_public_relays(monkeypatch):
     monkeypatch.setattr(_relays.websockets, "connect", guarded)
     yield
     assert not tried, f"a test tried to open public relays: {sorted(set(tried))}"  # ...so fail here
+
+
+# Engines start with "the owner is away" (no page has said it is open), and the default away_mode answers only
+# when named. Most tests are about a room with its owner at the screen, so engines start that way here; a test
+# about being away sets `_last_open_at = _last_focused_at = 0.0` itself.
+@pytest.fixture(autouse=True)
+def _owner_at_the_screen(monkeypatch):
+    import time as _time
+    from ninsei_engine import engine as _engine
+    real = _engine.Engine.__init__
+
+    def init(self, *a, **k):
+        real(self, *a, **k)
+        self._last_open_at = self._last_focused_at = _time.time()
+    monkeypatch.setattr(_engine.Engine, "__init__", init)
+    yield

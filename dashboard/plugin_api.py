@@ -83,6 +83,9 @@ class Settings(BaseModel):
     onboarded: Optional[bool] = None
     person_face: Optional[dict] = None   # my own built face; {} takes it away (None means "not in this request")
     show_avatars: Optional[str] = None   # "everyone" or "nobody"
+    status_mode: Optional[str] = Field(None, max_length=16)   # auto | present | idle | dnd | invisible
+    away_mode: Optional[str] = Field(None, max_length=16)     # chat | named | quiet
+    stranger_share: Optional[float] = None                    # 0.25 | 0.5 | 0.75 (snapped by the engine)
 
 
 class RoomIn(BaseModel):
@@ -143,6 +146,10 @@ class ReactIn(BaseModel):
 
 class TypingIn(BaseModel):
     room: str
+
+
+class HereIn(BaseModel):
+    focused: bool = False
 
 
 class AvatarIn(BaseModel):
@@ -294,6 +301,14 @@ async def typing(body: TypingIn):
     """The owner is typing in a room. Paced and limited in the engine; always 200, `sent` says whether it went out."""
     eng = await _engine()
     return await _run(eng.typing_signal, body.room)
+
+
+@router.post("/here")
+async def here(body: HereIn):
+    """The page is open (`focused`: and the window the owner is looking at). Two timestamps in the engine; it
+    sends nothing itself. Returns the status my beats carry."""
+    eng = await _engine()
+    return await _sync(eng.here, body.focused)
 
 
 @router.post("/avatar")
