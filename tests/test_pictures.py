@@ -422,25 +422,33 @@ async def test_my_face_is_published_once_per_change_and_can_be_taken_away(bare):
 async def test_the_snapshot_lists_art_for_me_the_room_and_my_conversations_but_never_for_lookalikes_or_requests(bare):
     e, _ = bare()
     e.save_settings({"person_face": {"hue": 50}})
-    real, fake, dm_friend, stranger = Key("real"), Key("fake"), Key("friend"), Key("stranger")
+    real, fake, dm_friend, stranger, asker = Key("real"), Key("fake"), Key("friend"), Key("stranger"), Key("asker")
     await e._on_event(real.person({"t": "msg", "text": "hi", "name": "Sam"}), "relay")
     await e._on_event(fake.person({"t": "msg", "text": "me too", "name": "Sam"}), "relay")
     await meet(e, dm_friend, "Fran")
+    await meet(e, asker, "Ada B")
     await settle(e)
-    for k in (real, fake, dm_friend):
+    for k in (real, fake, dm_friend, asker):
         e._take_art(art(k, "avatar", {"img": PNG}))
         e._take_art(art(k, "face", {"face": {"hue": 200}}))
     me = e._identity()["person_pk"]
-    # a conversation with Fran (met in a room: accepted) and with a stranger (a request, who has a picture on the relays too)
+    # a conversation with my friend Fran, a friend request from Ada B (met in a room, so her art is kept) and one from a
+    # stranger who has a picture on the relays too
     now = time.time()
-    e.store.dm_add(id="a" * 64, peer=dm_friend.ppk, sender=dm_friend.ppk, text="hi", created_at=int(now), arrived_at=now, accepted=True, wrap=None)
-    e.store.dm_add(id="b" * 64, peer=stranger.ppk, sender=stranger.ppk, text="psst", created_at=int(now), arrived_at=now, accepted=False, wrap=None)
+    for k in (dm_friend,):
+        e.store.friend_event(k.ppk, side="mine", action="yes", at=int(now) - 5)
+        e.store.friend_event(k.ppk, side="theirs", action="yes", at=int(now) - 5)
+    e.store.dm_add(id="a" * 64, peer=dm_friend.ppk, sender=dm_friend.ppk, text="hi", created_at=int(now), arrived_at=now, wrap=None)
+    for k in (asker, stranger):
+        e.store.friend_event(k.ppk, side="theirs", action="yes", at=int(now) - 5)
     e._take_art(art(stranger, "avatar", {"img": PNG}))   # never seen in a room: not stored in the first place
     snap = e.snapshot(ROOM)
     people = snap["people"]
     assert people[me]["face"]["hue"] == 50
     assert real.ppk in people and people[real.ppk]["av"] and people[real.ppk]["face"]["hue"] == 200
-    assert dm_friend.ppk in people and {t["pk"] for t in snap["dms"]["threads"]} == {dm_friend.ppk, stranger.ppk}
+    assert dm_friend.ppk in people and {t["pk"] for t in snap["dms"]["threads"]} == {dm_friend.ppk}
+    assert {p["pk"] for p in snap["dms"]["pending"]} == {asker.ppk, stranger.ppk}
+    assert asker.ppk in people and people[asker.ppk]["face"]["hue"] == 200      # the Requests list shows who is asking
     assert fake.ppk not in people                       # a lookalike of "Sam" gets neither picture nor face
     assert stranger.ppk not in people
     json.dumps(snap)

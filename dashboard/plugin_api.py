@@ -290,10 +290,28 @@ async def dm_send(body: DmSend):
     return await _run(eng.dm_send, body.pk, body.text)
 
 
-@router.post("/dm/accept")
-async def dm_accept(body: DmRef):
+@router.post("/friend/request")
+async def friend_request(body: DmRef):
     eng = await _engine()
-    return await _run(eng.dm_accept, body.pk)
+    return await _run(eng.friend_request, body.pk)
+
+
+@router.post("/friend/accept")
+async def friend_accept(body: DmRef):
+    eng = await _engine()
+    return await _run(eng.friend_accept, body.pk)
+
+
+@router.post("/friend/ignore")
+async def friend_ignore(body: DmRef):
+    eng = await _engine()
+    return await _run(eng.friend_ignore, body.pk)
+
+
+@router.post("/friend/remove")
+async def friend_remove(body: DmRef):
+    eng = await _engine()
+    return await _run(eng.friend_remove, body.pk)
 
 
 @router.post("/dm/forget")

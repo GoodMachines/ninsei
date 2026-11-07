@@ -502,8 +502,10 @@ function cleanSnippet(s, n) {
 function mentionAlerts(store) {
   let seen = null
   let dmSeen = null
+  let reqSeen = null
   const told = {}
   const dmTold = {}
+  const reqTold = {}
   return store.subscribe(st => {
     const snap = st && st.snap
     if (!snap) return
@@ -523,21 +525,33 @@ function mentionAlerts(store) {
     // Private messages go through the same door. The first snapshot only sets the baseline; after it, a
     // conversation with more unread than before (or a brand-new one) that you aren't looking at is announced. The
     // name is the engine's: a name someone else holds in a room arrives as a short key, never as the real name.
-    // A request (a stranger) is announced once, by name alone: their words stay unseen until you open it.
     const dnext = {}
     for (const t of (snap.dms && snap.dms.threads) || []) {
       dnext[t.pk] = t.unread || 0
       const lu = t.last_unread
       const rose = dmSeen !== null && (t.pk in dmSeen ? t.unread > dmSeen[t.pk] : t.unread > 0)
-      if (!rose || !lu || dmTold[t.pk] === lu.id || (t.request && dmTold[t.pk])) continue
+      if (!rose || !lu || dmTold[t.pk] === lu.id) continue
       if (store.isShowing('dm:' + t.pk)) continue
       dmTold[t.pk] = lu.id
       const who = cleanSnippet(t.name, 32)
-      const title = t.request ? who + ' wants to message you' : t.impostor ? 'Someone not verified (' + who + ') sent you a private message' : who + ' sent you a private message'
-      const snippet = t.request ? '' : cleanSnippet(lu.text, 60)
+      const title = t.impostor ? 'Someone not verified (' + who + ') sent you a private message' : who + ' sent you a private message'
+      const snippet = cleanSnippet(lu.text, 60)
       P.toast('info', snippet ? title + ': "' + snippet + '"' : title)
       if (P.osNotify) P.osNotify({ title, body: snippet || 'Open Ninsei to see it.', onActivate: () => { store.setDm(t.pk); nav().set('dm') } })
     }
+    // A friend request is announced once per person, by name alone (a request has no words), worded like the
+    // others: a name someone else holds in a room arrives from the engine as a short key with the flag.
+    const rnext = {}
+    for (const r of (snap.dms && snap.dms.pending) || []) {
+      rnext[r.pk] = 1
+      if (reqSeen === null || r.pk in reqSeen || reqTold[r.pk]) continue
+      reqTold[r.pk] = 1
+      const who = cleanSnippet(r.name, 32)
+      const title = r.impostor ? 'Someone not verified (' + who + ') wants to be friends' : who + ' wants to be friends'
+      P.toast('info', title)
+      if (P.osNotify) P.osNotify({ title, body: 'Open Ninsei to answer.', onActivate: () => { store.setDm('requests'); nav().set('dm') } })
+    }
+    reqSeen = rnext
     dmSeen = dnext
   })
 }

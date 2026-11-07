@@ -27,7 +27,7 @@ from typing import Any, Callable, Iterable, Optional
 from . import avatar, dm, game, nip44, nostr
 from .brain import Brain, BudgetExhausted, Line
 from .relays import RelayPool
-from .store import EVENT_ROOM_CAP, Store, today
+from .store import EVENT_ROOM_CAP, FRIEND_REQUESTS, Store, today
 from .topics import TopicTracker
 from .toy import OFFER_ID_RE, SHARE_SERIALIZED_LIMIT, inject_csp, scan_secrets, serialized_size
 
@@ -106,6 +106,8 @@ DM_PACE_S = 0.05           # between wraps the worker opens: a flood of them cos
 DM_SEND_PER_MIN = 10       # private messages one install sends a minute (each is two wraps)
 DM_SNIPPET = 60            # how much of a new private message the sidebar carries, for the alert
 DM_THREAD_MESSAGES = 200   # messages of one conversation the UI loads
+DM_HOLD_PER_PEER = 20      # wraps of private messages from a non-friend kept (sealed, in memory) in case a friend event follows
+DM_HOLD_TOTAL = 100
 DM_SEEN_MEMORY = 4000      # wrap ids remembered in memory, for the ones not recorded on disk (hidden senders)
 # Typing indicators (ephemeral kind 21042 `typing`, people only) and pictures/faces of people (replaceable kind 30078).
 TYPING_GAP = 5             # seconds between my typing signals into one room while I type
@@ -546,6 +548,7 @@ class Engine:
         self._dm_queued: set[str] = set()        # wrap ids in the queue or being opened
         self._dm_seen: dict[str, None] = {}      # wrap ids already handled this run (bounded)
         self._dm_rev = 0                         # moves whenever a private message or conversation changes
+        self._dm_hold: dict[str, list] = {}      # non-friends' wraps, by sender, until a friend event for them arrives
         self._dm_dropped = False                 # the queue overflowed: don't move `dm_since` this run
         self._dm_busy = False
         # people's pictures and faces: {pk: {"avatar": meta, "face": meta}} (meta: id, created_at, and mime/size or
@@ -2928,6 +2931,8 @@ class Engine:
                 pres.pop(apk, None)
         self.lobby = {**self.lobby, "people": [p for p in self.lobby.get("people", []) if p["pk"] != pk]}
         self.store.dm_forget(pk)   # their private messages go too, and new ones are dropped unopened
+        self._dm_hold.pop(pk, None)
+        self.store.friend_forget(pk)   # and the friendship, any request, and any memory of an ignore
         self._dm_rev += 1
         self._art_forget(pk)       # and their picture and face
         self._bump()
@@ -3609,13 +3614,68 @@ class Engine:
             return dm.HIDDEN
         now = time.time()
         created = max(0, min(msg["created_at"], int(now)))   # a date ahead of us would pin it to the bottom
+        if msg["type"] != dm.TEXT:
+            return self._friend_inbound(wid, msg["type"], peer, mine, created, now)
+        # Friends only. A private message from anyone else is dropped here, before it is stored: nothing of it is
+        # kept but the sealed wrap, in a small bounded memory-only holding area, because relays hand history back in
+        # no order and a friend event can arrive after the messages it makes welcome (a second install restoring).
+        # A friend event for that sender puts these through the worker again; otherwise they are never stored. My own copy, from my
+        # other install, is stored for anyone not hidden: only my key can make one, and a restore reads history in
+        # no particular order, so it can arrive before the friend event it follows.
+        if not mine and self.store.friend_rel(peer, now) != "friend":
+            self._dm_hold_add(peer, ev)
+            self._dm_handled(wid, record=False)
+            return dm.NOT_FRIEND
         res = self.store.dm_add(id=msg["id"], peer=peer, sender=sender, text=msg["text"], created_at=created,
-                                arrived_at=now, accepted=mine or self._dm_known(peer))
+                                arrived_at=now)
         self._dm_handled(wid)
         if res == "added":
             self._dm_rev += 1
             self._bump()
-        return verdict
+        return dm.OK
+
+    def _friend_inbound(self, wid: str, kind: str, peer: str, mine: bool, at: int, now: float) -> str:
+        """A friend request, accept or removal that arrived in a wrap (from them, or my own copy from another
+        install). It carries no text; all that is used is who it is from and what it says. Agents never send or
+        receive these, so one from an agent's key is dropped."""
+        if not mine and self._is_agent_key(peer):
+            self._dm_handled(wid)
+            return dm.DROPPED
+        res = self.store.friend_event(peer, side="mine" if mine else "theirs",
+                                      action="remove" if kind == dm.FRIEND_REMOVE else "yes", at=at, now=now)
+        if res == "limit":
+            return dm.LIMIT          # no room: not recorded as handled, so it isn't lost for good
+        self._dm_handled(wid)
+        if res != "applied":
+            return dm.DROPPED
+        self._dm_rev += 1
+        self._bump()
+        self._dm_release(peer)
+        return dm.OK
+
+    def _dm_release(self, peer: str) -> None:
+        """If `peer` is a friend now, the wraps held for them (see `_dm_process`) go through the worker again."""
+        if peer in self._dm_hold and self.store.friend_rel(peer) == "friend":
+            for w in self._dm_hold.pop(peer):
+                self._dm_seen.pop(w["id"], None)
+                self._dm_queued.discard(w["id"])
+                asyncio.ensure_future(self._on_dm_wrap(w, "held"))
+
+    def _dm_hold_add(self, peer: str, ev: dict) -> None:
+        held = self._dm_hold.setdefault(peer, [])
+        if len(held) < DM_HOLD_PER_PEER and not any(w["id"] == ev["id"] for w in held):
+            held.append(ev)
+        while sum(len(v) for v in self._dm_hold.values()) > DM_HOLD_TOTAL:
+            self._dm_hold.pop(next(iter(self._dm_hold)))      # the longest-held sender gives way
+
+    def _is_agent_key(self, pk: str) -> bool:
+        """True for a key that is (or has been seen as) someone's agent: mine, a hidden person's, one with a
+        presence beat or an owner-bound event in a room I'm in."""
+        if pk == self._identity()["agent_pk"] or pk in self._hidden_agents:
+            return True
+        if any(pk in pres for pres in self.presence.values()):
+            return True
+        return any(e["pubkey"] == pk and self.owner_of(e) for evs in self.events.values() for e in evs.values())
 
     def _dm_touch(self) -> None:
         """Called every minute while the engine runs: if the private-message subscription is up and everything
@@ -3628,33 +3688,24 @@ class Engine:
         self.store.set("dm_since", int(time.time()))
 
     def _dm_book(self, pks: set) -> dict[str, dict]:
-        """What rooms say about these people: {pk: {"name", "known", "flag"}}. `known` is "seen in a room I'm in":
-        they posted something besides a bare join, or their agent showed up there; a bare join earns nothing, so
-        joining Commons once is not a way past Requests. `flag` is the impostor flag the room would show on them,
-        and a flagged key is never `known`. Names come from the room's own name book, never from a message."""
+        """What rooms say about these people: {pk: {"name", "flag"}}. `flag` is the impostor flag the room would
+        show on them (a lookalike); the name is the room's name book entry. Both are display only: who may message
+        me is the friend list, never anything a room says. Names never come from a message."""
         out: dict[str, dict] = {}
         if not pks:
             return out
         latest: dict[str, tuple] = {}
-        seen: set[str] = set()
         for room, evs in self.events.items():
             for e in evs.values():
                 pk = e["pubkey"]
-                if pk not in pks or e["kind"] != KIND_ROOM:
+                if pk not in pks or e["kind"] != KIND_ROOM or self._content(e).get("t") in SILENT_TYPES:
                     continue
-                c = self._content(e)
-                if c.get("t") in SILENT_TYPES:
-                    continue
-                if c.get("t") != "join":
-                    seen.add(pk)
                 if pk not in latest or e["created_at"] > latest[pk][0]:
                     latest[pk] = (e["created_at"], room)
         for room, pres in self.presence.items():
             for p in pres.values():
-                owner = p.get("owner")
-                if owner in pks:
-                    seen.add(owner)
-                    latest.setdefault(owner, (0, room))
+                if p.get("owner") in pks:
+                    latest.setdefault(p["owner"], (0, room))
         whos: dict[str, dict] = {}
         for pk in pks:
             name, flag = "", None
@@ -3663,11 +3714,8 @@ class Engine:
                 who = whos.get(room) or whos.setdefault(room, self._who(room))
                 name = who["person"].get(pk, "")
                 flag = self._flag(who, pk, name, None, "", True) if name else None
-            out[pk] = {"name": name, "known": pk in seen and not flag and pk not in self._hidden, "flag": flag}
+            out[pk] = {"name": name, "flag": flag}
         return out
-
-    def _dm_known(self, pk: str) -> bool:
-        return bool((self._dm_book({pk}).get(pk) or {}).get("known"))
 
     def _dm_label(self, pk: str, info: dict) -> str:
         """The name to show for a key: the room's name for it, unless someone else holds that name (then the
@@ -3675,31 +3723,35 @@ class Engine:
         return info["name"] if info["name"] and not info["flag"] else _short(pk)
 
     def dm_summary(self) -> dict:
-        """The sidebar's view of private messages, small enough for every /state snapshot: who, how many are
-        unread, and (for an alert) the start of the newest unread message, except from a request, whose words
-        a stranger chose and nobody has agreed to see yet."""
+        """The sidebar's view of private messages, small enough for every /state snapshot: my friends and the
+        conversations that still have messages (`threads`), unanswered friend requests (`pending`, name only: a
+        request has no words), `rel` (who is a friend, who I asked, who asked me, for the person card) and, for an
+        alert, the start of the newest unread message."""
         threads = self.store.dm_threads()
-        book = self._dm_book({t["peer"] for t in threads})
-        rows, unread, requests = [], 0, 0
+        lists = self.store.friend_lists()
+        pend = lists["requests"][:FRIEND_REQUESTS]
+        book = self._dm_book({t["peer"] for t in threads} | {r["peer"] for r in pend})
+        rows, unread = [], 0
         for t in threads:
             pk = t["peer"]
-            info = book.get(pk) or {"name": "", "known": False, "flag": None}
-            if not t["accepted"] and info["known"]:
-                self.store.dm_accept(pk)   # met in a room: a yes that stays, even after the room's history ages out
-                t["accepted"] = True
-            request = not t["accepted"]
-            row = {"pk": pk, "name": self._dm_label(pk, info), "impostor": bool(info["flag"]), "request": request,
+            info = book.get(pk) or {"name": "", "flag": None}
+            row = {"pk": pk, "name": self._dm_label(pk, info), "impostor": bool(info["flag"]), "friend": t["friend"],
                    "unread": t["unread"], "ts": t["last_ts"]}
             if t["unread"]:
                 nu = self.store.dm_newest_unread(pk)
                 if nu:
-                    row["last_unread"] = {"id": nu["id"], "ts": nu["ts"], "text": "" if request else nu["text"][:DM_SNIPPET]}
-            if request:
-                requests += 1
-            else:
-                unread += t["unread"]
+                    row["last_unread"] = {"id": nu["id"], "ts": nu["ts"], "text": nu["text"][:DM_SNIPPET]}
+            unread += t["unread"]
             rows.append(row)
-        return {"threads": rows, "unread": unread, "requests": requests, "rev": self._dm_rev}
+        pending = []
+        for r in pend:
+            info = book.get(r["peer"]) or {"name": "", "flag": None}
+            pending.append({"pk": r["peer"], "name": self._dm_label(r["peer"], info), "impostor": bool(info["flag"]), "ts": r["at"]})
+        rel = {pk: "friend" for pk in lists["friends"]}
+        rel.update({pk: "sent" for pk in lists["sent"]})
+        rel.update({r["peer"]: "request" for r in lists["requests"]})
+        return {"threads": rows, "unread": unread, "requests": len(lists["requests"]), "pending": pending, "rel": rel,
+                "rev": self._dm_rev}
 
     def dm_thread(self, pk: str, read: bool = True) -> dict:
         """One conversation for the DM view. `read` marks it read (the UI passes false when it isn't on screen)."""
@@ -3707,9 +3759,8 @@ class Engine:
         if not re.fullmatch(r"[0-9a-f]{64}", pk):
             raise ValueError("that isn't a person's key")
         ident = self._identity()
-        info = self._dm_book({pk}).get(pk) or {"name": "", "known": False, "flag": None}
-        peer = self.store.dm_peer(pk)
-        accepted = peer is None or peer["accepted"] or info["known"]   # no conversation yet: I'm the one starting it
+        info = self._dm_book({pk}).get(pk) or {"name": "", "flag": None}
+        rel = self.store.friend_rel(pk)
         if read:
             self.store.dm_mark_read(pk)
         me = self.settings()["display_name"] or "You"
@@ -3725,12 +3776,13 @@ class Engine:
                 if d != "sent":
                     item["delivery"] = d
             out.append(item)
-        return {"pk": pk, "name": self._dm_label(pk, info), "impostor": bool(info["flag"]), "request": not accepted,
-                "hidden": pk in self._hidden, "messages": out}
+        return {"pk": pk, "name": self._dm_label(pk, info), "impostor": bool(info["flag"]), "friend": rel == "friend",
+                "rel": rel, "hidden": pk in self._hidden, "messages": out}
 
     async def dm_send(self, pk: str, text: str) -> dict:
-        """Send a private message: one rumor, sealed and wrapped for them and again for me. The copy for me is
-        what lets my other installs show what I sent. Both wraps go out like any durable event (outbox first)."""
+        """Send a private message to a friend: one rumor, sealed and wrapped for them and again for me. The copy
+        for me is what lets my other installs show what I sent. Both wraps go out like any durable event (outbox
+        first). Not offered, and refused here, for anyone who isn't a friend."""
         pk = str(pk or "").lower()
         if not re.fullmatch(r"[0-9a-f]{64}", pk):
             raise ValueError("that isn't a person's key")
@@ -3739,6 +3791,8 @@ class Engine:
             raise ValueError("you can't message yourself")
         if pk in self._hidden:
             raise ValueError("You hid them. Unhide them in Settings to message them.")
+        if self.store.friend_rel(pk) != "friend":
+            raise ValueError("You can message someone once you are friends. Send a friend request from their card.")
         text = (text or "").strip()[:dm.SEND_TEXT]
         if not text:
             raise ValueError("empty message")
@@ -3748,9 +3802,9 @@ class Engine:
         rumor = dm.make_rumor(ident["person_pk"], pk, text, now)
         to_them = dm.wrap_for(ident["person_sk"], pk, rumor)
         to_me = dm.wrap_for(ident["person_sk"], ident["person_pk"], rumor)
-        # mine, accepted: writing to someone is a yes. Stored before it is sent, like any durable event.
+        # Stored before it is sent, like any durable event.
         self.store.dm_add(id=rumor["id"], peer=pk, sender=ident["person_pk"], text=text, created_at=now,
-                          arrived_at=time.time(), wrap=to_them["id"], accepted=True)
+                          arrived_at=time.time(), wrap=to_them["id"])
         for w in (to_them, to_me):
             self._dm_handled(w["id"])   # my own wraps coming back from a relay are not opened again
             self._queue_event(w)
@@ -3760,13 +3814,84 @@ class Engine:
         self._bump()
         return {"id": rumor["id"]}
 
-    async def dm_accept(self, pk: str) -> dict:
+    # --- friends ------------------------------------------------------------------------------------
+    def _friend_target(self, pk: str) -> str:
         pk = str(pk or "").lower()
-        if not re.fullmatch(r"[0-9a-f]{64}", pk) or not self.store.dm_accept(pk):
-            raise ValueError("that conversation isn't here")
+        if not re.fullmatch(r"[0-9a-f]{64}", pk):
+            raise ValueError("that isn't a person's key")
+        if pk == self._identity()["person_pk"]:
+            raise ValueError("that's you")
+        return pk
+
+    def _friend_say(self, pk: str, kind: str, at: int) -> None:
+        """Wrap a friend event for them and for me (my other installs read the copy) and send both. No text, ever."""
+        ident = self._identity()
+        rumor = dm.make_rumor(ident["person_pk"], pk, "", at, friend=kind)
+        for w in (dm.wrap_for(ident["person_sk"], pk, rumor), dm.wrap_for(ident["person_sk"], ident["person_pk"], rumor)):
+            self._dm_handled(w["id"])
+            self._queue_event(w)
+            self._spawn(self.pool.publish(w))
+
+    def _friend_yes(self, pk: str, kind: str) -> dict:
+        """My "yes": a request (they haven't asked me) or an accept (they have). Recorded first, then sent."""
+        if not self._rate_ok("dm_send", DM_SEND_PER_MIN, 60):
+            raise ValueError(f"Slow down: Ninsei sends at most {DM_SEND_PER_MIN} private messages a minute.")
+        row = self.store.friend_get(pk)
+        at = max(int(time.time()), row["mine_at"] if row else 0)
+        if self.store.friend_event(pk, side="mine", action="yes", at=at) != "applied":
+            raise ValueError("Your friend list is full. Remove someone, or cancel a request, first.")
+        self._friend_say(pk, kind, at)
+        self._dm_release(pk)
+        self._dm_rev += 1
+        self._bump()
+        return {"rel": self.store.friend_rel(pk)}
+
+    async def friend_request(self, pk: str) -> dict:
+        """Ask a person to be friends (their card's "Add friend"). No text goes with it: they see your name as
+        their rooms know it, or a short key. If they had already asked me, this is an accept."""
+        pk = self._friend_target(pk)
+        if pk in self._hidden:
+            raise ValueError("You hid them. Unhide them in Settings first.")
+        if self._is_agent_key(pk):
+            raise ValueError("That's an agent. Friend requests go to people.")
+        rel = self.store.friend_rel(pk)
+        if rel == "friend":
+            raise ValueError("You are already friends.")
+        if rel == "sent":
+            return {"rel": "sent"}            # asked already: nothing more to send
+        row = self.store.friend_get(pk)
+        return self._friend_yes(pk, dm.FRIEND_ACCEPT if row and row["theirs"] else dm.FRIEND_REQUEST)
+
+    async def friend_accept(self, pk: str) -> dict:
+        pk = self._friend_target(pk)
+        if pk in self._hidden or self.store.friend_rel(pk) != "request":
+            raise ValueError("that request isn't here")
+        return self._friend_yes(pk, dm.FRIEND_ACCEPT)
+
+    async def friend_ignore(self, pk: str) -> dict:
+        """Ignore a request: local and silent, they are not told. A repeat from them stays ignored for 30 days."""
+        pk = self._friend_target(pk)
+        if not self.store.friend_ignore(pk):
+            raise ValueError("that request isn't here")
         self._dm_rev += 1
         self._bump()
         return {"ok": True}
+
+    async def friend_remove(self, pk: str) -> dict:
+        """End a friendship, or take back a request I sent. Local at once; the other side is told (best effort) so
+        it stops showing the conversation as open. The conversation stays on this computer until deleted."""
+        pk = self._friend_target(pk)
+        if self.store.friend_rel(pk) not in ("friend", "sent"):
+            raise ValueError("you aren't friends")
+        if not self._rate_ok("dm_send", DM_SEND_PER_MIN, 60):
+            raise ValueError(f"Slow down: Ninsei sends at most {DM_SEND_PER_MIN} private messages a minute.")
+        row = self.store.friend_get(pk)
+        at = max(int(time.time()), row["mine_at"] if row else 0)
+        self.store.friend_event(pk, side="mine", action="remove", at=at)
+        self._friend_say(pk, dm.FRIEND_REMOVE, at)
+        self._dm_rev += 1
+        self._bump()
+        return {"rel": ""}
 
     async def dm_forget(self, pk: str) -> dict:
         """Delete a conversation from this computer. The other person keeps theirs; relays may keep the wraps (they
@@ -4195,7 +4320,8 @@ class Engine:
                             "typing": self.typing_view(room)}
             if mark and snap["room"]["messages"]:  # mark=False: the room is loaded but not on screen
                 self.store.mark_read(room, snap["room"]["messages"][-1]["ts"])
-        snap["people"] = self._snapshot_art(ident["person_pk"], members, snap["dms"]["threads"], (self.lobby or {}).get("people", []))
+        snap["people"] = self._snapshot_art(ident["person_pk"], members, snap["dms"]["threads"] + snap["dms"]["pending"],
+                                            (self.lobby or {}).get("people", []))
         return snap
 
     def _snapshot_art(self, me: str, members: list[dict], threads: list[dict], lobby: list[dict]) -> dict:
@@ -4204,7 +4330,7 @@ class Engine:
         gets nothing; a lobby person is flagged by the same check the rooms use. Small: only people who have a
         face or a picture appear, and the picture itself is fetched on its own (`avatars`)."""
         flagged = {p["pk"] for p in members if p.get("impostor")} | {t["pk"] for t in threads if t.get("impostor")}
-        pks = [me] + [p["pk"] for p in members] + [t["pk"] for t in threads if not t.get("request")]
+        pks = [me] + [p["pk"] for p in members] + [t["pk"] for t in threads]
         known = set(pks)
         extra = [p["pk"] for p in lobby if p["pk"] not in known and self._art_view(p["pk"])]
         if extra:

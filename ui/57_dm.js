@@ -1,32 +1,33 @@
 // ---------------------------------------------------------------------------------------------
-// private messages: person to person (NIP-17). Your agent is not in this view and never sees it:
-// the engine keeps these in their own tables, and no model call is ever made with their words.
-// A sender you have never met in a room waits under Requests until you accept or hide them.
+// private messages: person to person (NIP-17), between friends only. Your agent is not in this view and never
+// sees it: the engine keeps these in their own tables, and no model call is ever made with their words.
+// A friend request has no words at all: only who is asking. It waits under Requests until you accept or ignore it.
 // ---------------------------------------------------------------------------------------------
 
 const DM_REQUESTS = 'requests'  // store.dm() value that opens the Requests list instead of one conversation
 
-// The sidebar's "Direct messages": the conversations you have, then Requests (if any) as one row.
+// The sidebar's "Direct messages": your friends (and any old conversation), then Requests (if any) as one row.
 function DmRail(props) {
   const { store, snap, view, go } = props
   const dms = snap.dms || { threads: [], unread: 0, requests: 0 }
   const cur = view === 'dm' ? store.dm() : ''
-  const list = (dms.threads || []).filter(t => !t.request)
+  const list = dms.threads || []
   const open = pk => { store.setDm(pk); go('dm') }
   return jsxs(Fragment, { children: [
     jsx('div', { className: 'h-navhead', children: jsx('span', { className: 'h-sec', children: 'Direct messages' }) }),
     jsxs('div', { className: 'h-nav', children: [
-      list.length === 0 && !dms.requests && jsx('div', { className: 'h-faint h-small', style: { padding: '2px 8px' }, children: 'Open someone’s card and press Message.' }),
+      list.length === 0 && !dms.requests && jsx('div', { className: 'h-faint h-small', style: { padding: '2px 8px' }, children: 'Open someone’s card and press Add friend. Once they accept, you can message each other.' }),
       list.map(t => jsxs('button', { type: 'button', className: 'h-navrow', 'data-on': cur === t.pk, 'aria-current': cur === t.pk ? 'page' : undefined,
         onClick: () => open(t.pk), children: [
           jsx(PersonMark, { pk: t.pk, name: t.name, size: 18, flagged: !!t.impostor }),
-          jsx('span', { className: 'h-grow h-trunc', style: { fontWeight: t.unread ? 600 : 400 }, children: t.name }),
+          jsx('span', { className: 'h-grow h-trunc', style: { fontWeight: t.unread ? 600 : 400, opacity: t.friend === false ? 0.6 : 1 }, children: t.name }),
+          t.friend === false && jsx('span', { className: 'h-faint h-small', children: 'not friends' }),
           t.unread > 0 && jsx('span', { className: 'h-dot', 'aria-label': t.unread + (t.unread === 1 ? ' unread private message' : ' unread private messages') })
         ] }, t.pk)),
       dms.requests > 0 && jsxs('button', { type: 'button', className: 'h-navrow', 'data-on': cur === DM_REQUESTS, onClick: () => open(DM_REQUESTS), children: [
-        jsx(K.Icon, { name: 'shield', size: 12 }),
+        jsx(K.Icon, { name: 'organization', size: 12 }),
         jsx('span', { className: 'h-grow h-trunc', children: 'Requests' }),
-        jsx('span', { className: 'h-mentions', 'aria-label': dms.requests + (dms.requests === 1 ? ' message request' : ' message requests'), children: dms.requests > 9 ? '9+' : dms.requests })
+        jsx('span', { className: 'h-mentions', 'aria-label': dms.requests + (dms.requests === 1 ? ' friend request' : ' friend requests'), children: dms.requests > 9 ? '9+' : dms.requests })
       ] })
     ] })
   ] })
@@ -54,6 +55,7 @@ function DmView(props) {
   const stick = useRef(true)
   const seen = useRef(null)
   const [asking, setAsking] = useState(false)
+  const [removing, setRemoving] = useState(false)
   const msgs = (data && data.messages) || []
   if (data && seen.current === null) seen.current = new Set(msgs.map(m => m.id))
   const fresh = id => {
@@ -76,10 +78,17 @@ function DmView(props) {
     stick.current = true
     await load()
   }
-  const accept = async () => { try { await store.post('/dm/accept', { pk }); load() } catch (_) { /* toasted */ } }
+  const friendPost = async (path, okMsg) => { try { await store.post(path, { pk }, okMsg); await load() } catch (_) { /* toasted */ } }
+  const addFriend = () => friendPost('/friend/request', 'Friend request sent to ' + name + '.')
+  const accept = () => friendPost('/friend/accept', name + ' is now your friend.')
+  const ignore = async () => { try { await store.post('/friend/ignore', { pk }); store.setDm(''); nav().set('lobby') } catch (_) { /* toasted */ } }
+  const unfriend = async () => {
+    setRemoving(false)
+    await friendPost('/friend/remove', name + ' isn’t your friend any more.')
+  }
   const hide = async () => {
     try {
-      await store.post('/people/hide', { pk, name }, 'Hid ' + name + '. Their private messages are gone and new ones are dropped. Undo in Settings.')
+      await store.post('/people/hide', { pk, name }, 'Hid ' + name + '. Their private messages and friend requests are gone, and new ones are dropped. Undo in Settings.')
       store.setDm('')
       nav().set('lobby')
     } catch (_) { /* toasted */ }
@@ -102,31 +111,44 @@ function DmView(props) {
         ] }),
         jsx('div', { className: 'h-faint h-small h-trunc', children: 'Only the two of you can read this. Your agent never sees it.' })
       ] }),
+      data && data.friend && jsx(K.Tip, { label: 'Remove ' + name + ' from your friends', children: jsx(K.Button, { variant: 'ghost', size: 'icon', 'aria-label': 'Remove ' + name + ' from your friends',
+        onClick: () => setRemoving(true), children: jsx(K.Icon, { name: 'close', size: 14 }) }) }),
       props.onPeople && jsx(K.Button, { variant: 'ghost', size: 'icon', 'aria-label': 'About private messages', onClick: props.onPeople, className: 'h-peoplebtn',
         children: jsx(K.Icon, { name: 'shield', size: 14 }) }),
       jsx(K.Tip, { label: 'Delete this conversation from this computer', children: jsx(K.Button, { variant: 'ghost', size: 'icon', 'aria-label': 'Delete this conversation',
         onClick: () => setAsking(true), children: jsx(K.Icon, { name: 'trash', size: 14 }) }) })
     ] }),
-    data && data.request && jsx('div', { style: { padding: '8px 18px 0' }, children: jsx(Notice, { icon: 'shield', role: 'status', children: jsxs('div', { className: 'h-col', style: { gap: 8 }, children: [
-      jsx('span', { children: name + ' isn’t someone you’ve met in a room. Reply or press Accept to move this conversation to your list. Hide drops it, and everything they send later.' }),
+    data && !data.friend && jsx('div', { style: { padding: '8px 18px 0' }, children: jsx(Notice, { icon: 'shield', role: 'status', children: jsxs('div', { className: 'h-col', style: { gap: 8 }, children: [
+      jsx('span', { children: data.rel === 'request' ? name + ' asked to be friends. Accept to message each other. Ignore tells them nothing.'
+        : data.rel === 'sent' ? 'You asked ' + name + ' to be friends. You can message each other once they accept.'
+        : 'You and ' + name + ' aren’t friends, so neither of you can send a private message. The conversation so far stays here until you delete it.' }),
       jsxs('div', { className: 'h-actions', children: [
-        jsx(K.Button, { variant: 'primary', size: 'sm', onClick: accept, children: 'Accept' }, 'a'),
+        data.rel === 'request' && jsx(K.Button, { variant: 'primary', size: 'sm', onClick: accept, children: 'Accept' }, 'a'),
+        data.rel === 'request' && jsx(K.Button, { variant: 'ghost', size: 'sm', onClick: ignore, children: 'Ignore' }, 'i'),
+        !data.rel && jsx(K.Button, { variant: 'primary', size: 'sm', onClick: addFriend, children: 'Add friend' }, 'f'),
+        data.rel === 'sent' && jsx(K.Button, { variant: 'ghost', size: 'sm', onClick: unfriend, children: 'Cancel request' }, 'c'),
         jsx(K.Button, { variant: 'ghost', size: 'sm', onClick: hide, children: 'Hide ' + name }, 'h')
       ] })
     ] }) }) }),
     jsx('div', { className: 'h-scroll', ref: scroller, onScroll, children: jsxs('div', { className: 'h-timeline', role: 'log', 'aria-live': 'polite', 'aria-label': 'Private messages with ' + name, children: [
       err && jsx(Notice, { icon: 'warning', role: 'alert', children: err }),
       !data && !err && jsx('div', { className: 'h-empty', children: 'Opening the conversation…' }),
-      data && msgs.length === 0 && jsxs('div', { className: 'h-empty', children: [
+      data && data.friend && msgs.length === 0 && jsxs('div', { className: 'h-empty', children: [
         jsx(K.Icon, { name: 'lock', size: 22 }),
         jsx('b', { children: 'Say hello to ' + name }),
         jsx('div', { style: { maxWidth: 420 }, children: 'Only the two of you can read what you write here. It is encrypted on its way, and your agent never sees it.' })
       ] }),
       items.map(it => it.kind === 'msg' && jsx(DmItem, { it, animate: fresh(it.key) }, it.key))
     ] }) }),
-    jsx('div', { className: 'h-composer', children: jsx(Composer, { store, room: composeRoom, snap, dm: dmSend }) }),
+    data && data.friend && jsx('div', { className: 'h-composer', children: jsx(Composer, { store, room: composeRoom, snap, dm: dmSend }) }),
+    jsx(Modal, { open: removing, onClose: () => setRemoving(false), title: 'Remove ' + name + ' from your friends?',
+      description: 'You will both stop being able to send private messages, and ' + name + ' is told. The conversation stays on this computer until you delete it. You can add each other again later.',
+      footer: [
+        jsx(K.Button, { variant: 'ghost', onClick: () => setRemoving(false), children: 'Keep ' + name }, 'c'),
+        jsx(K.Button, { variant: 'danger', onClick: unfriend, children: 'Remove friend' }, 'd')
+      ] }),
     jsx(Modal, { open: asking, onClose: () => setAsking(false), title: 'Delete this conversation?',
-      description: 'It is removed from this computer only. ' + name + ' keeps their copy, and a new message from them starts it again.',
+      description: 'It is removed from this computer only. ' + name + ' keeps their copy, and the friendship is not affected.',
       footer: [
         jsx(K.Button, { variant: 'ghost', onClick: () => setAsking(false), children: 'Keep it' }, 'c'),
         jsx(K.Button, { variant: 'danger', onClick: forget, children: 'Delete' }, 'd')
@@ -139,25 +161,26 @@ function DmItem(props) {
   return jsx('div', { ref, children: jsx(Message, { m: props.it.m, first: props.it.first, book: {} }) })
 }
 
-// Strangers' first messages. What they wrote stays unseen until you open the conversation.
+// Friend requests. There is nothing to read: a request has no message, only who is asking (by the name your rooms
+// know them by, or a short key) and, for a lookalike, a warning.
 function DmRequests(props) {
   const { store, snap } = props
-  const reqs = ((snap.dms && snap.dms.threads) || []).filter(t => t.request)
-  const open = pk => store.setDm(pk)
-  const accept = async t => { try { await store.post('/dm/accept', { pk: t.pk }, t.name + ' accepted'); } catch (_) { /* toasted */ } }
+  const reqs = (snap.dms && snap.dms.pending) || []
+  const accept = async t => { try { await store.post('/friend/accept', { pk: t.pk }, t.name + ' is now your friend.') } catch (_) { /* toasted */ } }
+  const ignore = async t => { try { await store.post('/friend/ignore', { pk: t.pk }, 'Ignored. ' + t.name + ' isn’t told.') } catch (_) { /* toasted */ } }
   const hide = async t => { try { await store.post('/people/hide', { pk: t.pk, name: t.name }, 'Hid ' + t.name + '. Undo in Settings.') } catch (_) { /* toasted */ } }
   return jsx('div', { className: 'h-scroll', children: jsxs('div', { className: 'h-pane', style: { maxWidth: 560 }, children: [
-    jsx('h1', { children: 'Message requests' }),
-    jsx('div', { className: 'h-muted', children: 'People you haven’t met in a room. Their words stay hidden until you open the conversation. Accepting moves it to your list; hiding drops it and anything they send later.' }),
+    jsx('h1', { children: 'Friend requests' }),
+    jsx('div', { className: 'h-muted', children: 'People who asked to be friends. A request has no message, only who is asking. Accept to message each other. Ignore is private: they aren’t told, and if they ask again within 30 days you won’t see it. Hide drops them and everything they send later.' }),
     reqs.length === 0 && jsx('div', { className: 'h-faint', style: { marginTop: 14 }, children: 'No requests right now.' }),
     jsx('div', { className: 'h-list', children: reqs.map(t => jsxs('div', { className: 'h-row', style: { gap: 10, padding: '8px 0' }, children: [
       jsx(PersonMark, { pk: t.pk, name: t.name, size: 28, flagged: !!t.impostor }),
       jsxs('div', { className: 'h-grow h-col', style: { gap: 2, minWidth: 0 }, children: [
         jsx('b', { className: 'h-trunc', children: t.name }),
-        jsx('span', { className: 'h-faint h-small', children: (t.unread || 1) + (t.unread === 1 ? ' message · ' : ' messages · ') + fmtAgo(t.ts) })
+        jsxs('span', { className: 'h-faint h-small', children: [(t.impostor ? 'not verified · ' : '') + 'wants to be friends · ' + fmtAgo(t.ts)] })
       ] }),
-      jsx(K.Button, { variant: 'secondary', size: 'sm', onClick: () => open(t.pk), children: 'Open' }),
-      jsx(K.Button, { variant: 'primary', size: 'sm', onClick: () => accept(t), children: 'Accept' }),
+      jsx(K.Button, { variant: 'primary', size: 'sm', 'aria-label': 'Accept ' + t.name, onClick: () => accept(t), children: 'Accept' }),
+      jsx(K.Button, { variant: 'ghost', size: 'sm', 'aria-label': 'Ignore ' + t.name, onClick: () => ignore(t), children: 'Ignore' }),
       jsx(K.Button, { variant: 'ghost', size: 'sm', 'aria-label': 'Hide ' + t.name, onClick: () => hide(t), children: 'Hide' })
     ] }, t.pk)) })
   ] }) })
@@ -171,6 +194,7 @@ function DmAbout() {
   return jsxs('div', { className: 'h-col', style: { gap: 10 }, children: [
     jsx('div', { className: 'h-sec', style: { padding: '0 4px' }, children: 'What is private' }),
     row('Encrypted in transit', 'Relays carry a sealed message. They can’t read it or tell who sent it, but they can see that some key received one.'),
+    row('Friends only', 'Only people you are friends with can message you. A friend request carries no words, only who is asking, and it is sealed the same way.'),
     row('Stored on this computer', 'Readable here, unencrypted, by anyone who can open your account, like your keys. Delete a conversation to remove it.'),
     row('Never your agent', 'Your agent can’t send, read or be shown a private message, and no model is ever asked about one.')
   ] })
@@ -179,7 +203,7 @@ function DmAbout() {
 function DmEmpty() {
   return jsxs('div', { className: 'h-empty', children: [
     jsx(K.Icon, { name: 'lock', size: 22 }),
-    jsx('b', { children: 'Private messages' }),
-    jsx('div', { style: { maxWidth: 420 }, children: 'Open anyone’s card in a room and press Message. Only the two of you can read it, and your agent never sees it.' })
+    jsx('b', { children: 'Private messages, for friends' }),
+    jsx('div', { style: { maxWidth: 420 }, children: 'Open anyone’s card in a room and press Add friend. Once they accept, you can message each other. Only the two of you can read it, and your agent never sees it.' })
   ] })
 }

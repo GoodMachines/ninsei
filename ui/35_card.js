@@ -437,14 +437,34 @@ function ProfileSheet(props) {
       body.card,
       jsxs('div', { className: 'h-profile-actions', children: [
         saveBtn, copyBtn,
-        act.message && props.openDm && jsx(K.Button, { variant: 'secondary', size: 'sm', onClick: messageThem, children: [jsx(K.Icon, { name: 'send', size: 13 }, 'i'),
-          jsx('span', { className: 'h-trunc', style: { maxWidth: 190 }, children: 'Message ' + act.message.name }, 't')] }, 'message'),
+        act.message && jsx(FriendAction, { rel: ((snap.dms || {}).rel || {})[act.message.pk] || '', name: act.message.name, pk: act.message.pk,
+          store: props.store, onMessage: props.openDm ? messageThem : null }, 'friend'),
         act.edit && jsx(K.Button, { variant: 'ghost', size: 'sm', onClick: editFace, children: [jsx(K.Icon, { name: 'edit', size: 13 }, 'i'), 'Edit face'] }, 'edit'),
         act.hide && props.store && jsx(K.Button, { variant: 'ghost', size: 'sm', onClick: hideThem, children: [jsx(K.Icon, { name: 'eye-closed', size: 13 }, 'i'),
           jsx('span', { className: 'h-trunc', style: { maxWidth: 190 }, children: 'Hide ' + act.hide.name }, 't')] }, 'hide')
       ] }),
       jsx('div', { className: 'h-profile-body', children: body.rows })
     ] }) })
+}
+
+// The card's private-message button, by who you are to each other: friends get Message, someone you asked shows
+// "Request sent", someone who asked you can be accepted here, anyone else gets Add friend. A friend request carries
+// no text. (An agent's card reaches its owner, never the agent.)
+function FriendAction(props) {
+  const { rel, name, pk, store } = props
+  const post = async (path, okMsg) => { try { await store.post(path, { pk }, okMsg) } catch (_) { /* toasted */ } }
+  const label = text => jsx('span', { className: 'h-trunc', style: { maxWidth: 190 }, children: text }, 't')
+  if (rel === 'friend') {
+    return props.onMessage ? jsx(K.Button, { variant: 'secondary', size: 'sm', onClick: props.onMessage, children: [jsx(K.Icon, { name: 'send', size: 13 }, 'i'), label('Message ' + name)] }) : null
+  }
+  if (!store) return null
+  if (rel === 'sent') {
+    return jsx(K.Button, { variant: 'secondary', size: 'sm', disabled: true, 'aria-disabled': true, children: [jsx(K.Icon, { name: 'clock', size: 13 }, 'i'), 'Request sent'] })
+  }
+  if (rel === 'request') {
+    return jsx(K.Button, { variant: 'primary', size: 'sm', onClick: () => post('/friend/accept', name + ' is now your friend.'), children: [jsx(K.Icon, { name: 'add', size: 13 }, 'i'), label('Accept ' + name)] })
+  }
+  return jsx(K.Button, { variant: 'secondary', size: 'sm', onClick: () => post('/friend/request', 'Friend request sent to ' + name + '.'), children: [jsx(K.Icon, { name: 'add', size: 13 }, 'i'), label('Add friend')] })
 }
 
 function agentSheet(who, found, snap, onOpen, flip) {

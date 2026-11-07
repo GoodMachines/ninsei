@@ -44,10 +44,18 @@ CREATE TABLE IF NOT EXISTS dm_messages (
   id TEXT PRIMARY KEY, peer TEXT NOT NULL, sender TEXT NOT NULL, text TEXT NOT NULL,
   created_at INTEGER NOT NULL, arrived_at REAL NOT NULL, wrap TEXT);
 CREATE INDEX IF NOT EXISTS dm_messages_peer ON dm_messages(peer, created_at);
--- A conversation partner: accepted (I wrote first, I accepted, or I have met them in a room) or a request.
--- `last_read` is an arrival time: what came after it, from the peer, is unread.
+-- A conversation partner. `accepted` is unused since friends-only DMs (it is always 1); who may write to me lives
+-- in dm_friends. `last_read` is an arrival time: what came after it, from the peer, is unread.
 CREATE TABLE IF NOT EXISTS dm_peers (
   peer TEXT PRIMARY KEY, accepted INTEGER NOT NULL DEFAULT 0, first_at REAL NOT NULL, last_read REAL NOT NULL DEFAULT 0);
+-- Friends. Each side's latest word: `mine` / `theirs` is 1 after that person sent a friend request or accept,
+-- 0 after a removal; `*_at` is that event's own date (a stale event is dropped). Friends = both 1. A request I
+-- have not answered = theirs 1, mine 0. `ignored_at` is when I ignored their request (local; remembered 30 days).
+-- A row with both 0 is a tombstone that keeps an older replayed event from coming back.
+CREATE TABLE IF NOT EXISTS dm_friends (
+  peer TEXT PRIMARY KEY, mine INTEGER NOT NULL DEFAULT 0, mine_at INTEGER NOT NULL DEFAULT 0,
+  theirs INTEGER NOT NULL DEFAULT 0, theirs_at INTEGER NOT NULL DEFAULT 0,
+  ignored_at REAL NOT NULL DEFAULT 0, first_at REAL NOT NULL, since REAL NOT NULL DEFAULT 0);
 -- Gift wraps already opened (or refused): a restart or a relay replaying history costs one lookup, not a decryption.
 CREATE TABLE IF NOT EXISTS dm_wraps (id TEXT PRIMARY KEY, at REAL NOT NULL);
 -- What people in my rooms look like: a profile picture (kind 'avatar', the image bytes, already checked by
@@ -76,12 +84,15 @@ EVENT_HISTORY_DAYS = 3
 EVENT_ROOM_CAP = 1500
 EVENT_PRUNE_EVERY = 100   # adds between cheap prune passes
 
-# private messages kept on disk (like EVENT_ROOM_CAP for rooms): per conversation, for a sender not yet
-# accepted (a request), how many such senders, and in all
+# private messages kept on disk (like EVENT_ROOM_CAP for rooms): per conversation and in all
 DM_PER_PEER = 500
-DM_PER_REQUEST = 20
-DM_REQUEST_PEERS = 20
 DM_TOTAL = 5000
+# friends: unanswered requests (the oldest gives way), people I have friended or asked, tombstones, ignores
+FRIEND_REQUESTS = 50
+FRIENDS_MAX = 200
+FRIEND_TOMBSTONES = 200
+FRIEND_IGNORES = 500
+FRIEND_IGNORE_DAYS = 30
 DM_WRAP_MEMORY = 20000    # gift wrap ids remembered
 
 # people's pictures and faces kept on disk (most recently received first; mine are never dropped)
@@ -120,6 +131,7 @@ class Store:
             if f.exists():
                 os.chmod(f, 0o600)
         self._db.executescript(SCHEMA)
+        self._migrate_friends()
         cols = {r[1] for r in self._db.execute("PRAGMA table_info(events)")}
         if "arrived_at" not in cols:  # databases from before arrival times were kept
             try:
@@ -132,6 +144,22 @@ class Store:
         self._adds = 0
         self._dm_wrap_adds = 0
         self.prune_events()
+
+    def _migrate_friends(self) -> None:
+        """Once: conversations I had accepted (written to first, accepted, or met in a room: the old, too easy
+        "known" rule) become friends; every other conversation, a stranger's request, is dropped with its
+        messages. Nothing but the engine's own `friend_*` calls creates a friend after this."""
+        with self._lock:
+            if self._db.execute("SELECT 1 FROM kv WHERE k='dm_friends_v1'").fetchone():
+                return
+            now = time.time()
+            self._db.execute(
+                "INSERT OR IGNORE INTO dm_friends(peer, mine, mine_at, theirs, theirs_at, first_at, since) "
+                "SELECT peer, 1, ?, 1, ?, first_at, ? FROM dm_peers WHERE accepted=1", (int(now), int(now), now))
+            self._db.execute("DELETE FROM dm_messages WHERE peer NOT IN (SELECT peer FROM dm_friends)")
+            self._db.execute("DELETE FROM dm_peers WHERE peer NOT IN (SELECT peer FROM dm_friends)")
+            self._db.execute("INSERT OR REPLACE INTO kv(k, v) VALUES('dm_friends_v1', '1')")
+            self._db.commit()
 
     def close(self) -> None:
         with self._lock:
@@ -520,30 +548,16 @@ class Store:
             self._db.commit()
 
     def dm_add(self, *, id: str, peer: str, sender: str, text: str, created_at: int, arrived_at: float,
-               wrap: Optional[str] = None, accepted: bool = False) -> str:
-        """Store one message. Returns "added", "duplicate" (this rumor is already here) or "limit" (a request
-        sender over their caps). `accepted` says whether this conversation is one I have said yes to (or
-        have a reason to): a stranger gets DM_PER_REQUEST messages, and there is room for DM_REQUEST_PEERS of
-        them. Past DM_PER_PEER in one conversation the oldest go; past DM_TOTAL the biggest conversation
-        loses its oldest, so one sender can't push everyone else's out."""
+               wrap: Optional[str] = None) -> str:
+        """Store one message. Returns "added" or "duplicate" (this rumor is already here). Who may be stored is
+        the engine's call (friends only); this keeps the caps: past DM_PER_PEER in one conversation the oldest
+        go, and past DM_TOTAL the biggest conversation loses its oldest, so one can't push everyone else's out."""
         with self._lock:
             if self._db.execute("SELECT 1 FROM dm_messages WHERE id=?", (id,)).fetchone():
                 return "duplicate"
-            row = self._db.execute("SELECT accepted FROM dm_peers WHERE peer=?", (peer,)).fetchone()
-            ok = bool(accepted or (row and row[0]))
-            if row is None:
-                if not ok:
-                    (n,) = self._db.execute("SELECT COUNT(*) FROM dm_peers WHERE accepted=0").fetchone()
-                    if n >= DM_REQUEST_PEERS:
-                        return "limit"
-                self._db.execute("INSERT INTO dm_peers(peer, accepted, first_at, last_read) VALUES(?,?,?,?)",
-                                 (peer, 1 if ok else 0, arrived_at, arrived_at if sender != peer else 0))
-            elif ok and not row[0]:
-                self._db.execute("UPDATE dm_peers SET accepted=1 WHERE peer=?", (peer,))
-            if not ok:
-                (n,) = self._db.execute("SELECT COUNT(*) FROM dm_messages WHERE peer=?", (peer,)).fetchone()
-                if n >= DM_PER_REQUEST:
-                    return "limit"
+            if self._db.execute("SELECT 1 FROM dm_peers WHERE peer=?", (peer,)).fetchone() is None:
+                self._db.execute("INSERT INTO dm_peers(peer, accepted, first_at, last_read) VALUES(?,1,?,?)",
+                                 (peer, arrived_at, arrived_at if sender != peer else 0))
             self._db.execute("INSERT INTO dm_messages(id, peer, sender, text, created_at, arrived_at, wrap) "
                              "VALUES(?,?,?,?,?,?,?)", (id, peer, sender, text, created_at, arrived_at, wrap))
             self._db.execute("DELETE FROM dm_messages WHERE peer=? AND id NOT IN (SELECT id FROM dm_messages "
@@ -559,17 +573,6 @@ class Store:
             self._db.commit()
             return "added"
 
-    def dm_accept(self, peer: str) -> bool:
-        with self._lock:
-            cur = self._db.execute("UPDATE dm_peers SET accepted=1 WHERE peer=?", (peer,))
-            self._db.commit()
-            return cur.rowcount > 0
-
-    def dm_peer(self, peer: str) -> Optional[dict]:
-        with self._lock:
-            row = self._db.execute("SELECT accepted, first_at, last_read FROM dm_peers WHERE peer=?", (peer,)).fetchone()
-        return {"accepted": bool(row[0]), "first_at": row[1], "last_read": row[2]} if row else None
-
     def dm_messages(self, peer: str, limit: int = 200) -> list[dict]:
         with self._lock:
             rows = self._db.execute(
@@ -578,17 +581,20 @@ class Store:
         return [dict(zip(("id", "sender", "text", "created_at", "arrived_at", "wrap"), r)) for r in reversed(rows)]
 
     def dm_threads(self, limit: int = 100) -> list[dict]:
-        """Every conversation, newest first: {peer, accepted, unread, last_ts}. Counts only; the text of the
-        newest unread message comes from `dm_newest_unread`, for the alert."""
+        """Every friend and every conversation that still has messages, newest first: {peer, friend, unread,
+        last_ts}. Counts only; the text of the newest unread message comes from `dm_newest_unread`, for the alert."""
         with self._lock:
             rows = self._db.execute(
-                "SELECT p.peer, p.accepted, p.first_at, p.last_read, "
-                "(SELECT COUNT(*) FROM dm_messages m WHERE m.peer=p.peer AND m.sender=p.peer AND m.arrived_at>p.last_read), "
-                "COALESCE((SELECT MAX(created_at) FROM dm_messages m WHERE m.peer=p.peer), 0) AS last_ts "
-                "FROM dm_peers p WHERE EXISTS (SELECT 1 FROM dm_messages m WHERE m.peer=p.peer) "
-                "ORDER BY last_ts DESC, p.peer LIMIT ?", (limit,)).fetchall()
-        return [{"peer": r[0], "accepted": bool(r[1]), "first_at": r[2], "last_read": r[3], "unread": r[4], "last_ts": r[5]}
-                for r in rows]
+                "SELECT c.peer, COALESCE(p.last_read, 0), "
+                "(SELECT COUNT(*) FROM dm_messages m WHERE m.peer=c.peer AND m.sender=c.peer AND m.arrived_at>COALESCE(p.last_read, 0)), "
+                "COALESCE((SELECT MAX(created_at) FROM dm_messages m WHERE m.peer=c.peer), 0) AS last_ts, "
+                "EXISTS(SELECT 1 FROM dm_friends f WHERE f.peer=c.peer AND f.mine=1 AND f.theirs=1), "
+                "COALESCE((SELECT f.since FROM dm_friends f WHERE f.peer=c.peer), 0) AS since "
+                "FROM (SELECT peer FROM dm_friends WHERE mine=1 AND theirs=1 "
+                "      UNION SELECT peer FROM dm_peers WHERE EXISTS(SELECT 1 FROM dm_messages m WHERE m.peer=dm_peers.peer)) c "
+                "LEFT JOIN dm_peers p ON p.peer=c.peer "
+                "ORDER BY last_ts DESC, since DESC, c.peer LIMIT ?", (limit,)).fetchall()
+        return [{"peer": r[0], "last_read": r[1], "unread": r[2], "last_ts": r[3], "friend": bool(r[4])} for r in rows]
 
     def dm_newest_unread(self, peer: str) -> Optional[dict]:
         with self._lock:
@@ -605,12 +611,133 @@ class Store:
             self._db.commit()
 
     def dm_forget(self, peer: str) -> int:
-        """Delete a conversation from this computer (the other person's copy, and relays', are theirs)."""
+        """Delete a conversation from this computer (the other person's copy, and relays', are theirs). A friend
+        stays a friend."""
         with self._lock:
             n = self._db.execute("DELETE FROM dm_messages WHERE peer=?", (peer,)).rowcount
             self._db.execute("DELETE FROM dm_peers WHERE peer=?", (peer,))
             self._db.commit()
         return n
+
+    # --- friends (see the dm_friends table) ---------------------------------------------------------
+    @staticmethod
+    def _friend_dict(r) -> dict:
+        keys = ("peer", "mine", "mine_at", "theirs", "theirs_at", "ignored_at", "first_at", "since")
+        d = dict(zip(keys, r))
+        d["mine"], d["theirs"] = bool(d["mine"]), bool(d["theirs"])
+        return d
+
+    def friend_get(self, peer: str) -> Optional[dict]:
+        with self._lock:
+            row = self._db.execute("SELECT peer, mine, mine_at, theirs, theirs_at, ignored_at, first_at, since "
+                                   "FROM dm_friends WHERE peer=?", (peer,)).fetchone()
+        return self._friend_dict(row) if row else None
+
+    def friend_rel(self, peer: str, now: Optional[float] = None) -> str:
+        """"friend", "sent" (I asked, they haven't said yes), "request" (they asked, I haven't answered), or "".
+        An ignored request is "" (it is remembered, not shown)."""
+        r = self.friend_get(peer)
+        if not r:
+            return ""
+        if r["mine"] and r["theirs"]:
+            return "friend"
+        if r["mine"]:
+            return "sent"
+        if r["theirs"] and not self._ignoring(r, now):
+            return "request"
+        return ""
+
+    @staticmethod
+    def _ignoring(r: dict, now: Optional[float] = None) -> bool:
+        return bool(r["ignored_at"]) and (now if now is not None else time.time()) - r["ignored_at"] < FRIEND_IGNORE_DAYS * 86400
+
+    def friend_event(self, peer: str, *, side: str, action: str, at: int, now: Optional[float] = None) -> str:
+        """Apply one friend event, atomically. `side` is "theirs" (a rumor from them) or "mine" (my own action,
+        or the copy my other install sent); `action` is "yes" (a request or an accept) or "remove"; `at` is the
+        event's own date, already clamped to now. Returns "applied", "dropped" (ignored person, stale, nothing to
+        remove: handled, no change) or "limit" (no room for one more unanswered request, and this one is older than
+        all of them: the caller must NOT record the wrap as handled)."""
+        now = now if now is not None else time.time()
+        with self._lock:
+            self._friend_prune(now)
+            r = self.friend_get(peer)
+            if side == "theirs" and r and self._ignoring(r, now):
+                return "dropped"                       # ignored people can neither ask again nor withdraw and ask
+            if r and at < r[side + "_at"]:
+                return "dropped"                       # older than what that side already said
+            if action == "remove":
+                if not r or not (r["mine"] or r["theirs"]):
+                    return "dropped"                   # nothing to end (and a stranger's removal costs no row)
+                self._db.execute(f"UPDATE dm_friends SET mine=0, theirs=0, {side}_at=?, since=0 WHERE peer=?", (at, peer))
+                self._db.commit()
+                return "applied"
+            if side == "theirs":
+                if r is None or not (r["mine"] or r["theirs"]):
+                    (n,) = self._db.execute("SELECT COUNT(*) FROM dm_friends WHERE theirs=1 AND mine=0 AND ignored_at=0").fetchone()
+                    if n >= FRIEND_REQUESTS:
+                        old = self._db.execute("SELECT peer, theirs_at FROM dm_friends WHERE theirs=1 AND mine=0 AND ignored_at=0 "
+                                               "ORDER BY theirs_at, first_at, peer LIMIT 1").fetchone()
+                        if at < old[1]:
+                            return "limit"
+                        self._db.execute("DELETE FROM dm_friends WHERE peer=?", (old[0],))   # the oldest unanswered request gives way
+                if r is None:
+                    self._db.execute("INSERT INTO dm_friends(peer, theirs, theirs_at, first_at) VALUES(?,1,?,?)", (peer, at, now))
+                else:
+                    self._db.execute("UPDATE dm_friends SET theirs=1, theirs_at=?, ignored_at=0, since=CASE WHEN mine=1 THEN ? ELSE 0 END "
+                                     "WHERE peer=?", (at, now, peer))
+            else:
+                if not (r and r["mine"]):
+                    (n,) = self._db.execute("SELECT COUNT(*) FROM dm_friends WHERE mine=1").fetchone()
+                    if n >= FRIENDS_MAX:
+                        return "limit"
+                if r is None:
+                    self._db.execute("INSERT INTO dm_friends(peer, mine, mine_at, first_at) VALUES(?,1,?,?)", (peer, at, now))
+                else:
+                    self._db.execute("UPDATE dm_friends SET mine=1, mine_at=?, ignored_at=0, since=CASE WHEN theirs=1 THEN ? ELSE 0 END "
+                                     "WHERE peer=?", (at, now, peer))
+            self._db.commit()
+            return "applied"
+
+    def _friend_prune(self, now: float) -> None:
+        """Forget old ignores, cap the ignore list and the tombstones (the oldest first)."""
+        self._db.execute("UPDATE dm_friends SET ignored_at=0 WHERE ignored_at>0 AND ignored_at<?",
+                         (now - FRIEND_IGNORE_DAYS * 86400,))
+        self._db.execute("DELETE FROM dm_friends WHERE mine=0 AND theirs=0 AND ignored_at=0 AND peer NOT IN ("
+                         "SELECT peer FROM dm_friends WHERE mine=0 AND theirs=0 AND ignored_at=0 "
+                         "ORDER BY MAX(mine_at, theirs_at) DESC LIMIT ?)", (FRIEND_TOMBSTONES,))
+        self._db.execute("DELETE FROM dm_friends WHERE ignored_at>0 AND mine=0 AND peer NOT IN ("
+                         "SELECT peer FROM dm_friends WHERE ignored_at>0 AND mine=0 ORDER BY ignored_at DESC LIMIT ?)",
+                         (FRIEND_IGNORES,))
+
+    def friend_ignore(self, peer: str, now: Optional[float] = None) -> bool:
+        """Ignore their request: local and silent. They stay ignored for FRIEND_IGNORE_DAYS."""
+        now = now if now is not None else time.time()
+        with self._lock:
+            cur = self._db.execute("UPDATE dm_friends SET ignored_at=? WHERE peer=? AND theirs=1 AND mine=0", (now, peer))
+            self._db.commit()
+            return cur.rowcount > 0
+
+    def friend_forget(self, peer: str) -> None:
+        """Forget everything about a person (hiding them)."""
+        with self._lock:
+            self._db.execute("DELETE FROM dm_friends WHERE peer=?", (peer,))
+            self._db.commit()
+
+    def friend_lists(self, now: Optional[float] = None) -> dict:
+        """{"requests": [{peer, at}] newest first (unanswered, not ignored), "sent": [peer], "friends": [peer]}."""
+        now = now if now is not None else time.time()
+        with self._lock:
+            rows = self._db.execute("SELECT peer, mine, theirs, theirs_at, ignored_at FROM dm_friends "
+                                    "WHERE mine=1 OR theirs=1 ORDER BY theirs_at DESC, peer").fetchall()
+        out: dict = {"requests": [], "sent": [], "friends": []}
+        for peer, mine, theirs, at, ign in rows:
+            if mine and theirs:
+                out["friends"].append(peer)
+            elif mine:
+                out["sent"].append(peer)
+            elif not (ign and now - ign < FRIEND_IGNORE_DAYS * 86400):
+                out["requests"].append({"peer": peer, "at": at})
+        return out
 
     def dm_counts(self) -> dict:
         with self._lock:

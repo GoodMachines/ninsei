@@ -1,6 +1,8 @@
 """Private messages between two people: NIP-17 on top of NIP-59 gift wraps and NIP-44 encryption.
 
     rumor  kind 14, unsigned, pubkey = the sender, one `p` tag = the other person, content = plain text
+           (a friend request, accept or removal is a kind 14 with a `["ninsei", "friend_request" | "friend_accept"
+           | "friend_remove"]` tag and EMPTY content: whatever a hostile client puts there is never kept or shown)
     seal   kind 13, signed by the sender, NIP-44 encrypted to the receiver, no tags
     wrap   kind 1059, signed by a one-time random key, NIP-44 encrypted to the receiver, tag ["p", receiver]
 
@@ -41,8 +43,18 @@ NOT_MINE = "not_mine"        # not addressed to my key (a relay sent it anyway, 
 GARBAGE = "garbage"          # won't decrypt, isn't JSON, wrong shape or kind, bad signature or id
 FORGED = "forged"            # the seal's key and the rumor's key differ: someone claiming to be someone else
 OVERSIZE = "oversize"
+FRIEND_REQUEST = "friend_request"   # the `ninsei` tag's value on a rumor that says "I'd like us to be friends"
+FRIEND_ACCEPT = "friend_accept"
+FRIEND_REMOVE = "friend_remove"
+FRIEND_TYPES = (FRIEND_REQUEST, FRIEND_ACCEPT, FRIEND_REMOVE)
+TEXT = "text"                # a message's `type` when it is not one of the above
+
 UNSUPPORTED = "unsupported"  # a valid message of a kind or shape Ninsei doesn't show (group chats, files, reactions)
 HIDDEN = "hidden"            # from someone I hid
+# What the engine decides about a message after the wrap opened (kept here so every verdict lives in one place).
+NOT_FRIEND = "not_friend"    # a private message from someone who isn't my friend: dropped before storage
+DROPPED = "dropped"          # a friend event with no effect: ignored person, stale, unsolicited removal, an agent
+LIMIT = "limit"              # a friend request refused for capacity: NOT recorded as handled
 
 
 def _json(obj: Any) -> str:
@@ -54,10 +66,14 @@ def past(now: Optional[float] = None) -> int:
     return int(now if now is not None else time.time()) - secrets.randbelow(TWO_DAYS)
 
 
-def make_rumor(sender_pk: str, peer_pk: str, text: str, now: Optional[int] = None) -> dict:
-    """The unsigned kind 14 message. It has an `id` (the hash of its fields) and no `sig`."""
+def make_rumor(sender_pk: str, peer_pk: str, text: str, now: Optional[int] = None,
+               friend: Optional[str] = None) -> dict:
+    """The unsigned kind 14 message. It has an `id` (the hash of its fields) and no `sig`. A friend event
+    (`friend` is one of FRIEND_TYPES) carries a `ninsei` tag and never any text, whatever `text` says."""
+    if friend is not None and friend not in FRIEND_TYPES:
+        raise ValueError("unknown friend event")
     rumor = {"pubkey": sender_pk, "created_at": int(now if now is not None else time.time()), "kind": KIND_RUMOR,
-             "tags": [["p", peer_pk]], "content": text}
+             "tags": [["p", peer_pk]] + ([["ninsei", friend]] if friend else []), "content": "" if friend else text}
     rumor["id"] = nostr.event_id(rumor)
     return rumor
 
@@ -96,8 +112,9 @@ def wrap_shape_ok(ev: Any) -> bool:
 def unwrap(my_sk: str, my_pk: str, wrap: Any,
            hidden: Callable[[str], bool] = lambda pk: False) -> tuple[str, Optional[dict]]:
     """Open a gift wrap meant for me. Returns (verdict, message): the message is
-    {"id", "sender", "peer", "text", "created_at"} only when the verdict is OK, where `peer` is the other
-    person in the conversation (the sender, or for my own copy the receiver). The relay pool has already
+    {"id", "sender", "peer", "text", "type", "created_at"} only when the verdict is OK, where `peer` is the other
+    person in the conversation (the sender, or for my own copy the receiver) and `type` is TEXT or one of
+    FRIEND_TYPES (then `text` is always ""). The relay pool has already
     checked the wrap's signature; this checks its shape and id again because it is cheap.
 
     Order matters: sizes, then who it is for, then the wrap's layer, then the seal's signature (only after the
@@ -139,10 +156,19 @@ def unwrap(my_sk: str, my_pk: str, wrap: Any,
             return GARBAGE, None
         if nostr.event_id(rumor) != rumor["id"]:
             return GARBAGE, None
-        if len(rumor["content"]) > MAX_TEXT:
-            return OVERSIZE, None
-        if not rumor["content"].strip():
-            return GARBAGE, None
+        # A `ninsei` tag marks a friend event: exactly one, of a known type, else it is not shown at all (so a
+        # message of a future type can never be read as text). A friend event has no text: its content is dropped.
+        marks = [t for t in rumor["tags"] if t and t[0] == "ninsei"]
+        kind = TEXT
+        if marks:
+            if len(marks) != 1 or len(marks[0]) != 2 or marks[0][1] not in FRIEND_TYPES:
+                return UNSUPPORTED, None
+            kind = marks[0][1]
+        else:
+            if len(rumor["content"]) > MAX_TEXT:
+                return OVERSIZE, None
+            if not rumor["content"].strip():
+                return GARBAGE, None
         # One conversation between two people. The people in it are the sender and every `p` tag; any other
         # shape (a group, a note to self, a message that isn't about me) is not shown.
         tos = set(nostr.tag_values(rumor, "p"))
@@ -157,7 +183,7 @@ def unwrap(my_sk: str, my_pk: str, wrap: Any,
             if to != my_pk:
                 return NOT_MINE, None                  # a message between two other people
             peer = sender
-        return OK, {"id": rumor["id"], "sender": sender, "peer": peer, "text": rumor["content"],
-                    "created_at": rumor["created_at"]}
+        return OK, {"id": rumor["id"], "sender": sender, "peer": peer, "text": "" if kind != TEXT else rumor["content"],
+                    "type": kind, "created_at": rumor["created_at"]}
     except (nip44.Nip44Error, ValueError, TypeError, KeyError, AttributeError, RecursionError, UnicodeError):
         return GARBAGE, None

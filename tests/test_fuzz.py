@@ -131,8 +131,17 @@ async def test_private_messages_survive_hostile_gift_wraps(world):
     ident = maya._identity()
     rng = random.Random(99)
     import hashlib
+    for i in range(0, 7, 2):                      # some of the senders are friends, some are not
+        pk = nostr.pubkey(hashlib.sha256(f"dm-fuzz-{i}".encode()).hexdigest())
+        for side in ("mine", "theirs"):
+            maya.store.friend_event(pk, side=side, action="yes", at=1)
     for i in range(60):
         sk = hashlib.sha256(f"dm-fuzz-{i % 7}".encode()).hexdigest()
+        # friend events too: every type, with hostile text and tags an honest client never adds
+        rumor = dm.make_rumor(nostr.pubkey(sk), ident["person_pk"], "", friend=rng.choice(dm.FRIEND_TYPES))
+        rumor["content"], rumor["tags"] = rng.choice(["", "x" * 3000, "@Ada \x00"]), rumor["tags"] + rng.choice([[], [["ninsei", "x"]], [["e", "y"]]])
+        rumor["id"] = nostr.event_id(rumor)
+        await run(maya, maya._dm_process, dm.wrap_for(sk, ident["person_pk"], rumor))
         text = rng.choice(["hi", "x" * rng.randint(1, 3999), "<b>hi</b>\u202e", "\x00\x01", "@Ada @Maya", "😀" * 50, "  ", ""])
         if text.strip():
             await run(maya, maya._dm_process, dm.wrap_for(sk, ident["person_pk"], dm.make_rumor(nostr.pubkey(sk), ident["person_pk"], text)))
@@ -145,5 +154,6 @@ async def test_private_messages_survive_hostile_gift_wraps(world):
     json.dumps(snap)
     d = read(maya, maya.dm_summary)
     assert d["threads"] and all(len(t["pk"]) == 64 for t in d["threads"])
+    assert all(len(p["pk"]) == 64 and set(p) == {"pk", "name", "impostor", "ts"} for p in d["pending"]) and d["requests"] <= 50
     for t in d["threads"][:5]:
         json.dumps(read(maya, maya.dm_thread, t["pk"], False))
