@@ -1038,6 +1038,10 @@ const CSS = TOKENS + `
 .h-quote b{font-weight:600;color:var(--h-fg2);flex:none}
 .h-quote-t{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
 .h-quote-gone{cursor:default;font-style:italic;margin-bottom:2px}
+.h-deleted-t{font-style:italic;color:var(--h-fg3)}
+.h-edited{color:var(--h-fg3);font-size:11px}
+.h-edit{display:flex;flex-direction:column;gap:4px}
+.h-edit textarea{width:100%;box-sizing:border-box;resize:none;font:inherit;color:var(--h-fg);background:var(--h-card);border:1px solid color-mix(in oklch,var(--h-accent) 60%,var(--h-line2));border-radius:8px;padding:6px 9px;outline:none}
 .h-quote-gone:hover{background:transparent;color:var(--h-fg3)}
 .h-tlwrap{position:relative;flex:1;min-height:96px;display:flex;flex-direction:column}
 .h-tlwrap>.h-scroll{flex:1;min-height:0}
@@ -3767,7 +3771,7 @@ function Timeline(props) {
   const toLatest = () => { const el = scroller.current; if (el) springScrollTo(el, el.scrollHeight - el.clientHeight) }
 
   const k = away === null ? -1 : msgs.findIndex(m => m.id === away)
-  const since = away === null ? 0 : (k < 0 ? msgs : msgs.slice(k + 1)).filter(m => m.t === 'msg' && !m.system).length
+  const since = away === null ? 0 : (k < 0 ? msgs : msgs.slice(k + 1)).filter(m => m.t === 'msg' && !m.system && !m.deleted).length
   const items = groupItems(msgs, props.newAfter)
   return jsxs('div', { className: 'h-tlwrap', children: [
     jsx('div', { className: 'h-scroll', ref: scroller, onScroll, children: jsxs('div', { className: 'h-timeline', role: 'log', 'aria-live': 'polite', children: [
@@ -3830,7 +3834,7 @@ function groupItems(msgs, newAfter) {
   let marked = !newAfter
   for (const m of msgs) {
     // "New messages": before the first message from someone else that arrived after you last read the room
-    if (!marked && m.t === 'msg' && !m.system && !m.mine && m.ts > newAfter) {
+    if (!marked && m.t === 'msg' && !m.system && !m.mine && !m.deleted && m.ts > newAfter) {
       out.push({ kind: 'new', key: 'new-line' })
       marked = true
       prev = null
@@ -3914,8 +3918,27 @@ function Message(props) {
   const f = agent ? faceFor(m.face, m.pk) : null
   const imp = m.impostor
   const [picking, setPicking] = useState(false)
+  // Edit and Delete: only on your own person messages, never your agent's (agents don't edit or delete)
+  const [editing, setEditing] = useState(false)
+  const [asking, setAsking] = useState(false)
+  const editBtn = useRef(null)
+  const own = !!(props.store && m.mine && !agent && !m.deleted)
   const who = { kind: agent ? 'agent' : 'person', pk: m.pk, name: m.name, face: m.face, owner_name: m.owner_name }
-  const text = jsx(RichText, { text: m.text, book: props.book })
+  const text = jsx(MessageBody, { m, book: props.book })
+  const stopEdit = () => { setEditing(false); P.setTimeout(() => editBtn.current && editBtn.current.focus && editBtn.current.focus(), 0) }
+  const saveEdit = async t => {
+    try { await props.store.post('/edit', { room: props.roomId, target: m.id, text: t }); stopEdit() } catch (_) { /* toasted */ }
+  }
+  const doDelete = async () => {
+    setAsking(false)
+    try { await props.store.post('/delete', { room: props.roomId, target: m.id }, 'Message deleted') } catch (_) { /* toasted */ }
+  }
+  const extra = own ? [
+    jsx(K.Tip, { label: 'Edit', children: jsx('button', { type: 'button', className: 'h-bar-btn', ref: editBtn, 'aria-label': 'Edit your message',
+      onClick: () => setEditing(true), children: jsx(K.Icon, { name: 'edit', size: 14 }) }) }, 'edit'),
+    jsx(K.Tip, { label: 'Delete', children: jsx('button', { type: 'button', className: 'h-bar-btn', 'aria-label': 'Delete your message',
+      onClick: () => setAsking(true), children: jsx(K.Icon, { name: 'trash', size: 14 }) }) }, 'delete')
+  ] : null
   const react = (emoji, on) => props.store.post('/react', { room: props.roomId, target: m.id, emoji, on }).catch(() => {})
   const mineSet = (m.reactions || []).filter(r => r.mine).map(r => r.emoji)
   return jsxs('div', { className: cx('h-msg', agent && 'h-agent'), 'data-role': m.role, 'data-first': props.first, 'data-mid': m.id, 'data-bar': picking,
@@ -3929,7 +3952,8 @@ function Message(props) {
           jsx('span', { className: 'h-faint h-tiny', children: fmtTime(m.ts) })
         ] }),
         m.quote && jsx(QuoteLine, { quote: m.quote, onJump: props.onJump }),
-        agent ? jsx('div', { className: 'h-bubble', children: jsx('div', { className: 'h-text', children: text }) })
+        editing ? jsx(MessageEditor, { text: m.text, onSave: saveEdit, onCancel: stopEdit })
+          : agent ? jsx('div', { className: 'h-bubble', children: jsx('div', { className: 'h-text', children: text }) })
           : jsx('div', { className: 'h-text', children: text }),
         imp && jsx(ImpostorChip, { imp }),
         (m.reactions || []).length > 0 && jsx(ReactionChips, { reactions: m.reactions, onToggle: (emoji, on) => react(emoji, on) }),
@@ -3937,8 +3961,63 @@ function Message(props) {
           children: m.delivery === 'pending' ? 'Not delivered yet. Ninsei will resend it when a relay is back.'
             : 'Not delivered. The relays turned it down or it waited too long.' })
       ] }),
-      props.store && jsx(MessageBar, { m, picking, setPicking, mine: mineSet, onReply: props.onReply,
-        onPick: emoji => react(emoji, !mineSet.includes(emoji)) })
+      props.store && !m.deleted && jsx(MessageBar, { m, picking, setPicking, mine: mineSet, onReply: props.onReply, extra,
+        onPick: emoji => react(emoji, !mineSet.includes(emoji)) }),
+      asking && jsx(DeleteConfirm, { open: true, onConfirm: doDelete, onClose: () => setAsking(false) })
+    ] })
+}
+
+// A message's words: "Message deleted" for a deleted one, otherwise the formatted text, followed by a quiet
+// "(edited)" whose hover text says when. An edit never changes who said it or when it was sent.
+function MessageBody(props) {
+  const m = props.m
+  if (m.deleted) return jsx('span', { className: 'h-deleted-t', children: 'Message deleted' })
+  return jsxs(Fragment, { children: [
+    jsx(RichText, { text: m.text, book: props.book }),
+    m.edited && jsx('span', { className: 'h-edited', title: 'Edited ' + fmtTime(m.edited_at || m.ts), children: ' (edited)' })
+  ] })
+}
+
+// Edit in place: the textarea holds the old words; Enter saves, Shift+Enter is a new line, Escape cancels.
+// Saving the same words, or nothing, just closes it (the engine refuses an empty message: delete it instead).
+function MessageEditor(props) {
+  const [val, setVal] = useState(props.text || '')
+  const [busy, setBusy] = useState(false)
+  const ta = useRef(null)
+  useLayoutEffect(() => {
+    const el = ta.current
+    if (!el) return
+    el.style.height = 'auto'
+    el.style.height = Math.min(220, el.scrollHeight) + 'px'
+  }, [val])
+  useEffect(() => {
+    const el = ta.current
+    if (el && el.focus) { el.focus(); if (el.setSelectionRange) el.setSelectionRange(el.value.length, el.value.length) }
+  }, [])
+  const save = async () => {
+    const t = val.trim()
+    if (busy) return
+    if (!t || t === String(props.text || '').trim()) { props.onCancel(); return }
+    setBusy(true)
+    try { await props.onSave(t) } finally { setBusy(false) }
+  }
+  const onKeyDown = e => {
+    if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); props.onCancel() }
+    else if (e.key === 'Enter' && !e.shiftKey && !(e.nativeEvent && e.nativeEvent.isComposing)) { e.preventDefault(); save() }
+  }
+  return jsxs('div', { className: 'h-edit', children: [
+    jsx('textarea', { ref: ta, rows: 1, value: val, maxLength: 1200, 'aria-label': 'Edit your message', onKeyDown, onChange: e => setVal(e.target.value) }),
+    jsx('div', { className: 'h-faint h-tiny', children: 'Enter to save · Shift+Enter for a new line · Escape to cancel' })
+  ] })
+}
+
+// Deleting asks once, and says plainly what it can and can't do.
+function DeleteConfirm(props) {
+  return jsx(Modal, { open: props.open, onClose: props.onClose, title: 'Delete for everyone using Ninsei?',
+    description: "Relays and other apps may already have a copy; Nostr can't take back what was published.",
+    footer: [
+      jsx(K.Button, { variant: 'ghost', onClick: props.onClose, children: 'Keep it' }, 'c'),
+      jsx(K.Button, { variant: 'danger', onClick: props.onConfirm, children: 'Delete' }, 'd')
     ] })
 }
 
@@ -4020,6 +4099,7 @@ function ReactionChip(props) {
 // A lookalike's message is quoted with the same flag the room shows on it, never under the real name.
 function QuoteLine(props) {
   const q = props.quote
+  if (q.deleted) return jsxs('div', { className: 'h-quote h-quote-gone', children: [jsx(K.Icon, { name: 'reply', size: 11 }), jsx('span', { children: 'Message deleted' })] })
   if (q.missing) return jsxs('div', { className: 'h-quote h-quote-gone', children: [jsx(K.Icon, { name: 'reply', size: 11 }), jsx('span', { children: 'Original message not available' })] })
   return jsxs('div', { className: 'h-quote-row', children: [
     jsxs('button', { type: 'button', className: 'h-quote', 'aria-label': 'Go to the message from ' + q.name + ': ' + q.text, onClick: () => props.onJump && props.onJump(q.id), children: [
@@ -5852,6 +5932,7 @@ function StatusChip(props) {
     reply: 'M6.5 4L3 7.5 6.5 11M3 7.5h6.5a3.5 3.5 0 0 1 3.5 3.5v1',
     search: 'M7 12A5 5 0 1 0 7 2a5 5 0 0 0 0 10zM10.8 10.8L14 14',
     'arrow-down': 'M8 3v9M4 8.5l4 4 4-4',
+    trash: 'M3 4.5h10M6.5 4.5V3h3v1.5M4.5 4.5l.6 8.5h5.8l.6-8.5M7 7v4M9 7v4',
     smiley: 'M8 14A6 6 0 1 0 8 2a6 6 0 0 0 0 12zM5.6 9.6c.6.9 1.4 1.4 2.4 1.4s1.8-.5 2.4-1.4M6 6.4v.4M10 6.4v.4'
   }
 

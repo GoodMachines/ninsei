@@ -114,6 +114,10 @@ const CSS = TOKENS + `
 .h-quote b{font-weight:600;color:var(--h-fg2);flex:none}
 .h-quote-t{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
 .h-quote-gone{cursor:default;font-style:italic;margin-bottom:2px}
+.h-deleted-t{font-style:italic;color:var(--h-fg3)}
+.h-edited{color:var(--h-fg3);font-size:11px}
+.h-edit{display:flex;flex-direction:column;gap:4px}
+.h-edit textarea{width:100%;box-sizing:border-box;resize:none;font:inherit;color:var(--h-fg);background:var(--h-card);border:1px solid color-mix(in oklch,var(--h-accent) 60%,var(--h-line2));border-radius:8px;padding:6px 9px;outline:none}
 .h-quote-gone:hover{background:transparent;color:var(--h-fg3)}
 .h-tlwrap{position:relative;flex:1;min-height:96px;display:flex;flex-direction:column}
 .h-tlwrap>.h-scroll{flex:1;min-height:0}

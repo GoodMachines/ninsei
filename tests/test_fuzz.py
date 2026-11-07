@@ -10,7 +10,7 @@ from ninsei_engine.engine import KIND_LIVE, KIND_ROOM
 from test_engine import read, run, setup_room, world  # noqa: F401  (fixture re-export)
 
 TYPES = ["msg", "join", "offer", "offer_state", "share", "tales_start", "tales_round", "tales_vote_open",
-         "tales_reveal", "tales_end", "tales_fake", "tales_vote", "presence", "claim", "react", "nope"]
+         "tales_reveal", "tales_end", "tales_fake", "tales_vote", "presence", "claim", "react", "edit", "delete", "nope"]
 FIELDS = ["text", "name", "face", "gid", "n", "q", "options", "ends_at", "secs", "truth", "answer", "authors",
           "picks", "points", "scores", "lucky", "names", "rounds", "option", "offer", "title", "pitch", "status",
           "html", "bytes", "seq", "at", "state", "budget", "prio", "trigger", "to", "reply", "system", "aborted", "target", "emoji", "on"]
@@ -46,6 +46,7 @@ async def test_views_survive_malformed_events(world):
     apk = nostr.pubkey(agent)
     bind = nostr.owner_binding(person, apk)
     gid = "fuzzgid"
+    made: list = []
     for i in range(300):
         c = {rng.choice(FIELDS): junk(rng) for _ in range(rng.randint(0, 8))}
         c["t"] = rng.choice(TYPES)
@@ -57,11 +58,20 @@ async def test_views_survive_malformed_events(world):
         kind = KIND_LIVE if rng.random() < 0.2 else KIND_ROOM
         ev = nostr.build_event(agent if as_agent else person, kind, content, tags)
         await run(maya, maya._on_event, ev, "history")  # "history": no reactions, no model calls
+        if c["t"] == "msg":
+            made.append((as_agent, ev["id"]))
+        if made and rng.random() < 0.3:  # edits and deletes aimed at real messages, from either key, junk or not
+            by_agent, target = rng.choice(made)
+            e2 = {"t": rng.choice(["edit", "delete"]), "target": target, "text": junk(rng) if rng.random() < 0.5 else "edited " + "z" * rng.randint(0, 40)}
+            as_agent2 = by_agent if rng.random() < 0.7 else not by_agent
+            tags2 = [["h", room]] + ([["owner", nostr.pubkey(person), bind]] if as_agent2 else [])
+            await run(maya, maya._on_event, nostr.build_event(agent if as_agent2 else person, KIND_ROOM, json.dumps(e2), tags2), "history")
     # Every view the UI reads must still render.
     snap, cpu = await asyncio.wrap_future(maya.call(_timed(maya.snapshot, room)))
     assert cpu < 1.0, "room views got slow"  # was ~2 s before binding checks were cached
     assert snap["room"]["id"] == room
     json.dumps(snap)  # and stay JSON-serialisable for the API
+    assert any(m.get("edited") or m.get("deleted") for m in read(maya, maya.messages, room, 10 ** 9))  # some really landed
     for q in ("x", "e", "0", "<b>", "a" * 90):  # search runs over the same junk
         hits = read(maya, maya.search, room, q)
         json.dumps(hits)

@@ -97,6 +97,17 @@ class PostIn(BaseModel):
     reply: Optional[str] = None  # id of the message this one answers
 
 
+class EditIn(BaseModel):
+    room: str
+    target: str
+    text: str
+
+
+class DeleteIn(BaseModel):
+    room: str
+    target: str
+
+
 class ReactIn(BaseModel):
     room: str
     target: str
@@ -209,6 +220,18 @@ async def post(body: PostIn):
 async def react(body: ReactIn):
     eng = await _engine()
     return await _run(eng.react, body.room, body.target, body.emoji, body.on)
+
+
+@router.post("/edit")
+async def edit(body: EditIn):
+    eng = await _engine()
+    return await _run(eng.edit, body.room, body.target, body.text)
+
+
+@router.post("/delete")
+async def delete(body: DeleteIn):
+    eng = await _engine()
+    return await _run(eng.delete, body.room, body.target)
 
 
 @router.post("/lobby/refresh")

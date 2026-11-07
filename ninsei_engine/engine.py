@@ -89,7 +89,9 @@ CONTESTED = "?"            # a name registry value: two keys used the name befor
 REACTIONS = ("👍", "❤️", "😂", "😮", "🎉", "👀", "🔥", "🙏")  # the only reactions; anything else is ignored on receipt
 MAX_REACT_BYTES = 1024     # a reaction event is tiny; a bigger one is junk and never stored
 MAX_REACT_NAMES = 8        # names listed under one reaction chip
-CLICKS_PER_MIN = 20        # events one click can publish (reactions, later edits) per install per minute
+CLICKS_PER_MIN = 20        # events one click can publish (reactions, edits, deletes) per install per minute
+MAX_EDIT_BYTES = 12288     # an edit carries up to 1200 characters (escaped, up to 6 bytes each); bigger is junk
+SILENT_TYPES = ("react", "edit", "delete")  # events that change how a message reads, never say anything themselves
 MENTION_SNIPPET = 60       # how much of a mention the room list carries, for the alert
 SEARCH_Q_MAX = 100         # longest search text (the API clips the same way)
 SEARCH_LIMIT_MAX = 100
@@ -294,6 +296,17 @@ def valid_reaction(c: dict) -> bool:
     target, emoji = c.get("target"), c.get("emoji")
     return (isinstance(target, str) and re.fullmatch(r"[0-9a-f]{64}", target) is not None
             and isinstance(emoji, str) and emoji in REACTIONS and isinstance(c.get("on"), bool))
+
+
+def valid_edit(c: dict) -> bool:
+    """A well-formed `edit` (a message id and non-blank text) or `delete` (a message id). Whether the author
+    may touch that message is checked where the views are built, against the target's own key."""
+    target = c.get("target")
+    if not (isinstance(target, str) and re.fullmatch(r"[0-9a-f]{64}", target)):
+        return False
+    if c.get("t") == "delete":
+        return True
+    return c.get("t") == "edit" and isinstance(c.get("text"), str) and bool(c["text"].strip())
 
 
 def at_mentions(text: str, name: str, max_ats: int = 20) -> bool:
@@ -916,6 +929,9 @@ class Engine:
         c = self._content(ev)
         if c.get("t") == "react" and (len(ev["content"]) > MAX_REACT_BYTES or not valid_reaction(c)):
             return  # a reaction is one fixed-size fact; junk is never stored, so it can't fill the room
+        if c.get("t") in ("edit", "delete") and (len(ev["content"]) > MAX_EDIT_BYTES or not valid_edit(c)
+                                                 or self.owner_of(ev)):
+            return  # an edit or delete is malformed, or an agent's (agents never edit or delete): never stored
         self.events[room][ev["id"]] = ev
         # When it reached us, kept with the event: after a restart the ranking of games (and of who got a
         # name first) must still go by arrival, not by the author's date. A history pull has no real arrival.
@@ -931,16 +947,16 @@ class Engine:
         # Backfill: a history pull, or anything dated before the live window (a relay replaying the room, or a
         # backdated post). Its order is the relay's or the author's, so it can't decide who held a name first.
         backfill = _src == "history" or created < now - FRESH_WINDOW
-        if c.get("t") not in ("join", "react"):  # only saying something claims a name; a bare join or reaction reserves nothing
+        if c.get("t") not in ("join", *SILENT_TYPES):  # only saying something claims a name; a bare join, reaction, edit or delete reserves nothing
             self._register_name(room, ev["pubkey"], c.get("name"), agent=self.owner_of(ev) is not None,
                                 backfill=backfill)
-        if self.owner_of(ev) and _src != "history" and c.get("t") != "react":
+        if self.owner_of(ev) and _src != "history" and c.get("t") not in SILENT_TYPES:
             self._note_agent_name(room, ev["pubkey"], c.get("name"))
         # Wide enough for a peer whose clock is a few minutes off; dedupe by id stops replays.
         fresh = created >= now - FRESH_WINDOW and _src != "history"
         self._bump()
-        if fresh and ev["pubkey"] != self._identity()["agent_pk"] and c.get("t") != "react":
-            self._spawn(self._react(room, ev, c))  # a reaction never wakes an agent
+        if fresh and ev["pubkey"] != self._identity()["agent_pk"] and c.get("t") not in SILENT_TYPES:
+            self._spawn(self._react(room, ev, c))  # a reaction, edit or delete never wakes an agent
 
     def _trim_room(self, room: str) -> None:
         """Keep a room's in-memory events to MAX_ROOM_EVENTS, so a flood can't grow memory or the cost of every
@@ -1069,8 +1085,8 @@ class Engine:
                 self._migrate_names(room, reg)
                 # then seed what's still unclaimed from history in created_at order (first use of a room)
                 for e in self._sorted(room):
-                    if self._content(e).get("t") in ("join", "react"):
-                        continue  # a bare join or reaction claims no name (see _on_event)
+                    if self._content(e).get("t") in ("join", *SILENT_TYPES):
+                        continue  # a bare join, reaction, edit or delete claims no name (see _on_event)
                     self._register_name(room, e["pubkey"], self._content(e).get("name"),
                                         agent=self.owner_of(e) is not None, save=False, backfill=True)
                 self.store.set(f"{NAMES_KV}:{room}", reg)
@@ -1252,7 +1268,7 @@ class Engine:
         agent: dict[str, str] = {}
         for e in (self._sorted(room) if evs is None else evs):
             n = _name_ok(self._content(e).get("name"), "")
-            if not n or self._content(e).get("t") == "react":  # a reaction names nobody
+            if not n or self._content(e).get("t") in SILENT_TYPES:  # a reaction, edit or delete names nobody
                 continue
             if self.owner_of(e):
                 agent[e["pubkey"]] = n
@@ -1412,7 +1428,7 @@ class Engine:
         if p:
             return p["name"]
         for e in self.events.get(room, {}).values():
-            if e["pubkey"] == pk and self._content(e).get("t") != "react":
+            if e["pubkey"] == pk and self._content(e).get("t") not in SILENT_TYPES:
                 return _name_ok(self._content(e).get("name"), "")
         return ""
 
@@ -1512,6 +1528,8 @@ class Engine:
             return
         if self._inflight >= MAX_INFLIGHT:
             return
+        if (self._msg_fx(room).get(ev["id"]) or {}).get("deleted"):
+            return  # its author took it back while the floor was being decided: nothing to answer
         self._inflight += 1
         try:
             self._set_state("activity: working")
@@ -1630,13 +1648,14 @@ class Engine:
         return bool(g and g["phase"] not in ("end",))
 
     # --- transcript for the brain ---------------------------------------------------------------
-    def _line(self, room: str, ev: dict, who: Optional[dict] = None) -> Line:
+    def _line(self, room: str, ev: dict, who: Optional[dict] = None, fx: Optional[dict] = None) -> Line:
         who = who or self._who(room)
         ident = who["ident"]
         c = self._content(ev)
         owner = self.owner_of(ev)
         name = _name_ok(c.get("name"), "Someone")
-        text = str(c.get("text", ""))
+        fx = self._msg_fx(room) if fx is None else fx
+        text = str((fx.get(ev["id"]) or {}).get("text") or c.get("text", ""))[:1200]  # the edited words, if any
         if ev["pubkey"] == ident["agent_pk"]:
             return Line(name, "self", text)
         if owner:
@@ -1655,8 +1674,9 @@ class Engine:
     def _transcript(self, room: str, n: int = 24) -> list[Line]:
         evs = self._sorted(room)
         who = self._who(room, evs)
-        msgs = [e for e in evs if self._content(e).get("t") == "msg"]
-        return [self._line(room, e, who) for e in msgs[-n:]]
+        fx = self._msg_fx(room, evs)  # edited text replaces the original; a deleted message is not shown at all
+        msgs = [e for e in evs if self._content(e).get("t") == "msg" and not (fx.get(e["id"]) or {}).get("deleted")]
+        return [self._line(room, e, who, fx) for e in msgs[-n:]]
 
     def _sorted(self, room: str) -> list[dict]:
         return sorted(self.events.get(room, {}).values(), key=self._order)
@@ -3044,10 +3064,10 @@ class Engine:
         return {"id": ev["id"]}
 
     def _pace_click(self) -> None:
-        """Anything one click can publish (a reaction, later an edit) shares one local pace, so a held key or a
+        """Anything one click can publish (a reaction, an edit, a delete) shares one local pace, so a held key or a
         script can't spend the relays' per-IP allowance. Raises a message the UI shows as a toast."""
         if not self._rate_ok("clicks", CLICKS_PER_MIN, 60):
-            raise ValueError(f"Slow down: Ninsei sends at most {CLICKS_PER_MIN} reactions and edits a minute.")
+            raise ValueError(f"Slow down: Ninsei sends at most {CLICKS_PER_MIN} reactions, edits and deletes a minute.")
 
     async def react(self, room: str, target: str, emoji: str, on: bool = True) -> dict:
         """Add or take back one of my reactions to a message here. Nothing is sent when it already is as asked."""
@@ -3063,6 +3083,46 @@ class Engine:
             return {"ok": True, "unchanged": True}
         self._pace_click()
         ev = await self._publish_room(room, False, {"t": "react", "target": target, "emoji": emoji, "on": on})
+        return {"id": ev["id"]}
+
+    def _own_msg(self, room: str, target: str) -> dict:
+        """My own chat message in this room that I may still edit or delete (a person's message under my person
+        key; never my agent's, never someone else's, never one already deleted)."""
+        if room not in self.events:
+            raise ValueError("you aren't in that room")
+        te = self.events[room].get(target) if isinstance(target, str) else None
+        if te is None or self._content(te).get("t") != "msg":
+            raise ValueError("that message isn't here any more")
+        if te["pubkey"] != self._identity()["person_pk"] or self.owner_of(te):
+            raise ValueError("you can only change your own messages")
+        if (self._msg_fx(room).get(target) or {}).get("deleted"):
+            raise ValueError("that message was already deleted")
+        return te
+
+    async def edit(self, room: str, target: str, text: str) -> dict:
+        """Replace the words of one of my messages. Everyone's view shows the new text with "edited"; an edit
+        never wakes an agent or raises a mention. Nothing is sent when the text is unchanged."""
+        te = self._own_msg(room, target)
+        text = (text or "").strip()[:1200]
+        if not text:
+            raise ValueError("a message can't be empty: delete it instead")
+        now_text = (self._msg_fx(room).get(target) or {}).get("text") or str(self._content(te).get("text", ""))[:1200]
+        if text == now_text:
+            return {"ok": True, "unchanged": True}
+        self._pace_click()
+        ev = await self._publish_room(room, False, {"t": "edit", "target": target, "text": text})
+        return {"id": ev["id"]}
+
+    async def delete(self, room: str, target: str) -> dict:
+        """Take back one of my messages: a `delete` room event (Ninsei shows "Message deleted") and a NIP-09
+        kind 5 request, signed by the same key, so relays and other apps that honour it can drop the original.
+        Neither can unpublish what a relay or another app already copied."""
+        te = self._own_msg(room, target)
+        self._pace_click()
+        ev = await self._publish_room(room, False, {"t": "delete", "target": target})
+        req = nostr.build_event(self._identity()["person_sk"], 5, "", [["e", te["id"]], ["k", str(KIND_ROOM)]])
+        self._queue_event(req)
+        self._spawn(self.pool.publish(req))
         return {"id": ev["id"]}
 
     # ============================================================================================
@@ -3081,8 +3141,8 @@ class Engine:
             owner = self.owner_of(e)
             if self._hidden and (e["pubkey"] in self._hidden or (owner or "") in self._hidden):
                 continue  # events from hidden people are dropped on arrival; this keeps the counts clean regardless
-            if c.get("t") == "react":
-                continue  # a reaction makes nobody a member and counts as no post
+            if c.get("t") in SILENT_TYPES:
+                continue  # a reaction, edit or delete makes nobody a member and counts as no post
             st = seen.setdefault(e["pubkey"], [e["created_at"], 0])
             st[0] = min(st[0], e["created_at"])
             if c.get("t") == "msg":
@@ -3191,7 +3251,36 @@ class Engine:
             return {"claimed": owner_name, "real": None if real == CONTESTED else real, "owner": True}
         return None
 
-    def _quote(self, room: str, target_id: str, who: dict) -> dict:
+    def _msg_fx(self, room: str, evs: Optional[list] = None) -> dict[str, dict]:
+        """What edits and deletes did to each message: id -> {"deleted": bool, "text": str | None, "edited_at"}.
+        Only the message's own key counts (the edit's pubkey must equal the target's), only on a person's chat
+        message, never an agent's event, and hidden people's events count for nothing. The latest edit wins in
+        the room's order (created_at, the author's `at`, id). A delete is final: it wins over any edit, whichever
+        arrived first, so a replayed old edit can't bring a deleted message back."""
+        pool = self.events.get(room, {})
+        fx: dict[str, dict] = {}
+        edits = []
+        for e in (pool.values() if evs is None else evs):
+            c = self._content(e)
+            t = c.get("t")
+            if t not in ("edit", "delete") or not valid_edit(c) or self.owner_of(e):
+                continue
+            if self._hidden and self._is_hidden(e):
+                continue
+            te = pool.get(c["target"])
+            if te is None or te["pubkey"] != e["pubkey"] or self.owner_of(te) or self._content(te).get("t") != "msg":
+                continue
+            if t == "delete":
+                fx.setdefault(c["target"], {"deleted": False, "text": None, "edited_at": None})["deleted"] = True
+            else:
+                edits.append(e)
+        for e in sorted(edits, key=self._order):  # oldest first, so the last assignment is the latest edit
+            f = fx.setdefault(self._content(e)["target"], {"deleted": False, "text": None, "edited_at": None})
+            f["text"] = self._content(e)["text"].strip()[:1200]
+            f["edited_at"] = e["created_at"]
+        return fx
+
+    def _quote(self, room: str, target_id: str, who: dict, fx: Optional[dict] = None) -> dict:
         """The line a reply carries: who, what (first QUOTE_CHARS), and the same flag the room would put on that
         message, so a lookalike is never quoted under the real name. A message we don't hold (hidden people's
         are dropped on hiding), or anything but a chat message, is just `missing`."""
@@ -3199,10 +3288,13 @@ class Engine:
         c = self._content(te) if te is not None else {}
         if te is None or c.get("t") != "msg":
             return {"missing": True}
+        f = (self._msg_fx(room) if fx is None else fx).get(target_id) or {}
+        if f.get("deleted"):
+            return {"deleted": True}  # its author took the message back: the quote says so, never shows the words
         owner = self.owner_of(te)
         name = _name_ok(c.get("name"), _short(te["pubkey"]))
         owner_name, owner_ok = self._owner_label(who, owner) if owner else ("", True)
-        q = {"id": target_id, "name": name, "text": str(c.get("text", ""))[:QUOTE_CHARS],
+        q = {"id": target_id, "name": name, "text": str(f.get("text") or c.get("text", ""))[:QUOTE_CHARS],
              "role": "agent" if owner else "person"}
         flag = self._flag(who, te["pubkey"], name, owner, owner_name, owner_ok)
         if flag:
@@ -3254,6 +3346,7 @@ class Engine:
                 offer_state[str(c.get("offer"))] = "shared"
         my_agent_name = self.persona()["name"]
         reactions = self._reactions_by_target(evs, who, {e["id"] for e in evs if self._content(e).get("t") == "msg"})
+        fx = self._msg_fx(room, evs)
         out = []
         for e in evs:
             c = self._content(e)
@@ -3272,12 +3365,24 @@ class Engine:
                     "owner": owner, "owner_name": owner_name if owner_ok else _short(owner),
                     "face": _face_or(c.get("face"), None) if owner else None, "text": str(c.get("text", ""))[:1200],
                     "reply_to": (nostr.tag_values(e, "e") or [None])[0]}
-            if t == "msg" and not item["mine"] and self._mentions_me(item["text"]):
+            f = fx.get(e["id"]) if t == "msg" else None
+            if f and f["text"] is not None:  # edited: the latest words, marked, with when
+                item.update(text=f["text"], edited=True, edited_at=f["edited_at"])
+            # a mention counts only if it was in the message as sent: an edit can't add one (no new highlight
+            # or badge), but taking it out of the text does remove it
+            if t == "msg" and not item["mine"] and self._mentions_me(item["text"]) \
+                    and (not f or f["text"] is None or self._mentions_me(str(c.get("text", ""))[:1200])):
                 item["mentions_me"] = True
             if t == "msg":
                 item["reactions"] = reactions.get(e["id"], [])
                 if isinstance(item["reply_to"], str):
-                    item["quote"] = self._quote(room, item["reply_to"], who)
+                    item["quote"] = self._quote(room, item["reply_to"], who, fx)
+            if f and f["deleted"]:  # a tombstone: no words, no mention, no reply line; reactions and replies stay
+                item.update(text="", deleted=True, reply_to=None)
+                item.pop("edited", None)
+                item.pop("edited_at", None)
+                item.pop("mentions_me", None)
+                item.pop("quote", None)
             flag = self._flag(who, e["pubkey"], name, owner, owner_name, owner_ok)
             if flag and not flag.get("owner"):
                 # someone else holds this name (compared as skeletons, so look-alikes count)
@@ -3330,7 +3435,7 @@ class Engine:
         hidden people, folded agent replies and impostor flags behave exactly as in the timeline."""
         if room not in self.events:
             return []
-        return [m for m in self.messages(room, limit=10 ** 9) if m["t"] == "msg" and not m.get("system")]
+        return [m for m in self.messages(room, limit=10 ** 9) if m["t"] == "msg" and not m.get("system") and not m.get("deleted")]
 
     @staticmethod
     def _search_item(m: dict) -> dict:
@@ -3374,11 +3479,17 @@ class Engine:
         rooms = []
         for rid, meta in self.store.rooms().items():
             evs = self.events.get(rid, {})
+            fx = self._msg_fx(rid)
+            # a deleted message is no longer unread; an edit never adds a mention (only the text as sent counts,
+            # and only while the edited text still has it), so it raises no badge and no alert
             fresh = [(e, c) for e in evs.values() if e["created_at"] > meta.get("last_read", 0)
-                     and e["pubkey"] != ident["person_pk"] and (c := self._content(e)).get("t") == "msg"]
+                     and e["pubkey"] != ident["person_pk"] and (c := self._content(e)).get("t") == "msg"
+                     and not (fx.get(e["id"]) or {}).get("deleted")]
             unread = len(fresh)
             hits = sorted(((e, c) for e, c in fresh if e["pubkey"] != ident["agent_pk"]
-                           and self._mentions_me(str(c.get("text", ""))[:1200])), key=lambda h: self._order(h[0]))
+                           and self._mentions_me(str(c.get("text", ""))[:1200])
+                           and self._mentions_me(str((fx.get(e["id"]) or {}).get("text") or c.get("text", ""))[:1200])),
+                          key=lambda h: self._order(h[0]))
             mentions = len(hits)
             online = sum(1 for p in self.presence.get(rid, {}).values() if time.time() - p["at"] < ABSENT_AFTER)
             rooms.append({"id": rid, "name": meta.get("name", ""), "about": meta.get("about", ""),
@@ -3391,7 +3502,8 @@ class Engine:
                 # the same flag the room shows, so an alert never names a lookalike as the real person
                 flag = self._flag(who, he["pubkey"], name, owner, owner_name, owner_ok)
                 rooms[-1]["last_mention"] = {"id": he["id"], "name": name, "impostor": bool(flag),
-                                             "text": str(hc.get("text", ""))[:MENTION_SNIPPET], "ts": he["created_at"]}
+                                             "text": str((fx.get(he["id"]) or {}).get("text") or hc.get("text", ""))[:MENTION_SNIPPET],
+                                             "ts": he["created_at"]}
         offers = self.store.get("offers") or {}
         now = time.time()
         pending = [{"id": k, **v} for k, v in offers.items() if v["status"] in ("building", "ready")

@@ -462,7 +462,7 @@ def test_the_ui_and_engine_agree_on_the_eight():
 
 @needs_node
 def test_a_message_shows_its_quote_chips_and_bar_and_they_post_the_right_things():
-    js = "".join(fn(ROOM_JS, n) for n in ("Message", "MessageBar", "ReactionPicker", "ReactionChips", "ReactionChip", "QuoteLine")) + """
+    js = "".join(fn(ROOM_JS, n) for n in ("Message", "MessageBody", "MessageBar", "ReactionPicker", "ReactionChips", "ReactionChip", "QuoteLine")) + """
 const useEnter = () => ({ current: null })
 globalThis.P = { listen: () => () => {} }; globalThis.document = {}
 const SPRING = { pop: {} }; const motion = { reduced: () => true }

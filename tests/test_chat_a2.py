@@ -300,7 +300,7 @@ out({ plain, htmlIsText: JSON.stringify(html).includes('<img src=x onerror=alert
 
 
 def test_messages_use_the_one_renderer_and_offer_pitches_stay_plain():
-    assert "jsx(RichText, { text: m.text, book: props.book })" in fn(ROOM_JS, "Message")
+    assert "jsx(RichText, { text: m.text, book: props.book })" in fn(ROOM_JS, "MessageBody") and "MessageBody" in fn(ROOM_JS, "Message")
     assert "MentionText" not in ROOM_JS
     for name in ("OfferCard", "ShareCard"):
         assert "RichText" not in fn(ROOM_JS, name)
