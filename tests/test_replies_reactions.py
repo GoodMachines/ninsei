@@ -467,7 +467,7 @@ const useEnter = () => ({ current: null })
 globalThis.P = { listen: () => () => {} }; globalThis.document = {}
 const SPRING = { pop: {} }; const motion = { reduced: () => true }
 const cx = (...a) => a.filter(Boolean).join(' ')
-function ProfileButton() {}; function Face() {}; function Initial() {}; function MentionText() {}; function ImpostorChip() {}
+function ProfileButton() {}; function Face() {}; function Initial() {}; function RichText() {}; function ImpostorChip() {}
 const faceFor = () => ({ hue: 1 }); const fmtTime = () => '10:00'
 const REACTION_LIST = ['a', 'b']
 K.Tip = function Tip() {}

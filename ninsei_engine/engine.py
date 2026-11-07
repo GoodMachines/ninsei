@@ -90,6 +90,10 @@ REACTIONS = ("👍", "❤️", "😂", "😮", "🎉", "👀", "🔥", "🙏")  
 MAX_REACT_BYTES = 1024     # a reaction event is tiny; a bigger one is junk and never stored
 MAX_REACT_NAMES = 8        # names listed under one reaction chip
 CLICKS_PER_MIN = 20        # events one click can publish (reactions, later edits) per install per minute
+MENTION_SNIPPET = 60       # how much of a mention the room list carries, for the alert
+SEARCH_Q_MAX = 100         # longest search text (the API clips the same way)
+SEARCH_LIMIT_MAX = 100
+SEARCH_CONTEXT = 3         # messages shown on each side of a search result that isn't loaded
 QUOTE_CHARS = 120          # how much of the replied-to message a quote carries
 ROOM_HISTORY_LIMIT = 300   # history events asked of the relays per room, and per room, not across all rooms
 HISTORY_FILTERS_PER_SUB = 8  # filters in one REQ, of any kind (relays cap the filters in a request)
@@ -238,6 +242,11 @@ def _build_claim(b: Any) -> Optional[dict]:
     if not isinstance(step, int) or isinstance(step, bool):
         step = 0
     return {"offer": b["offer"], "step": max(0, min(step, MAX_BUILD_STEPS)), "wait": b.get("wait") is True}
+
+
+def _fold(s: str) -> str:
+    """Text for matching: no accents, no case (the UI folds the same way to highlight the match)."""
+    return "".join(ch for ch in unicodedata.normalize("NFKD", s) if unicodedata.category(ch) != "Mn").lower()
 
 
 def _name_ok(name: str, fallback: str) -> str:
@@ -3316,6 +3325,40 @@ class Engine:
             out.append(item)
         return out[-limit:]
 
+    def _searchable(self, room: str) -> list[dict]:
+        """Every message the room view would show, oldest first, not just the last 120. The same view, so
+        hidden people, folded agent replies and impostor flags behave exactly as in the timeline."""
+        if room not in self.events:
+            return []
+        return [m for m in self.messages(room, limit=10 ** 9) if m["t"] == "msg" and not m.get("system")]
+
+    @staticmethod
+    def _search_item(m: dict) -> dict:
+        item = {"id": m["id"], "ts": m["ts"], "name": m["name"], "role": m["role"], "text": m["text"]}
+        if m.get("impostor"):
+            item["impostor"] = m["impostor"]
+        return item
+
+    def search(self, room: str, q: str, limit: int = 50) -> list[dict]:
+        """Messages containing `q` (case and accents ignored), newest first: [{id, ts, name, role, text}]."""
+        needle = _fold(str(q or "")[:SEARCH_Q_MAX].strip())
+        if not needle:
+            return []
+        try:
+            limit = max(1, min(int(limit), SEARCH_LIMIT_MAX))
+        except (TypeError, ValueError):
+            limit = 50
+        hits = [self._search_item(m) for m in reversed(self._searchable(room)) if needle in _fold(m["text"])]
+        return hits[:limit]
+
+    def search_context(self, room: str, event_id: str) -> list[dict]:
+        """A found message with SEARCH_CONTEXT messages either side of it, oldest first (empty if unknown)."""
+        msgs = self._searchable(room)
+        i = next((n for n, m in enumerate(msgs) if m["id"] == event_id), None)
+        if i is None:
+            return []
+        return [self._search_item(m) for m in msgs[max(0, i - SEARCH_CONTEXT):i + SEARCH_CONTEXT + 1]]
+
     def share_html(self, room: str, event_id: str) -> str:
         e = self.events.get(room, {}).get(event_id)
         if not e:
@@ -3325,7 +3368,7 @@ class Engine:
             raise KeyError("not a share")
         return inject_csp(str(c.get("html", ""))[:MAX_SHARE_BYTES], guard=True)
 
-    def snapshot(self, room: Optional[str] = None) -> dict:
+    def snapshot(self, room: Optional[str] = None, mark: bool = True) -> dict:
         ident = self._identity()
         s = self.settings()
         rooms = []
@@ -3334,12 +3377,17 @@ class Engine:
             fresh = [(e, c) for e in evs.values() if e["created_at"] > meta.get("last_read", 0)
                      and e["pubkey"] != ident["person_pk"] and (c := self._content(e)).get("t") == "msg"]
             unread = len(fresh)
-            mentions = sum(1 for e, c in fresh if e["pubkey"] != ident["agent_pk"]
-                           and self._mentions_me(str(c.get("text", ""))[:1200]))
+            hits = sorted(((e, c) for e, c in fresh if e["pubkey"] != ident["agent_pk"]
+                           and self._mentions_me(str(c.get("text", ""))[:1200])), key=lambda h: self._order(h[0]))
+            mentions = len(hits)
             online = sum(1 for p in self.presence.get(rid, {}).values() if time.time() - p["at"] < ABSENT_AFTER)
             rooms.append({"id": rid, "name": meta.get("name", ""), "about": meta.get("about", ""),
                           "interests": meta.get("interests", []), "unread": unread, "mentions": mentions,
-                          "online": online})
+                          "online": online, "last_read": int(meta.get("last_read") or 0)})
+            if hits:  # the newest unread mention, for an alert: who, where and the start of what they said
+                he, hc = hits[-1]
+                rooms[-1]["last_mention"] = {"id": he["id"], "name": _name_ok(hc.get("name"), _short(he["pubkey"])),
+                                             "text": str(hc.get("text", ""))[:MENTION_SNIPPET], "ts": he["created_at"]}
         offers = self.store.get("offers") or {}
         now = time.time()
         pending = [{"id": k, **v} for k, v in offers.items() if v["status"] in ("building", "ready")
@@ -3371,6 +3419,6 @@ class Engine:
         if room and room in self.events:
             snap["room"] = {"id": room, **self.room_meta(room), "members": self.members(room),
                             "messages": self.messages(room), "game": self.game_view(room)}
-            if snap["room"]["messages"]:
+            if mark and snap["room"]["messages"]:  # mark=False: the room is loaded but not on screen
                 self.store.mark_read(room, snap["room"]["messages"][-1]["ts"])
         return snap

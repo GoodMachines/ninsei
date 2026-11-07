@@ -61,6 +61,13 @@ function fmtTime(ts) {
   return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
 }
 
+// A time of day for today, the date and time for earlier (search results span the room's whole history).
+function fmtWhen(ts) {
+  const d = new Date(ts * 1000), now = new Date()
+  if (d.toDateString() === now.toDateString()) return fmtTime(ts)
+  return d.toLocaleDateString([], { month: 'short', day: 'numeric', year: d.getFullYear() === now.getFullYear() ? undefined : 'numeric' }) + ' ' + fmtTime(ts)
+}
+
 function fmtAgo(ts) {
   const s = Math.max(0, Date.now() / 1000 - ts)
   if (s < 60) return 'just now'
@@ -237,6 +244,17 @@ function springIntoView(node) {
   motion.spring({ from, to: from + delta, k: SPRING.calm.k, c: SPRING.calm.c, onUpdate: x => { sc.scrollTop = x } })
 }
 
+// Spring a scroller to `to` (its bottom, say). A wheel, touch or key press from the person ends it.
+function springScrollTo(sc, to) {
+  const from = sc.scrollTop
+  if (motion.reduced() || Math.abs(to - from) < 2) { sc.scrollTop = to; return }
+  const stops = ['wheel', 'touchstart', 'pointerdown', 'keydown']
+  const done = () => stops.forEach(t => sc.removeEventListener(t, stop))
+  const spring = motion.spring({ from, to, k: SPRING.calm.k, c: SPRING.calm.c, onUpdate: x => { sc.scrollTop = x }, onRest: done })
+  const stop = () => { spring.stop(); done() }
+  stops.forEach(t => sc.addEventListener(t, stop, { passive: true }))
+}
+
 // ---------------------------------------------------------------------------------------------
 // store: one snapshot of GET /state, refreshed by the backend's push event and by polling
 // (every 2 s, every 1 s while a game runs, every 5 s when nothing is on screen).
@@ -254,9 +272,16 @@ function createStore() {
 
   function emit() { listeners.forEach(fn => fn(state)) }
 
+  // Which rooms are on screen right now (a RoomView is mounted). The engine marks a room read only when
+  // someone could be reading it: shown, and the window focused. Otherwise opening a room would find it
+  // already read (the poll for the chosen room runs behind the Lobby too), and "New messages" and mention
+  // alerts would have nothing to go on.
+  const shown = new Map()
+  const focused = () => typeof document === 'undefined' || typeof document.hasFocus !== 'function' || document.hasFocus()
+
   function refresh() {
     if (inflight) { again = true; return inflight }
-    const q = room ? '?room=' + encodeURIComponent(room) : ''
+    const q = room ? '?room=' + encodeURIComponent(room) + (shown.get(room) > 0 && focused() ? '' : '&read=0') : ''
     inflight = P.rest('/state' + q).then(snap => {
       const json = JSON.stringify(snap)
       if (json !== lastJson || state.error) {
@@ -302,6 +327,14 @@ function createStore() {
     },
     // a page or panel showing details: poll faster while it is mounted
     view() { views++; schedule(); return () => { views--; } },
+    // a room is on screen until the returned function runs; its next snapshot marks it read
+    showing(id) {
+      shown.set(id, (shown.get(id) || 0) + 1)
+      lastJson = ''
+      refresh()
+      return () => { shown.set(id, Math.max(0, (shown.get(id) || 1) - 1)) }
+    },
+    isShowing: id => shown.get(id) > 0 && focused(),
     start() { refresh() },
     stop() { if (stopTimer) stopTimer(); stopTimer = null },
     // POST helper: refresh afterwards, toast the engine's own words on failure
@@ -320,6 +353,42 @@ function createStore() {
       try { return await P.rest(path) } catch (e) { P.toast('error', errText(e)); throw e }
     }
   }
+}
+
+// Mention alerts. When a snapshot shows a room's unread mentions of you go up and you are not looking at
+// that room (not on screen, or the window is not focused), toast it; Desktop also raises an OS
+// notification (P.osNotify, which the host shows only while you are away). The first snapshot and a
+// newly joined room only set the baseline. Returns the function that stops watching.
+function cleanSnippet(s, n) {
+  let out = ''
+  for (const ch of String(s == null ? '' : s)) {
+    const c = ch.codePointAt(0)  // control, zero-width and bidi characters become spaces
+    const bad = c < 32 || (c >= 0x7f && c <= 0x9f) || (c >= 0x200b && c <= 0x200f) || (c >= 0x2028 && c <= 0x202e) || (c >= 0x2060 && c <= 0x2069) || c === 0xfeff
+    out += bad ? ' ' : ch
+  }
+  return out.replace(/ +/g, ' ').trim().slice(0, n)
+}
+
+function mentionAlerts(store) {
+  let seen = null
+  const told = {}
+  return store.subscribe(st => {
+    const snap = st && st.snap
+    if (!snap) return
+    const next = {}
+    for (const r of snap.rooms || []) {
+      next[r.id] = r.mentions || 0
+      const lm = r.last_mention
+      if (seen === null || !(r.id in seen) || !(r.mentions > seen[r.id]) || !lm || told[r.id] === lm.id) continue
+      if (store.isShowing(r.id)) continue
+      told[r.id] = lm.id
+      const title = cleanSnippet(lm.name, 32) + ' mentioned you in ' + cleanSnippet(r.name, 40)
+      const snippet = cleanSnippet(lm.text, 60)
+      P.toast('info', title + ': "' + snippet + '"')
+      if (P.osNotify) P.osNotify({ title, body: snippet, onActivate: () => { store.setRoom(r.id); nav().set('room') } })
+    }
+    seen = next
+  })
 }
 
 // Which Ninsei view is showing (room, lobby, hermes, settings). One shared value, so in Desktop the
@@ -437,6 +506,132 @@ function mentionMatches(cands, q, limit) {
   if (/\s$/.test(q) && (cands || []).some(c => squashName(c.name) === sq)) return []  // a finished name and a space
   return (cands || []).filter(c => squashName(c.name).startsWith(sq)
     || (w && String(c.name).toLowerCase().split(/\s+/).some(x => x.startsWith(w)))).slice(0, limit || 6)
+}
+
+// ---- formatting: **bold**, *italic* or _italic_, `code`, ```fenced blocks```, bare http(s) links ----------
+// One scanner over the whole text, so formatting and @mentions share it and never fight over a string:
+// at each position it tries a code span, a mention (found by mentionParts), a link, then an emphasis
+// mark. It returns data, never HTML: [{ kind: 'text', tokens }, { kind: 'pre', text }], each token
+// { t: 'text' | 'code' | 'link' | 'mention', text, b, i, ... }. There is no [text](url): a link's text is
+// always the address itself, so nobody can word a link as something else. Only http: and https: link.
+const RICH_MAX_LINKS = 20
+
+// The link starting at text[i], or null: http(s) only, no user:password@, trailing punctuation left out.
+function linkAt(text, i) {
+  if (i > 0 && /[\p{L}\p{N}]/u.test(text.charAt(i - 1))) return null
+  const m = /^https?:\/\/[^\s<>]{1,2000}/i.exec(text.slice(i, i + 2010))
+  if (!m) return null
+  let url = m[0]
+  for (;;) {
+    const c = url.charAt(url.length - 1)
+    const count = ch => url.split(ch).length - 1
+    if (/[.,;:!?'"*_~\]}]/.test(c) || (c === ')' && count(')') > count('('))) url = url.slice(0, -1)
+    else break
+  }
+  let u
+  try { u = new URL(url) } catch (_) { return null }
+  if ((u.protocol !== 'http:' && u.protocol !== 'https:') || u.username || u.password || !u.hostname) return null
+  return { url, href: u.href }
+}
+
+// Is there a closing mark for an emphasis opened just before `from`, on the same line?
+function emphasisCloses(text, from, ch, dbl) {
+  const nl = text.indexOf('\n', from)
+  const end = nl < 0 ? text.length : nl
+  for (let k = from + 1; k < end; k++) {
+    if (text[k] !== ch || /\s/.test(text[k - 1])) continue
+    if (dbl) { if (text[k + 1] === '*') return true }
+    else if (ch === '*') { if (text[k - 1] !== '*' && text[k + 1] !== '*') return true }
+    else if (!/[\p{L}\p{N}]/u.test(text.charAt(k + 1))) return true
+  }
+  return false
+}
+
+function richInline(text, names) {
+  const spans = []
+  let off = 0
+  for (const p of mentionParts(text, names)) {
+    if (p.name) spans.push({ start: off, end: off + p.text.length, name: p.name, me: p.me })
+    off += p.text.length
+  }
+  const out = []
+  let b = false, it = false, buf = '', links = 0, si = 0, i = 0
+  const flush = () => { if (buf) { out.push({ t: 'text', text: buf, b, i: it }); buf = '' } }
+  const push = tok => { flush(); out.push(Object.assign(tok, { b, i: it })) }
+  while (i < text.length) {
+    while (si < spans.length && spans[si].start < i) si++
+    const sp = spans[si]
+    const ch = text[i]
+    if (sp && sp.start === i) { push({ t: 'mention', text: text.slice(sp.start, sp.end), name: sp.name, me: sp.me }); i = sp.end; continue }
+    if (ch === '`') {
+      const j = text.indexOf('`', i + 1)
+      if (j > i + 1 && text.slice(i + 1, j).indexOf('\n') < 0) { push({ t: 'code', text: text.slice(i + 1, j) }); i = j + 1; continue }
+    } else if ((ch === 'h' || ch === 'H') && links < RICH_MAX_LINKS) {
+      const l = linkAt(text, i)
+      if (l) { links++; push({ t: 'link', text: l.url, href: l.href }); i += l.url.length; continue }
+    } else if (ch === '*' || ch === '_') {
+      const dbl = ch === '*' && text[i + 1] === '*'
+      const w = dbl ? 2 : 1
+      const prev = text.charAt(i - 1), next = text.charAt(i + w)
+      let on = null
+      if (dbl ? b : it) { if (prev && !/\s/.test(prev) && (ch !== '_' || !/[\p{L}\p{N}]/u.test(next))) on = false }
+      else if (next && !/\s/.test(next) && (ch !== '_' || (next !== '_' && !/[\p{L}\p{N}_]/u.test(prev))) && emphasisCloses(text, i + w - 1, ch, dbl)) on = true
+      if (on !== null) { flush(); if (dbl) b = on; else it = on; i += w; continue }
+      buf += text.substr(i, w); i += w
+      continue
+    }
+    buf += ch
+    i++
+  }
+  flush()
+  return out
+}
+
+function richParts(text, names) {
+  text = String(text == null ? '' : text)
+  const blocks = []
+  let pos = 0
+  for (;;) {
+    const open = text.indexOf('```', pos)
+    const close = open < 0 ? -1 : text.indexOf('```', open + 3)
+    if (close < 0) break
+    const before = text.slice(pos, open).replace(/\n$/, '')
+    if (before) blocks.push({ kind: 'text', tokens: richInline(before, names) })
+    // a language word on the opening line is dropped; the code itself is never formatted
+    blocks.push({ kind: 'pre', text: text.slice(open + 3, close).replace(/^[\w+#.-]{0,20}\n/, '').replace(/\n$/, '') })
+    pos = close + 3
+    if (text.charAt(pos) === '\n') pos++
+  }
+  if (pos < text.length || !blocks.length) blocks.push({ kind: 'text', tokens: richInline(text.slice(pos), names) })
+  return blocks
+}
+
+// ---- search matching: the same fold as the engine's search (no case, no accents) ------------------------
+function foldText(s) {
+  let f = ''
+  const map = []
+  let at = 0
+  for (const ch of String(s == null ? '' : s)) {
+    const g = ch.normalize('NFKD').replace(/\p{Mn}/gu, '').toLowerCase()
+    for (let k = 0; k < g.length; k++) map.push(at)
+    f += g
+    at += ch.length
+  }
+  return { f, map }
+}
+
+// Where `q` occurs in `text`, as [{ start, end }] over the original text (for highlighting).
+function matchRanges(text, q, max) {
+  text = String(text == null ? '' : text)
+  const needle = foldText(String(q == null ? '' : q).trim()).f
+  if (!needle) return []
+  const { f, map } = foldText(text)
+  const out = []
+  for (let at = f.indexOf(needle); at >= 0 && out.length < (max || 20); at = f.indexOf(needle, at + needle.length)) {
+    const last = map[at + needle.length - 1]
+    out.push({ start: map[at], end: last + String.fromCodePoint(text.codePointAt(last)).length })
+  }
+  return out
 }
 
 function whoLabel(book, pk) {

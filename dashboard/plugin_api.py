@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 from typing import Any, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
 
@@ -143,9 +143,10 @@ class DraftIn(BaseModel):
 
 
 @router.get("/state")
-async def state(room: str = ""):
+async def state(room: str = "", read: bool = True):
+    """`read=0` loads the room without marking it read (the UI is not showing it, or the window is in the background)."""
     eng = await _engine()
-    return await _sync(eng.snapshot, room or None)
+    return await _sync(eng.snapshot, room or None, read)
 
 
 @router.post("/settings")
@@ -253,6 +254,18 @@ async def offer_share(body: ShareIn):
 async def profile(pk: str):
     eng = await _engine()
     return await _run(eng.profile, pk)
+
+
+@router.get("/search")
+async def search(room: str, q: str = Query("", max_length=200), limit: int = Query(50, ge=1, le=100)):
+    eng = await _engine()
+    return {"results": await _sync(eng.search, room, q, limit)}
+
+
+@router.get("/search/context")
+async def search_context(room: str, id: str = Query(..., max_length=64)):
+    eng = await _engine()
+    return {"messages": await _sync(eng.search_context, room, id)}
 
 
 @router.get("/share")

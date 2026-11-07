@@ -57,6 +57,16 @@ function makePlatform(ctx) {
     openPlugins: typeof host.navigate === 'function' ? () => host.navigate('/capabilities?tab=plugins') : null,
     rest: (path, opts) => ctx.rest(path, opts),
     toast(kind, message) { host.notify({ kind: kind === 'error' ? 'error' : 'info', message }) },
+    // Links go to the system browser through the host's own door (ctx.os.openExternal, http(s) only as
+    // far as this UI ever asks); null on an older Desktop, where the link's own target="_blank" is all there is.
+    openExternal: ctx.os && typeof ctx.os.openExternal === 'function' ? url => Promise.resolve(ctx.os.openExternal(url)).catch(() => false) : null,
+    // The OS notification for a mention. The host raises it only while you are away from Hermes, only if
+    // Settings > Notifications > Plugin notifications is on, and throttles it per plugin.
+    osNotify(o) {
+      try {
+        if (ctx.os && typeof ctx.os.notify === 'function') ctx.os.notify({ title: o.title, body: o.body, activate: '/ninsei', onActivate: o.onActivate })
+      } catch (_) { /* no native notifications here */ }
+    },
     copy: text => Promise.resolve(ctx.os && ctx.os.writeClipboard ? ctx.os.writeClipboard(text) : false).catch(() => false),
     // Desktop's SDK has no binary save (ctx.files writes text into granted folders, ctx.os.pickSavePath
     // returns a path on the backend), but the shell turns a page download into a Save dialog, so the link works.
@@ -184,6 +194,7 @@ export default {
     const store = createStore()
     store.start()
     ctx.onDispose(() => store.stop())
+    ctx.onDispose(mentionAlerts(store))
     // the backend pushes after every change; polling stays as the fallback
     ctx.onEvent('plugin.ninsei.changed', () => store.refresh())
 

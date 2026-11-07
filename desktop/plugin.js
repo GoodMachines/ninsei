@@ -97,6 +97,13 @@ function fmtTime(ts) {
   return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
 }
 
+// A time of day for today, the date and time for earlier (search results span the room's whole history).
+function fmtWhen(ts) {
+  const d = new Date(ts * 1000), now = new Date()
+  if (d.toDateString() === now.toDateString()) return fmtTime(ts)
+  return d.toLocaleDateString([], { month: 'short', day: 'numeric', year: d.getFullYear() === now.getFullYear() ? undefined : 'numeric' }) + ' ' + fmtTime(ts)
+}
+
 function fmtAgo(ts) {
   const s = Math.max(0, Date.now() / 1000 - ts)
   if (s < 60) return 'just now'
@@ -273,6 +280,17 @@ function springIntoView(node) {
   motion.spring({ from, to: from + delta, k: SPRING.calm.k, c: SPRING.calm.c, onUpdate: x => { sc.scrollTop = x } })
 }
 
+// Spring a scroller to `to` (its bottom, say). A wheel, touch or key press from the person ends it.
+function springScrollTo(sc, to) {
+  const from = sc.scrollTop
+  if (motion.reduced() || Math.abs(to - from) < 2) { sc.scrollTop = to; return }
+  const stops = ['wheel', 'touchstart', 'pointerdown', 'keydown']
+  const done = () => stops.forEach(t => sc.removeEventListener(t, stop))
+  const spring = motion.spring({ from, to, k: SPRING.calm.k, c: SPRING.calm.c, onUpdate: x => { sc.scrollTop = x }, onRest: done })
+  const stop = () => { spring.stop(); done() }
+  stops.forEach(t => sc.addEventListener(t, stop, { passive: true }))
+}
+
 // ---------------------------------------------------------------------------------------------
 // store: one snapshot of GET /state, refreshed by the backend's push event and by polling
 // (every 2 s, every 1 s while a game runs, every 5 s when nothing is on screen).
@@ -290,9 +308,16 @@ function createStore() {
 
   function emit() { listeners.forEach(fn => fn(state)) }
 
+  // Which rooms are on screen right now (a RoomView is mounted). The engine marks a room read only when
+  // someone could be reading it: shown, and the window focused. Otherwise opening a room would find it
+  // already read (the poll for the chosen room runs behind the Lobby too), and "New messages" and mention
+  // alerts would have nothing to go on.
+  const shown = new Map()
+  const focused = () => typeof document === 'undefined' || typeof document.hasFocus !== 'function' || document.hasFocus()
+
   function refresh() {
     if (inflight) { again = true; return inflight }
-    const q = room ? '?room=' + encodeURIComponent(room) : ''
+    const q = room ? '?room=' + encodeURIComponent(room) + (shown.get(room) > 0 && focused() ? '' : '&read=0') : ''
     inflight = P.rest('/state' + q).then(snap => {
       const json = JSON.stringify(snap)
       if (json !== lastJson || state.error) {
@@ -338,6 +363,14 @@ function createStore() {
     },
     // a page or panel showing details: poll faster while it is mounted
     view() { views++; schedule(); return () => { views--; } },
+    // a room is on screen until the returned function runs; its next snapshot marks it read
+    showing(id) {
+      shown.set(id, (shown.get(id) || 0) + 1)
+      lastJson = ''
+      refresh()
+      return () => { shown.set(id, Math.max(0, (shown.get(id) || 1) - 1)) }
+    },
+    isShowing: id => shown.get(id) > 0 && focused(),
     start() { refresh() },
     stop() { if (stopTimer) stopTimer(); stopTimer = null },
     // POST helper: refresh afterwards, toast the engine's own words on failure
@@ -356,6 +389,42 @@ function createStore() {
       try { return await P.rest(path) } catch (e) { P.toast('error', errText(e)); throw e }
     }
   }
+}
+
+// Mention alerts. When a snapshot shows a room's unread mentions of you go up and you are not looking at
+// that room (not on screen, or the window is not focused), toast it; Desktop also raises an OS
+// notification (P.osNotify, which the host shows only while you are away). The first snapshot and a
+// newly joined room only set the baseline. Returns the function that stops watching.
+function cleanSnippet(s, n) {
+  let out = ''
+  for (const ch of String(s == null ? '' : s)) {
+    const c = ch.codePointAt(0)  // control, zero-width and bidi characters become spaces
+    const bad = c < 32 || (c >= 0x7f && c <= 0x9f) || (c >= 0x200b && c <= 0x200f) || (c >= 0x2028 && c <= 0x202e) || (c >= 0x2060 && c <= 0x2069) || c === 0xfeff
+    out += bad ? ' ' : ch
+  }
+  return out.replace(/ +/g, ' ').trim().slice(0, n)
+}
+
+function mentionAlerts(store) {
+  let seen = null
+  const told = {}
+  return store.subscribe(st => {
+    const snap = st && st.snap
+    if (!snap) return
+    const next = {}
+    for (const r of snap.rooms || []) {
+      next[r.id] = r.mentions || 0
+      const lm = r.last_mention
+      if (seen === null || !(r.id in seen) || !(r.mentions > seen[r.id]) || !lm || told[r.id] === lm.id) continue
+      if (store.isShowing(r.id)) continue
+      told[r.id] = lm.id
+      const title = cleanSnippet(lm.name, 32) + ' mentioned you in ' + cleanSnippet(r.name, 40)
+      const snippet = cleanSnippet(lm.text, 60)
+      P.toast('info', title + ': "' + snippet + '"')
+      if (P.osNotify) P.osNotify({ title, body: snippet, onActivate: () => { store.setRoom(r.id); nav().set('room') } })
+    }
+    seen = next
+  })
 }
 
 // Which Ninsei view is showing (room, lobby, hermes, settings). One shared value, so in Desktop the
@@ -473,6 +542,132 @@ function mentionMatches(cands, q, limit) {
   if (/\s$/.test(q) && (cands || []).some(c => squashName(c.name) === sq)) return []  // a finished name and a space
   return (cands || []).filter(c => squashName(c.name).startsWith(sq)
     || (w && String(c.name).toLowerCase().split(/\s+/).some(x => x.startsWith(w)))).slice(0, limit || 6)
+}
+
+// ---- formatting: **bold**, *italic* or _italic_, `code`, ```fenced blocks```, bare http(s) links ----------
+// One scanner over the whole text, so formatting and @mentions share it and never fight over a string:
+// at each position it tries a code span, a mention (found by mentionParts), a link, then an emphasis
+// mark. It returns data, never HTML: [{ kind: 'text', tokens }, { kind: 'pre', text }], each token
+// { t: 'text' | 'code' | 'link' | 'mention', text, b, i, ... }. There is no [text](url): a link's text is
+// always the address itself, so nobody can word a link as something else. Only http: and https: link.
+const RICH_MAX_LINKS = 20
+
+// The link starting at text[i], or null: http(s) only, no user:password@, trailing punctuation left out.
+function linkAt(text, i) {
+  if (i > 0 && /[\p{L}\p{N}]/u.test(text.charAt(i - 1))) return null
+  const m = /^https?:\/\/[^\s<>]{1,2000}/i.exec(text.slice(i, i + 2010))
+  if (!m) return null
+  let url = m[0]
+  for (;;) {
+    const c = url.charAt(url.length - 1)
+    const count = ch => url.split(ch).length - 1
+    if (/[.,;:!?'"*_~\]}]/.test(c) || (c === ')' && count(')') > count('('))) url = url.slice(0, -1)
+    else break
+  }
+  let u
+  try { u = new URL(url) } catch (_) { return null }
+  if ((u.protocol !== 'http:' && u.protocol !== 'https:') || u.username || u.password || !u.hostname) return null
+  return { url, href: u.href }
+}
+
+// Is there a closing mark for an emphasis opened just before `from`, on the same line?
+function emphasisCloses(text, from, ch, dbl) {
+  const nl = text.indexOf('\n', from)
+  const end = nl < 0 ? text.length : nl
+  for (let k = from + 1; k < end; k++) {
+    if (text[k] !== ch || /\s/.test(text[k - 1])) continue
+    if (dbl) { if (text[k + 1] === '*') return true }
+    else if (ch === '*') { if (text[k - 1] !== '*' && text[k + 1] !== '*') return true }
+    else if (!/[\p{L}\p{N}]/u.test(text.charAt(k + 1))) return true
+  }
+  return false
+}
+
+function richInline(text, names) {
+  const spans = []
+  let off = 0
+  for (const p of mentionParts(text, names)) {
+    if (p.name) spans.push({ start: off, end: off + p.text.length, name: p.name, me: p.me })
+    off += p.text.length
+  }
+  const out = []
+  let b = false, it = false, buf = '', links = 0, si = 0, i = 0
+  const flush = () => { if (buf) { out.push({ t: 'text', text: buf, b, i: it }); buf = '' } }
+  const push = tok => { flush(); out.push(Object.assign(tok, { b, i: it })) }
+  while (i < text.length) {
+    while (si < spans.length && spans[si].start < i) si++
+    const sp = spans[si]
+    const ch = text[i]
+    if (sp && sp.start === i) { push({ t: 'mention', text: text.slice(sp.start, sp.end), name: sp.name, me: sp.me }); i = sp.end; continue }
+    if (ch === '`') {
+      const j = text.indexOf('`', i + 1)
+      if (j > i + 1 && text.slice(i + 1, j).indexOf('\n') < 0) { push({ t: 'code', text: text.slice(i + 1, j) }); i = j + 1; continue }
+    } else if ((ch === 'h' || ch === 'H') && links < RICH_MAX_LINKS) {
+      const l = linkAt(text, i)
+      if (l) { links++; push({ t: 'link', text: l.url, href: l.href }); i += l.url.length; continue }
+    } else if (ch === '*' || ch === '_') {
+      const dbl = ch === '*' && text[i + 1] === '*'
+      const w = dbl ? 2 : 1
+      const prev = text.charAt(i - 1), next = text.charAt(i + w)
+      let on = null
+      if (dbl ? b : it) { if (prev && !/\s/.test(prev) && (ch !== '_' || !/[\p{L}\p{N}]/u.test(next))) on = false }
+      else if (next && !/\s/.test(next) && (ch !== '_' || (next !== '_' && !/[\p{L}\p{N}_]/u.test(prev))) && emphasisCloses(text, i + w - 1, ch, dbl)) on = true
+      if (on !== null) { flush(); if (dbl) b = on; else it = on; i += w; continue }
+      buf += text.substr(i, w); i += w
+      continue
+    }
+    buf += ch
+    i++
+  }
+  flush()
+  return out
+}
+
+function richParts(text, names) {
+  text = String(text == null ? '' : text)
+  const blocks = []
+  let pos = 0
+  for (;;) {
+    const open = text.indexOf('```', pos)
+    const close = open < 0 ? -1 : text.indexOf('```', open + 3)
+    if (close < 0) break
+    const before = text.slice(pos, open).replace(/\n$/, '')
+    if (before) blocks.push({ kind: 'text', tokens: richInline(before, names) })
+    // a language word on the opening line is dropped; the code itself is never formatted
+    blocks.push({ kind: 'pre', text: text.slice(open + 3, close).replace(/^[\w+#.-]{0,20}\n/, '').replace(/\n$/, '') })
+    pos = close + 3
+    if (text.charAt(pos) === '\n') pos++
+  }
+  if (pos < text.length || !blocks.length) blocks.push({ kind: 'text', tokens: richInline(text.slice(pos), names) })
+  return blocks
+}
+
+// ---- search matching: the same fold as the engine's search (no case, no accents) ------------------------
+function foldText(s) {
+  let f = ''
+  const map = []
+  let at = 0
+  for (const ch of String(s == null ? '' : s)) {
+    const g = ch.normalize('NFKD').replace(/\p{Mn}/gu, '').toLowerCase()
+    for (let k = 0; k < g.length; k++) map.push(at)
+    f += g
+    at += ch.length
+  }
+  return { f, map }
+}
+
+// Where `q` occurs in `text`, as [{ start, end }] over the original text (for highlighting).
+function matchRanges(text, q, max) {
+  text = String(text == null ? '' : text)
+  const needle = foldText(String(q == null ? '' : q).trim()).f
+  if (!needle) return []
+  const { f, map } = foldText(text)
+  const out = []
+  for (let at = f.indexOf(needle); at >= 0 && out.length < (max || 20); at = f.indexOf(needle, at + needle.length)) {
+    const last = map[at + needle.length - 1]
+    out.push({ start: map[at], end: last + String.fromCodePoint(text.codePointAt(last)).length })
+  }
+  return out
 }
 
 function whoLabel(book, pk) {
@@ -811,6 +1006,31 @@ const CSS = TOKENS + `
 .h-quote-t{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
 .h-quote-gone{cursor:default;font-style:italic;margin-bottom:2px}
 .h-quote-gone:hover{background:transparent;color:var(--h-fg3)}
+.h-tlwrap{position:relative;flex:1;min-height:96px;display:flex;flex-direction:column}
+.h-tlwrap>.h-scroll{flex:1;min-height:0}
+.h-newline{display:flex;align-items:center;gap:10px;margin:12px 0 4px;color:var(--h-bad);font-size:11px;font-weight:700;letter-spacing:.04em;text-transform:uppercase}
+.h-newline::before,.h-newline::after{content:"";flex:1;height:1px;background:color-mix(in oklch,var(--h-bad) 55%,transparent)}
+.h-jump{position:absolute;left:0;right:0;bottom:10px;display:flex;justify-content:center;pointer-events:none;z-index:6}
+.h-jump-btn{pointer-events:auto;display:inline-flex;align-items:center;gap:6px;height:30px;padding:0 13px 0 10px;border:1px solid var(--h-line2);border-radius:999px;background:var(--h-card);color:var(--h-fg);font:inherit;font-size:12.5px;font-weight:600;cursor:pointer;box-shadow:0 8px 22px -10px var(--h-shadow)}
+.h-jump-btn:hover{background:var(--h-hover)}
+.h-jump-btn:focus-visible,.h-link:focus-visible,.h-search-in:focus-visible{outline:2px solid var(--h-accent);outline-offset:1px}
+.h-link{color:var(--h-accent);text-decoration:underline;text-underline-offset:2px;overflow-wrap:anywhere;word-break:break-all}
+.h-link:hover{text-decoration-thickness:2px}
+.h-code{font-family:var(--h-mono);font-size:.92em;padding:1px 5px;border-radius:5px;background:var(--h-raise);border:1px solid var(--h-line)}
+.h-fence{margin:4px 0;padding:8px 10px;max-width:100%;overflow-x:auto;border-radius:8px;background:var(--h-raise);border:1px solid var(--h-line);font-family:var(--h-mono);font-size:12.5px;line-height:1.45;white-space:pre-wrap;overflow-wrap:anywhere}
+.h-fence code{font-family:inherit}
+.h-search{flex:none;max-height:min(46vh,420px);overflow-y:auto;overscroll-behavior:contain;padding:8px 18px 10px;border-bottom:1px solid var(--h-line);background:var(--h-bg)}
+.h-search-in{width:100%;box-sizing:border-box;height:34px;padding:0 12px;border:1px solid var(--h-line2);border-radius:9px;background:var(--h-card);color:var(--h-fg);font:inherit}
+.h-search-in:focus{border-color:color-mix(in oklch,var(--h-accent) 60%,var(--h-line2))}
+.h-search-status{min-height:18px;padding:5px 2px 3px}
+.h-sr{padding:6px 10px;border-radius:8px;cursor:pointer;border-left:2px solid transparent}
+.h-sr:hover{background:var(--h-hover)}
+.h-sr[data-active=true]{background:color-mix(in oklch,var(--h-accent) 14%,transparent);border-left-color:var(--h-accent)}
+.h-search-ctx .h-sr{cursor:default}.h-search-ctx .h-sr:hover{background:transparent}
+.h-sr[data-current=true]{background:color-mix(in oklch,var(--h-warn) 14%,transparent);border-left-color:var(--h-warn)}
+.h-sr-meta{display:flex;align-items:baseline;gap:6px;min-width:0}.h-sr-meta b{font-weight:600}
+.h-sr-t{white-space:pre-wrap;overflow-wrap:anywhere;color:var(--h-fg2);font-size:13px;margin-top:1px}
+.h-mark{background:color-mix(in oklch,var(--h-warn) 38%,transparent);color:var(--h-fg);border-radius:3px;padding:0 1px}
 .h-compose-box{flex-wrap:wrap}
 .h-replying{flex:0 0 100%;display:flex;align-items:center;gap:6px;min-width:0;margin:-2px 0 2px -6px;padding:2px 4px 4px 6px;border-bottom:1px solid var(--h-line);color:var(--h-fg3);font-size:12px}
 .h-replying .h-trunc{flex:1;min-width:0}
@@ -3382,9 +3602,28 @@ function RoomView(props) {
   useEffect(() => { setReplyTo(null) }, [room.id])
   const onReply = useCallback(m => setReplyTo({ id: m.id, name: m.name, text: String(m.text || '').slice(0, 120) }), [])
   const onCancelReply = useCallback(() => setReplyTo(null), [])
+  // This room is on screen: the engine may mark it read from now on (and mention alerts stay quiet for it).
+  useEffect(() => (store.showing ? store.showing(room.id) : undefined), [room.id])
+  // Where you had read up to when you opened the room, kept until you leave it: the "New messages" line
+  // goes before the first message from someone else newer than this. 0 (never opened) draws no line.
+  const readMark = useRef({ id: '', ts: 0 })
+  if (readMark.current.id !== room.id) {
+    const r = (snap.rooms || []).find(x => x.id === room.id)
+    readMark.current = { id: room.id, ts: (r && r.last_read) || 0 }
+  }
+  // search: the panel under the header, and the timeline's jump (set by Timeline) for a result that is loaded
+  const [searching, setSearching] = useState(false)
+  const jumpRef = useRef(null)
+  useEffect(() => { setSearching(false) }, [room.id])
+  const closeSearch = useCallback(() => {
+    setSearching(false)
+    const b = typeof document !== 'undefined' && document.querySelector && document.querySelector('.h-head [data-search-btn]')
+    if (b && b.focus) b.focus()
+  }, [])
   return jsxs(Fragment, { children: [
-    jsx(RoomHeader, { store, room, snap, onPeople: props.onPeople }),
-    jsx(Timeline, { store, snap, room, book, onReply }),
+    jsx(RoomHeader, { store, room, snap, onPeople: props.onPeople, searching, onSearch: () => (searching ? closeSearch() : setSearching(true)) }),
+    searching && jsx(SearchPanel, { room, onClose: closeSearch, onPick: id => !!(jumpRef.current && jumpRef.current(id, true)) }, room.id),
+    jsx(Timeline, { store, snap, room, book, onReply, newAfter: readMark.current.ts, jumpRef }),
     jsxs('div', { className: 'h-composer', children: [
       // pinned above the input: model notice, the running game, drafts. Scrolls on its own if tall.
       jsxs('div', { className: 'h-pinned', children: [
@@ -3418,6 +3657,8 @@ function RoomHeader(props) {
         jsx(Chips, { items: room.interests, hits: (room.interests || []).filter(i => mine.has(i)) })
       ] })
     ] }),
+    jsx(K.Tip, { label: 'Search this room', children: jsx(K.Button, { variant: 'ghost', size: 'icon', 'aria-label': 'Search this room', 'aria-pressed': !!props.searching,
+      'aria-expanded': !!props.searching, 'data-search-btn': true, onClick: props.onSearch, children: jsx(K.Icon, { name: 'search', size: 14 }) }) }),
     jsx(K.Tip, { label: 'Copy the code people use to join', children: jsx(K.Button, { variant: 'ghost', size: 'sm', onClick: copyCode,
       children: jsxs(Fragment, { children: [jsx(K.Icon, { name: 'link', size: 13 }), 'Share code'] }) }) }),
     props.onPeople && jsx(K.Button, { variant: 'ghost', size: 'icon', 'aria-label': 'People', onClick: props.onPeople, className: 'h-peoplebtn',
@@ -3441,6 +3682,11 @@ function Timeline(props) {
   const stick = useRef(true)
   const seen = useRef(null)
   const msgs = room.messages || []
+  // The id of the newest message when you scrolled up more than a screen (null while you are near the
+  // bottom): the "Jump to latest" pill counts what came after it.
+  const [away, setAway] = useState(null)
+  const lastId = useRef('')
+  lastId.current = msgs.length ? msgs[msgs.length - 1].id : ''
 
   // anything present on first render is history and does not animate in
   if (seen.current === null) seen.current = new Set(msgs.map(m => m.id))
@@ -3452,27 +3698,52 @@ function Timeline(props) {
 
   const onScroll = () => {
     const el = scroller.current
-    if (el) stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80
+    if (!el) return
+    const gap = el.scrollHeight - el.scrollTop - el.clientHeight
+    stick.current = gap < 80
+    const far = gap > Math.max(el.clientHeight, 200)
+    setAway(prev => (far ? (prev === null ? lastId.current : prev) : null))
   }
   useLayoutEffect(() => {
     const el = scroller.current
     if (el && stick.current) el.scrollTop = el.scrollHeight
   }, [msgs.length, msgs.length && msgs[msgs.length - 1].id])
 
-  // A quote's click: scroll to the original and flash it, when it is among the messages loaded.
-  const jump = useCallback(id => {
+  // Scroll to a message and flash it, when it is among the messages loaded. A quote's click says so when it
+  // isn't; a search result (`quiet`) just reports false and shows the message in its own panel instead.
+  const jump = useCallback((id, quiet) => {
     const el = scroller.current
     const node = el && [].find.call(el.querySelectorAll('[data-mid]'), n => n.getAttribute('data-mid') === id)
-    if (!node) { P.toast('info', 'That message is further back than what is loaded.'); return }
+    if (!node) { if (!quiet) P.toast('info', 'That message is further back than what is loaded.'); return false }
     springIntoView(node)
     flash(node)
+    return true
   }, [])
+  if (props.jumpRef) props.jumpRef.current = jump
+  const toLatest = () => { const el = scroller.current; if (el) springScrollTo(el, el.scrollHeight - el.clientHeight) }
 
-  const items = groupItems(msgs)
-  return jsx('div', { className: 'h-scroll', ref: scroller, onScroll, children: jsxs('div', { className: 'h-timeline', role: 'log', 'aria-live': 'polite', children: [
-    items.length === 0 && jsx('div', { className: 'h-empty', children: 'Quiet in here. Say hello, or start a game of Tall Tales.' }),
-    items.map(it => jsx(TimelineItem, { it, store, snap, room, book, onReply, onJump: jump, animate: fresh(it.key) }, it.key)),
-    jsx(Thinking, { room })
+  const k = away === null ? -1 : msgs.findIndex(m => m.id === away)
+  const since = away === null ? 0 : (k < 0 ? msgs : msgs.slice(k + 1)).filter(m => m.t === 'msg' && !m.system).length
+  const items = groupItems(msgs, props.newAfter)
+  return jsxs('div', { className: 'h-tlwrap', children: [
+    jsx('div', { className: 'h-scroll', ref: scroller, onScroll, children: jsxs('div', { className: 'h-timeline', role: 'log', 'aria-live': 'polite', children: [
+      items.length === 0 && jsx('div', { className: 'h-empty', children: 'Quiet in here. Say hello, or start a game of Tall Tales.' }),
+      items.map(it => jsx(TimelineItem, { it, store, snap, room, book, onReply, onJump: jump, animate: fresh(it.key) }, it.key)),
+      jsx(Thinking, { room })
+    ] }) }),
+    away !== null && jsx(JumpPill, { count: since, onClick: toLatest })
+  ] })
+}
+
+// "Jump to latest": a pill over the foot of the timeline once you have scrolled up more than a screen, with
+// the count of messages that came in meanwhile. It rises in on a spring; a click springs to the bottom.
+function JumpPill(props) {
+  const ref = useEnter(true)
+  const n = props.count
+  const label = n > 0 ? 'Jump to latest, ' + n + (n === 1 ? ' new message' : ' new messages') : 'Jump to latest'
+  return jsx('div', { className: 'h-jump', children: jsxs('button', { type: 'button', className: 'h-jump-btn', ref, 'aria-label': label, onClick: props.onClick, children: [
+    jsx(K.Icon, { name: 'arrow-down', size: 13 }),
+    jsx('span', { children: n > 0 ? (n > 99 ? '99+' : n) + (n === 1 ? ' new message' : ' new messages') : 'Jump to latest' })
   ] }) })
 }
 
@@ -3509,10 +3780,17 @@ function Thinking(props) {
 }
 
 // Fold runs of joins into one quiet line; mark the first message of each speaker's run.
-function groupItems(msgs) {
+function groupItems(msgs, newAfter) {
   const out = []
   let prev = null
+  let marked = !newAfter
   for (const m of msgs) {
+    // "New messages": before the first message from someone else that arrived after you last read the room
+    if (!marked && m.t === 'msg' && !m.system && !m.mine && m.ts > newAfter) {
+      out.push({ kind: 'new', key: 'new-line' })
+      marked = true
+      prev = null
+    }
     if (m.t === 'join' && m.impostor) {  // never folded: the flag has to stay visible
       out.push({ kind: 'join', key: m.id, m })
       prev = null
@@ -3542,7 +3820,8 @@ function TimelineItem(props) {
   const ref = useEnter(props.animate)
   const m = it.m
   let body = null
-  if (it.kind === 'joins') body = jsx('div', { className: 'h-line', children: joinNames(it.names) + ' joined' })
+  if (it.kind === 'new') body = jsx('div', { className: 'h-newline', role: 'separator', 'aria-label': 'New messages', children: jsx('span', { children: 'New messages' }) })
+  else if (it.kind === 'joins') body = jsx('div', { className: 'h-line', children: joinNames(it.names) + ' joined' })
   else if (it.kind === 'join') body = jsxs('div', { className: 'h-line', children: [m.name + ' joined ', jsx(ImpostorChip, { imp: m.impostor })] })
   else if (m.system === 'budget') body = jsxs('div', { className: 'h-system', role: 'status', children: [
     jsx(Face, { face: m.face, pk: m.pk, state: 'system: waiting', size: 20 }),
@@ -3592,7 +3871,7 @@ function Message(props) {
   const imp = m.impostor
   const [picking, setPicking] = useState(false)
   const who = { kind: agent ? 'agent' : 'person', pk: m.pk, name: m.name, face: m.face, owner_name: m.owner_name }
-  const text = jsx(MentionText, { text: m.text, book: props.book })
+  const text = jsx(RichText, { text: m.text, book: props.book })
   const react = (emoji, on) => props.store.post('/react', { room: props.roomId, target: m.id, emoji, on }).catch(() => {})
   const mineSet = (m.reactions || []).filter(r => r.mine).map(r => r.emoji)
   return jsxs('div', { className: cx('h-msg', agent && 'h-agent'), 'data-role': m.role, 'data-first': props.first, 'data-mid': m.id, 'data-bar': picking,
@@ -3708,13 +3987,133 @@ function QuoteLine(props) {
   ] })
 }
 
-// Message text with each '@name' of someone in the room drawn as a mention; yours stand out more.
-function MentionText(props) {
-  const parts = mentionParts(props.text, mentionNames(props.book))
-  if (parts.length === 1 && !parts[0].name) return props.text
-  return jsx(Fragment, { children: parts.map((p, i) => p.name
-    ? jsx('span', { className: 'h-at', 'data-me': p.me, children: p.text }, i)
-    : jsx(Fragment, { children: p.text }, i)) })
+// Message text: formatting, links and @mentions drawn by one renderer over richParts' single scan. It
+// builds React nodes only (never HTML), so nothing a stranger types can become markup. Plain text with
+// nothing in it comes back as the string itself.
+function RichText(props) {
+  const blocks = useMemo(() => richParts(props.text, mentionNames(props.book)), [props.text, props.book])
+  if (blocks.length === 1 && blocks[0].kind === 'text' && blocks[0].tokens.every(t => t.t === 'text' && !t.b && !t.i)) return String(props.text == null ? '' : props.text)
+  return jsx(Fragment, { children: blocks.map((bl, k) => bl.kind === 'pre'
+    ? jsx('pre', { className: 'h-fence', children: jsx('code', { children: bl.text }) }, k)
+    : jsx(Fragment, { children: bl.tokens.map((t, i) => richNode(t, i)) }, k)) })
+}
+
+function richNode(t, i) {
+  if (t.t === 'code') return jsx('code', { className: 'h-code', children: t.text }, i)
+  let node
+  if (t.t === 'link') node = jsx(RichLink, { href: t.href, text: t.text })
+  else if (t.t === 'mention') node = jsx('span', { className: 'h-at', 'data-me': t.me, children: t.text })
+  else node = t.text
+  if (t.i) node = jsx('em', { children: node })
+  if (t.b) node = jsx('strong', { children: node })
+  return jsx(Fragment, { children: node }, i)
+}
+
+// A link shows the address itself, never other words. Desktop hands it to the system browser through the host
+// (the page can't open windows); the dashboard opens a new tab with no opener. If the host can't, the address is
+// copied so it is not lost.
+function RichLink(props) {
+  const open = e => {
+    if (!P.openExternal) return
+    e.preventDefault()
+    P.openExternal(props.href).then(ok => {
+      if (ok) return
+      P.copy(props.href)
+      P.toast('error', 'Couldn’t open the link here. It is copied: paste it into your browser.')
+    })
+  }
+  return jsx('a', { className: 'h-link', href: props.href, target: '_blank', rel: 'noopener noreferrer', onClick: open,
+    title: props.href !== props.text ? props.href : undefined, children: props.text })
+}
+
+// The search panel under the room header: type, arrows move through results, Enter opens one (it scrolls to the
+// message when it is loaded, else the panel shows it with the messages around it), Escape goes back, then closes.
+function SearchPanel(props) {
+  const { room } = props
+  const [q, setQ] = useState('')
+  const [results, setResults] = useState(null)
+  const [error, setError] = useState('')
+  const [active, setActive] = useState(0)
+  const [ctx, setCtx] = useState(null)   // { id, messages } while a result is shown in context
+  const input = useRef(null)
+  const ticket = useRef(0)
+  useEffect(() => { if (input.current && input.current.focus) input.current.focus() }, [])
+  useEffect(() => {
+    const term = q.trim()
+    const mine = ++ticket.current
+    if (!term) { setResults(null); setError(''); return }
+    const off = P.setTimeout(() => {
+      P.rest('/search?room=' + encodeURIComponent(room.id) + '&q=' + encodeURIComponent(term.slice(0, 100)) + '&limit=50').then(out => {
+        if (mine !== ticket.current) return
+        setResults(out.results || []); setError(''); setActive(0)
+      }, e => { if (mine === ticket.current) { setResults(null); setError(errText(e)) } })
+    }, 180)
+    return off
+  }, [q, room.id])
+  const open = r => {
+    if (!r) return
+    if (props.onPick(r.id)) { props.onClose(); return }
+    P.rest('/search/context?room=' + encodeURIComponent(room.id) + '&id=' + encodeURIComponent(r.id)).then(
+      out => setCtx({ id: r.id, messages: out.messages || [] }), e => setError(errText(e)))
+  }
+  const onKeyDown = e => {
+    if (e.nativeEvent && e.nativeEvent.isComposing) return
+    const n = (results || []).length
+    if (e.key === 'ArrowDown' && n) { e.preventDefault(); setActive((active + 1) % n) }
+    else if (e.key === 'ArrowUp' && n) { e.preventDefault(); setActive((active + n - 1) % n) }
+    else if (e.key === 'Enter') { e.preventDefault(); open((results || [])[active]) }
+    else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); if (ctx) setCtx(null); else props.onClose() }
+  }
+  useEffect(() => {
+    const el = typeof document !== 'undefined' && document.getElementById && document.getElementById('h-sr-' + active)
+    if (el && el.scrollIntoView) el.scrollIntoView({ block: 'nearest' })
+  }, [active, results])
+  const ref = useEnter(true)
+  const term = q.trim()
+  const list = results || []
+  const status = error ? error : !term ? '' : results === null ? 'Searching…' : list.length === 0 ? 'Nothing found in this room.' : list.length + (list.length === 1 ? ' message' : ' messages') + (list.length >= 50 ? ' (the newest 50)' : '')
+  return jsxs('div', { className: 'h-search', ref, role: 'search', children: [
+    jsx('input', { className: 'h-search-in', ref: input, type: 'search', value: q, maxLength: 100, placeholder: 'Search this room', 'aria-label': 'Search this room',
+      role: 'combobox', 'aria-expanded': list.length > 0, 'aria-controls': 'h-search-list', 'aria-autocomplete': 'list',
+      'aria-activedescendant': list.length && !ctx ? 'h-sr-' + active : undefined,
+      onChange: e => { setCtx(null); setQ(e.target.value) }, onKeyDown }),
+    jsx('div', { className: 'h-faint h-small h-search-status', role: 'status', children: status }),
+    ctx
+      ? jsxs('div', { className: 'h-search-ctx', children: [
+          jsx(K.Button, { variant: 'ghost', size: 'sm', onClick: () => setCtx(null), children: 'Back to results' }),
+          ctx.messages.map(m => jsx(SearchRow, { m, q: term, current: m.id === ctx.id }, m.id))
+        ] })
+      : list.length > 0 && jsx('div', { className: 'h-search-list', id: 'h-search-list', role: 'listbox', 'aria-label': 'Search results',
+          children: list.map((r, i) => jsx(SearchRow, { m: r, q: term, option: true, active: i === active, id: 'h-sr-' + i, onClick: () => { setActive(i); open(r) } }, r.id)) })
+  ] })
+}
+
+// One found message: who and when, and its text with the matches marked. Long text is cut around the first match.
+function SearchRow(props) {
+  const { m, q } = props
+  const full = String(m.text || '')
+  const hits = matchRanges(full, q, 20)
+  let from = 0
+  if (hits.length && hits[0].start > 70) from = hits[0].start - 50
+  const text = full.slice(from, from + 260)
+  const parts = []
+  let at = 0
+  for (const h of matchRanges(text, q, 20)) {
+    if (h.start > at) parts.push(text.slice(at, h.start))
+    parts.push(jsx('mark', { className: 'h-mark', children: text.slice(h.start, h.end) }, h.start))
+    at = h.end
+  }
+  if (at < text.length) parts.push(text.slice(at))
+  return jsxs('div', { className: 'h-sr', id: props.id, role: props.option ? 'option' : undefined, 'aria-selected': props.option ? !!props.active : undefined,
+    'data-active': !!props.active, 'data-current': !!props.current, onClick: props.onClick, children: [
+      jsxs('div', { className: 'h-sr-meta', children: [
+        jsx('b', { children: m.name }),
+        m.role === 'agent' && jsx('span', { className: 'h-faint h-tiny', children: 'agent' }),
+        m.impostor && jsx(ImpostorChip, { imp: m.impostor }),
+        jsx('span', { className: 'h-faint h-tiny', children: fmtWhen(m.ts) })
+      ] }),
+      jsx('div', { className: 'h-sr-t', children: [from > 0 && '…', parts, from + 260 < full.length && '…'] })
+    ] })
 }
 
 // The safety moment: a display name is not an identity. Owners are recognised by key only.
@@ -5387,6 +5786,16 @@ function makePlatform(ctx) {
     openPlugins: typeof host.navigate === 'function' ? () => host.navigate('/capabilities?tab=plugins') : null,
     rest: (path, opts) => ctx.rest(path, opts),
     toast(kind, message) { host.notify({ kind: kind === 'error' ? 'error' : 'info', message }) },
+    // Links go to the system browser through the host's own door (ctx.os.openExternal, http(s) only as
+    // far as this UI ever asks); null on an older Desktop, where the link's own target="_blank" is all there is.
+    openExternal: ctx.os && typeof ctx.os.openExternal === 'function' ? url => Promise.resolve(ctx.os.openExternal(url)).catch(() => false) : null,
+    // The OS notification for a mention. The host raises it only while you are away from Hermes, only if
+    // Settings > Notifications > Plugin notifications is on, and throttles it per plugin.
+    osNotify(o) {
+      try {
+        if (ctx.os && typeof ctx.os.notify === 'function') ctx.os.notify({ title: o.title, body: o.body, activate: '/ninsei', onActivate: o.onActivate })
+      } catch (_) { /* no native notifications here */ }
+    },
     copy: text => Promise.resolve(ctx.os && ctx.os.writeClipboard ? ctx.os.writeClipboard(text) : false).catch(() => false),
     // Desktop's SDK has no binary save (ctx.files writes text into granted folders, ctx.os.pickSavePath
     // returns a path on the backend), but the shell turns a page download into a Save dialog, so the link works.
@@ -5514,6 +5923,7 @@ export default {
     const store = createStore()
     store.start()
     ctx.onDispose(() => store.stop())
+    ctx.onDispose(mentionAlerts(store))
     // the backend pushes after every change; polling stays as the fallback
     ctx.onEvent('plugin.ninsei.changed', () => store.refresh())
 

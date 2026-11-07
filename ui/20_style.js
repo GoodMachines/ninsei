@@ -112,6 +112,31 @@ const CSS = TOKENS + `
 .h-quote-t{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
 .h-quote-gone{cursor:default;font-style:italic;margin-bottom:2px}
 .h-quote-gone:hover{background:transparent;color:var(--h-fg3)}
+.h-tlwrap{position:relative;flex:1;min-height:96px;display:flex;flex-direction:column}
+.h-tlwrap>.h-scroll{flex:1;min-height:0}
+.h-newline{display:flex;align-items:center;gap:10px;margin:12px 0 4px;color:var(--h-bad);font-size:11px;font-weight:700;letter-spacing:.04em;text-transform:uppercase}
+.h-newline::before,.h-newline::after{content:"";flex:1;height:1px;background:color-mix(in oklch,var(--h-bad) 55%,transparent)}
+.h-jump{position:absolute;left:0;right:0;bottom:10px;display:flex;justify-content:center;pointer-events:none;z-index:6}
+.h-jump-btn{pointer-events:auto;display:inline-flex;align-items:center;gap:6px;height:30px;padding:0 13px 0 10px;border:1px solid var(--h-line2);border-radius:999px;background:var(--h-card);color:var(--h-fg);font:inherit;font-size:12.5px;font-weight:600;cursor:pointer;box-shadow:0 8px 22px -10px var(--h-shadow)}
+.h-jump-btn:hover{background:var(--h-hover)}
+.h-jump-btn:focus-visible,.h-link:focus-visible,.h-search-in:focus-visible{outline:2px solid var(--h-accent);outline-offset:1px}
+.h-link{color:var(--h-accent);text-decoration:underline;text-underline-offset:2px;overflow-wrap:anywhere;word-break:break-all}
+.h-link:hover{text-decoration-thickness:2px}
+.h-code{font-family:var(--h-mono);font-size:.92em;padding:1px 5px;border-radius:5px;background:var(--h-raise);border:1px solid var(--h-line)}
+.h-fence{margin:4px 0;padding:8px 10px;max-width:100%;overflow-x:auto;border-radius:8px;background:var(--h-raise);border:1px solid var(--h-line);font-family:var(--h-mono);font-size:12.5px;line-height:1.45;white-space:pre-wrap;overflow-wrap:anywhere}
+.h-fence code{font-family:inherit}
+.h-search{flex:none;max-height:min(46vh,420px);overflow-y:auto;overscroll-behavior:contain;padding:8px 18px 10px;border-bottom:1px solid var(--h-line);background:var(--h-bg)}
+.h-search-in{width:100%;box-sizing:border-box;height:34px;padding:0 12px;border:1px solid var(--h-line2);border-radius:9px;background:var(--h-card);color:var(--h-fg);font:inherit}
+.h-search-in:focus{border-color:color-mix(in oklch,var(--h-accent) 60%,var(--h-line2))}
+.h-search-status{min-height:18px;padding:5px 2px 3px}
+.h-sr{padding:6px 10px;border-radius:8px;cursor:pointer;border-left:2px solid transparent}
+.h-sr:hover{background:var(--h-hover)}
+.h-sr[data-active=true]{background:color-mix(in oklch,var(--h-accent) 14%,transparent);border-left-color:var(--h-accent)}
+.h-search-ctx .h-sr{cursor:default}.h-search-ctx .h-sr:hover{background:transparent}
+.h-sr[data-current=true]{background:color-mix(in oklch,var(--h-warn) 14%,transparent);border-left-color:var(--h-warn)}
+.h-sr-meta{display:flex;align-items:baseline;gap:6px;min-width:0}.h-sr-meta b{font-weight:600}
+.h-sr-t{white-space:pre-wrap;overflow-wrap:anywhere;color:var(--h-fg2);font-size:13px;margin-top:1px}
+.h-mark{background:color-mix(in oklch,var(--h-warn) 38%,transparent);color:var(--h-fg);border-radius:3px;padding:0 1px}
 .h-compose-box{flex-wrap:wrap}
 .h-replying{flex:0 0 100%;display:flex;align-items:center;gap:6px;min-width:0;margin:-2px 0 2px -6px;padding:2px 4px 4px 6px;border-bottom:1px solid var(--h-line);color:var(--h-fg3);font-size:12px}
 .h-replying .h-trunc{flex:1;min-width:0}

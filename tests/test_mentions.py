@@ -150,7 +150,7 @@ out({ listed, after, expanded: area().props['aria-expanded'], posts })
 
 def test_mentions_are_drawn_highlighted_and_badged():
     assert "'data-mentioned': !!m.mentions_me" in fn(ROOM, "Message")
-    assert "jsx(MentionText, { text: m.text, book: props.book })" in fn(ROOM, "Message")
+    assert "jsx(RichText, { text: m.text, book: props.book })" in fn(ROOM, "Message")
     assert "r.mentions > 0" in APP and "h-mentions" in APP
     for sel in (".h-at{", ".h-at[data-me=true]", ".h-msg[data-mentioned=true]", ".h-navrow .h-mentions", ".h-ac{", ".h-ac-opt[aria-selected=true]"):
         assert sel in STYLE, sel

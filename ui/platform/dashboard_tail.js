@@ -77,6 +77,8 @@
     'eye-closed': 'M2 8c1.6-2.6 3.6-4 6-4s4.4 1.4 6 4c-1.6 2.6-3.6 4-6 4S3.6 10.6 2 8zM3 13L13 3',
     lock: 'M4.5 7.5h7v6h-7zM6 7.5V5.5a2 2 0 0 1 4 0v2',
     reply: 'M6.5 4L3 7.5 6.5 11M3 7.5h6.5a3.5 3.5 0 0 1 3.5 3.5v1',
+    search: 'M7 12A5 5 0 1 0 7 2a5 5 0 0 0 0 10zM10.8 10.8L14 14',
+    'arrow-down': 'M8 3v9M4 8.5l4 4 4-4',
     smiley: 'M8 14A6 6 0 1 0 8 2a6 6 0 0 0 0 12zM5.6 9.6c.6.9 1.4 1.4 2.4 1.4s1.8-.5 2.4-1.4M6 6.4v.4M10 6.4v.4'
   }
 
@@ -182,7 +184,7 @@
   let store = null
   function NinseiTab() {
     if (!store) store = createStore()
-    useEffect(() => { store.start(); return () => store.stop() }, [])
+    useEffect(() => { store.start(); const off = mentionAlerts(store); return () => { off(); store.stop() } }, [])
     const [ref, h] = useFitHeight()
     return jsxs('div', { ref, className: 'h-dashframe', style: h ? { height: h } : { height: '75vh' }, children: [
       jsx('style', { children: DASH_CSS }),

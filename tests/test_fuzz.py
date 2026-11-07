@@ -62,6 +62,11 @@ async def test_views_survive_malformed_events(world):
     assert cpu < 1.0, "room views got slow"  # was ~2 s before binding checks were cached
     assert snap["room"]["id"] == room
     json.dumps(snap)  # and stay JSON-serialisable for the API
+    for q in ("x", "e", "0", "<b>", "a" * 90):  # search runs over the same junk
+        hits = read(maya, maya.search, room, q)
+        json.dumps(hits)
+        for h in hits[:3]:
+            json.dumps(read(maya, maya.search_context, room, h["id"]))
     await asyncio.sleep(0)
 
 

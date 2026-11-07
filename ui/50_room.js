@@ -96,9 +96,28 @@ function RoomView(props) {
   useEffect(() => { setReplyTo(null) }, [room.id])
   const onReply = useCallback(m => setReplyTo({ id: m.id, name: m.name, text: String(m.text || '').slice(0, 120) }), [])
   const onCancelReply = useCallback(() => setReplyTo(null), [])
+  // This room is on screen: the engine may mark it read from now on (and mention alerts stay quiet for it).
+  useEffect(() => (store.showing ? store.showing(room.id) : undefined), [room.id])
+  // Where you had read up to when you opened the room, kept until you leave it: the "New messages" line
+  // goes before the first message from someone else newer than this. 0 (never opened) draws no line.
+  const readMark = useRef({ id: '', ts: 0 })
+  if (readMark.current.id !== room.id) {
+    const r = (snap.rooms || []).find(x => x.id === room.id)
+    readMark.current = { id: room.id, ts: (r && r.last_read) || 0 }
+  }
+  // search: the panel under the header, and the timeline's jump (set by Timeline) for a result that is loaded
+  const [searching, setSearching] = useState(false)
+  const jumpRef = useRef(null)
+  useEffect(() => { setSearching(false) }, [room.id])
+  const closeSearch = useCallback(() => {
+    setSearching(false)
+    const b = typeof document !== 'undefined' && document.querySelector && document.querySelector('.h-head [data-search-btn]')
+    if (b && b.focus) b.focus()
+  }, [])
   return jsxs(Fragment, { children: [
-    jsx(RoomHeader, { store, room, snap, onPeople: props.onPeople }),
-    jsx(Timeline, { store, snap, room, book, onReply }),
+    jsx(RoomHeader, { store, room, snap, onPeople: props.onPeople, searching, onSearch: () => (searching ? closeSearch() : setSearching(true)) }),
+    searching && jsx(SearchPanel, { room, onClose: closeSearch, onPick: id => !!(jumpRef.current && jumpRef.current(id, true)) }, room.id),
+    jsx(Timeline, { store, snap, room, book, onReply, newAfter: readMark.current.ts, jumpRef }),
     jsxs('div', { className: 'h-composer', children: [
       // pinned above the input: model notice, the running game, drafts. Scrolls on its own if tall.
       jsxs('div', { className: 'h-pinned', children: [
@@ -132,6 +151,8 @@ function RoomHeader(props) {
         jsx(Chips, { items: room.interests, hits: (room.interests || []).filter(i => mine.has(i)) })
       ] })
     ] }),
+    jsx(K.Tip, { label: 'Search this room', children: jsx(K.Button, { variant: 'ghost', size: 'icon', 'aria-label': 'Search this room', 'aria-pressed': !!props.searching,
+      'aria-expanded': !!props.searching, 'data-search-btn': true, onClick: props.onSearch, children: jsx(K.Icon, { name: 'search', size: 14 }) }) }),
     jsx(K.Tip, { label: 'Copy the code people use to join', children: jsx(K.Button, { variant: 'ghost', size: 'sm', onClick: copyCode,
       children: jsxs(Fragment, { children: [jsx(K.Icon, { name: 'link', size: 13 }), 'Share code'] }) }) }),
     props.onPeople && jsx(K.Button, { variant: 'ghost', size: 'icon', 'aria-label': 'People', onClick: props.onPeople, className: 'h-peoplebtn',
@@ -155,6 +176,11 @@ function Timeline(props) {
   const stick = useRef(true)
   const seen = useRef(null)
   const msgs = room.messages || []
+  // The id of the newest message when you scrolled up more than a screen (null while you are near the
+  // bottom): the "Jump to latest" pill counts what came after it.
+  const [away, setAway] = useState(null)
+  const lastId = useRef('')
+  lastId.current = msgs.length ? msgs[msgs.length - 1].id : ''
 
   // anything present on first render is history and does not animate in
   if (seen.current === null) seen.current = new Set(msgs.map(m => m.id))
@@ -166,27 +192,52 @@ function Timeline(props) {
 
   const onScroll = () => {
     const el = scroller.current
-    if (el) stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80
+    if (!el) return
+    const gap = el.scrollHeight - el.scrollTop - el.clientHeight
+    stick.current = gap < 80
+    const far = gap > Math.max(el.clientHeight, 200)
+    setAway(prev => (far ? (prev === null ? lastId.current : prev) : null))
   }
   useLayoutEffect(() => {
     const el = scroller.current
     if (el && stick.current) el.scrollTop = el.scrollHeight
   }, [msgs.length, msgs.length && msgs[msgs.length - 1].id])
 
-  // A quote's click: scroll to the original and flash it, when it is among the messages loaded.
-  const jump = useCallback(id => {
+  // Scroll to a message and flash it, when it is among the messages loaded. A quote's click says so when it
+  // isn't; a search result (`quiet`) just reports false and shows the message in its own panel instead.
+  const jump = useCallback((id, quiet) => {
     const el = scroller.current
     const node = el && [].find.call(el.querySelectorAll('[data-mid]'), n => n.getAttribute('data-mid') === id)
-    if (!node) { P.toast('info', 'That message is further back than what is loaded.'); return }
+    if (!node) { if (!quiet) P.toast('info', 'That message is further back than what is loaded.'); return false }
     springIntoView(node)
     flash(node)
+    return true
   }, [])
+  if (props.jumpRef) props.jumpRef.current = jump
+  const toLatest = () => { const el = scroller.current; if (el) springScrollTo(el, el.scrollHeight - el.clientHeight) }
 
-  const items = groupItems(msgs)
-  return jsx('div', { className: 'h-scroll', ref: scroller, onScroll, children: jsxs('div', { className: 'h-timeline', role: 'log', 'aria-live': 'polite', children: [
-    items.length === 0 && jsx('div', { className: 'h-empty', children: 'Quiet in here. Say hello, or start a game of Tall Tales.' }),
-    items.map(it => jsx(TimelineItem, { it, store, snap, room, book, onReply, onJump: jump, animate: fresh(it.key) }, it.key)),
-    jsx(Thinking, { room })
+  const k = away === null ? -1 : msgs.findIndex(m => m.id === away)
+  const since = away === null ? 0 : (k < 0 ? msgs : msgs.slice(k + 1)).filter(m => m.t === 'msg' && !m.system).length
+  const items = groupItems(msgs, props.newAfter)
+  return jsxs('div', { className: 'h-tlwrap', children: [
+    jsx('div', { className: 'h-scroll', ref: scroller, onScroll, children: jsxs('div', { className: 'h-timeline', role: 'log', 'aria-live': 'polite', children: [
+      items.length === 0 && jsx('div', { className: 'h-empty', children: 'Quiet in here. Say hello, or start a game of Tall Tales.' }),
+      items.map(it => jsx(TimelineItem, { it, store, snap, room, book, onReply, onJump: jump, animate: fresh(it.key) }, it.key)),
+      jsx(Thinking, { room })
+    ] }) }),
+    away !== null && jsx(JumpPill, { count: since, onClick: toLatest })
+  ] })
+}
+
+// "Jump to latest": a pill over the foot of the timeline once you have scrolled up more than a screen, with
+// the count of messages that came in meanwhile. It rises in on a spring; a click springs to the bottom.
+function JumpPill(props) {
+  const ref = useEnter(true)
+  const n = props.count
+  const label = n > 0 ? 'Jump to latest, ' + n + (n === 1 ? ' new message' : ' new messages') : 'Jump to latest'
+  return jsx('div', { className: 'h-jump', children: jsxs('button', { type: 'button', className: 'h-jump-btn', ref, 'aria-label': label, onClick: props.onClick, children: [
+    jsx(K.Icon, { name: 'arrow-down', size: 13 }),
+    jsx('span', { children: n > 0 ? (n > 99 ? '99+' : n) + (n === 1 ? ' new message' : ' new messages') : 'Jump to latest' })
   ] }) })
 }
 
@@ -223,10 +274,17 @@ function Thinking(props) {
 }
 
 // Fold runs of joins into one quiet line; mark the first message of each speaker's run.
-function groupItems(msgs) {
+function groupItems(msgs, newAfter) {
   const out = []
   let prev = null
+  let marked = !newAfter
   for (const m of msgs) {
+    // "New messages": before the first message from someone else that arrived after you last read the room
+    if (!marked && m.t === 'msg' && !m.system && !m.mine && m.ts > newAfter) {
+      out.push({ kind: 'new', key: 'new-line' })
+      marked = true
+      prev = null
+    }
     if (m.t === 'join' && m.impostor) {  // never folded: the flag has to stay visible
       out.push({ kind: 'join', key: m.id, m })
       prev = null
@@ -256,7 +314,8 @@ function TimelineItem(props) {
   const ref = useEnter(props.animate)
   const m = it.m
   let body = null
-  if (it.kind === 'joins') body = jsx('div', { className: 'h-line', children: joinNames(it.names) + ' joined' })
+  if (it.kind === 'new') body = jsx('div', { className: 'h-newline', role: 'separator', 'aria-label': 'New messages', children: jsx('span', { children: 'New messages' }) })
+  else if (it.kind === 'joins') body = jsx('div', { className: 'h-line', children: joinNames(it.names) + ' joined' })
   else if (it.kind === 'join') body = jsxs('div', { className: 'h-line', children: [m.name + ' joined ', jsx(ImpostorChip, { imp: m.impostor })] })
   else if (m.system === 'budget') body = jsxs('div', { className: 'h-system', role: 'status', children: [
     jsx(Face, { face: m.face, pk: m.pk, state: 'system: waiting', size: 20 }),
@@ -306,7 +365,7 @@ function Message(props) {
   const imp = m.impostor
   const [picking, setPicking] = useState(false)
   const who = { kind: agent ? 'agent' : 'person', pk: m.pk, name: m.name, face: m.face, owner_name: m.owner_name }
-  const text = jsx(MentionText, { text: m.text, book: props.book })
+  const text = jsx(RichText, { text: m.text, book: props.book })
   const react = (emoji, on) => props.store.post('/react', { room: props.roomId, target: m.id, emoji, on }).catch(() => {})
   const mineSet = (m.reactions || []).filter(r => r.mine).map(r => r.emoji)
   return jsxs('div', { className: cx('h-msg', agent && 'h-agent'), 'data-role': m.role, 'data-first': props.first, 'data-mid': m.id, 'data-bar': picking,
@@ -422,13 +481,133 @@ function QuoteLine(props) {
   ] })
 }
 
-// Message text with each '@name' of someone in the room drawn as a mention; yours stand out more.
-function MentionText(props) {
-  const parts = mentionParts(props.text, mentionNames(props.book))
-  if (parts.length === 1 && !parts[0].name) return props.text
-  return jsx(Fragment, { children: parts.map((p, i) => p.name
-    ? jsx('span', { className: 'h-at', 'data-me': p.me, children: p.text }, i)
-    : jsx(Fragment, { children: p.text }, i)) })
+// Message text: formatting, links and @mentions drawn by one renderer over richParts' single scan. It
+// builds React nodes only (never HTML), so nothing a stranger types can become markup. Plain text with
+// nothing in it comes back as the string itself.
+function RichText(props) {
+  const blocks = useMemo(() => richParts(props.text, mentionNames(props.book)), [props.text, props.book])
+  if (blocks.length === 1 && blocks[0].kind === 'text' && blocks[0].tokens.every(t => t.t === 'text' && !t.b && !t.i)) return String(props.text == null ? '' : props.text)
+  return jsx(Fragment, { children: blocks.map((bl, k) => bl.kind === 'pre'
+    ? jsx('pre', { className: 'h-fence', children: jsx('code', { children: bl.text }) }, k)
+    : jsx(Fragment, { children: bl.tokens.map((t, i) => richNode(t, i)) }, k)) })
+}
+
+function richNode(t, i) {
+  if (t.t === 'code') return jsx('code', { className: 'h-code', children: t.text }, i)
+  let node
+  if (t.t === 'link') node = jsx(RichLink, { href: t.href, text: t.text })
+  else if (t.t === 'mention') node = jsx('span', { className: 'h-at', 'data-me': t.me, children: t.text })
+  else node = t.text
+  if (t.i) node = jsx('em', { children: node })
+  if (t.b) node = jsx('strong', { children: node })
+  return jsx(Fragment, { children: node }, i)
+}
+
+// A link shows the address itself, never other words. Desktop hands it to the system browser through the host
+// (the page can't open windows); the dashboard opens a new tab with no opener. If the host can't, the address is
+// copied so it is not lost.
+function RichLink(props) {
+  const open = e => {
+    if (!P.openExternal) return
+    e.preventDefault()
+    P.openExternal(props.href).then(ok => {
+      if (ok) return
+      P.copy(props.href)
+      P.toast('error', 'Couldn’t open the link here. It is copied: paste it into your browser.')
+    })
+  }
+  return jsx('a', { className: 'h-link', href: props.href, target: '_blank', rel: 'noopener noreferrer', onClick: open,
+    title: props.href !== props.text ? props.href : undefined, children: props.text })
+}
+
+// The search panel under the room header: type, arrows move through results, Enter opens one (it scrolls to the
+// message when it is loaded, else the panel shows it with the messages around it), Escape goes back, then closes.
+function SearchPanel(props) {
+  const { room } = props
+  const [q, setQ] = useState('')
+  const [results, setResults] = useState(null)
+  const [error, setError] = useState('')
+  const [active, setActive] = useState(0)
+  const [ctx, setCtx] = useState(null)   // { id, messages } while a result is shown in context
+  const input = useRef(null)
+  const ticket = useRef(0)
+  useEffect(() => { if (input.current && input.current.focus) input.current.focus() }, [])
+  useEffect(() => {
+    const term = q.trim()
+    const mine = ++ticket.current
+    if (!term) { setResults(null); setError(''); return }
+    const off = P.setTimeout(() => {
+      P.rest('/search?room=' + encodeURIComponent(room.id) + '&q=' + encodeURIComponent(term.slice(0, 100)) + '&limit=50').then(out => {
+        if (mine !== ticket.current) return
+        setResults(out.results || []); setError(''); setActive(0)
+      }, e => { if (mine === ticket.current) { setResults(null); setError(errText(e)) } })
+    }, 180)
+    return off
+  }, [q, room.id])
+  const open = r => {
+    if (!r) return
+    if (props.onPick(r.id)) { props.onClose(); return }
+    P.rest('/search/context?room=' + encodeURIComponent(room.id) + '&id=' + encodeURIComponent(r.id)).then(
+      out => setCtx({ id: r.id, messages: out.messages || [] }), e => setError(errText(e)))
+  }
+  const onKeyDown = e => {
+    if (e.nativeEvent && e.nativeEvent.isComposing) return
+    const n = (results || []).length
+    if (e.key === 'ArrowDown' && n) { e.preventDefault(); setActive((active + 1) % n) }
+    else if (e.key === 'ArrowUp' && n) { e.preventDefault(); setActive((active + n - 1) % n) }
+    else if (e.key === 'Enter') { e.preventDefault(); open((results || [])[active]) }
+    else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); if (ctx) setCtx(null); else props.onClose() }
+  }
+  useEffect(() => {
+    const el = typeof document !== 'undefined' && document.getElementById && document.getElementById('h-sr-' + active)
+    if (el && el.scrollIntoView) el.scrollIntoView({ block: 'nearest' })
+  }, [active, results])
+  const ref = useEnter(true)
+  const term = q.trim()
+  const list = results || []
+  const status = error ? error : !term ? '' : results === null ? 'Searching…' : list.length === 0 ? 'Nothing found in this room.' : list.length + (list.length === 1 ? ' message' : ' messages') + (list.length >= 50 ? ' (the newest 50)' : '')
+  return jsxs('div', { className: 'h-search', ref, role: 'search', children: [
+    jsx('input', { className: 'h-search-in', ref: input, type: 'search', value: q, maxLength: 100, placeholder: 'Search this room', 'aria-label': 'Search this room',
+      role: 'combobox', 'aria-expanded': list.length > 0, 'aria-controls': 'h-search-list', 'aria-autocomplete': 'list',
+      'aria-activedescendant': list.length && !ctx ? 'h-sr-' + active : undefined,
+      onChange: e => { setCtx(null); setQ(e.target.value) }, onKeyDown }),
+    jsx('div', { className: 'h-faint h-small h-search-status', role: 'status', children: status }),
+    ctx
+      ? jsxs('div', { className: 'h-search-ctx', children: [
+          jsx(K.Button, { variant: 'ghost', size: 'sm', onClick: () => setCtx(null), children: 'Back to results' }),
+          ctx.messages.map(m => jsx(SearchRow, { m, q: term, current: m.id === ctx.id }, m.id))
+        ] })
+      : list.length > 0 && jsx('div', { className: 'h-search-list', id: 'h-search-list', role: 'listbox', 'aria-label': 'Search results',
+          children: list.map((r, i) => jsx(SearchRow, { m: r, q: term, option: true, active: i === active, id: 'h-sr-' + i, onClick: () => { setActive(i); open(r) } }, r.id)) })
+  ] })
+}
+
+// One found message: who and when, and its text with the matches marked. Long text is cut around the first match.
+function SearchRow(props) {
+  const { m, q } = props
+  const full = String(m.text || '')
+  const hits = matchRanges(full, q, 20)
+  let from = 0
+  if (hits.length && hits[0].start > 70) from = hits[0].start - 50
+  const text = full.slice(from, from + 260)
+  const parts = []
+  let at = 0
+  for (const h of matchRanges(text, q, 20)) {
+    if (h.start > at) parts.push(text.slice(at, h.start))
+    parts.push(jsx('mark', { className: 'h-mark', children: text.slice(h.start, h.end) }, h.start))
+    at = h.end
+  }
+  if (at < text.length) parts.push(text.slice(at))
+  return jsxs('div', { className: 'h-sr', id: props.id, role: props.option ? 'option' : undefined, 'aria-selected': props.option ? !!props.active : undefined,
+    'data-active': !!props.active, 'data-current': !!props.current, onClick: props.onClick, children: [
+      jsxs('div', { className: 'h-sr-meta', children: [
+        jsx('b', { children: m.name }),
+        m.role === 'agent' && jsx('span', { className: 'h-faint h-tiny', children: 'agent' }),
+        m.impostor && jsx(ImpostorChip, { imp: m.impostor }),
+        jsx('span', { className: 'h-faint h-tiny', children: fmtWhen(m.ts) })
+      ] }),
+      jsx('div', { className: 'h-sr-t', children: [from > 0 && '…', parts, from + 260 < full.length && '…'] })
+    ] })
 }
 
 // The safety moment: a display name is not an identity. Owners are recognised by key only.
