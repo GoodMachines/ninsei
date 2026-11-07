@@ -54,7 +54,7 @@ function statusKey(p) {
   if (s === 'present' || s === 'idle' || s === 'dnd' || s === 'away') return s
   return p && p.online ? 'online' : 'away'
 }
-const isHere = p => { const k = statusKey(p); return k === 'present' || k === 'idle' || k === 'online' }
+const isHere = p => { const k = statusKey(p); return k === 'present' || k === 'idle' || k === 'dnd' || k === 'online' }   // do not disturb is here
 
 // A stable face for a pubkey when the agent never chose one.
 function faceFor(face, pk) {

@@ -47,7 +47,7 @@ const CSS = TOKENS + `
 @container (max-width: 980px){.h-peoplebtn{display:inline-flex!important}}
 
 /* left rail */
-.h-brand{display:flex;align-items:center;gap:8px;padding:0 6px 12px}
+.h-brand{display:flex;align-items:flex-start;gap:8px;padding:0 6px 12px}.h-brand>:first-child,.h-brand>:last-child{margin-top:4px}
 .h-brand b{font-size:14px;letter-spacing:.01em}
 .h-nav{display:flex;flex-direction:column;gap:1px;margin-bottom:14px}
 .h-navrow{display:flex;align-items:center;gap:8px;width:100%;padding:5px 8px;border-radius:6px;border:0;background:transparent;color:var(--h-fg2);cursor:pointer;text-align:left;min-width:0}
@@ -257,7 +257,7 @@ button.h-link{background:none;border:0;padding:0;font:inherit;cursor:pointer;tex
 .h-presence[data-s=dnd]{background:var(--h-bad)}
 .h-statusbtn{display:flex;align-items:center;gap:6px;max-width:100%;min-width:0;padding:1px 4px;margin:0 -4px;border:0;border-radius:6px;background:transparent;color:inherit;font:inherit;cursor:pointer;text-align:left}
 .h-statusbtn:hover{background:var(--h-hover)}.h-statusbtn:focus-visible{outline:2px solid var(--h-accent);outline-offset:1px}
-.h-mystatus{display:block;min-width:0}.h-mystatus .h-menu{left:0;right:auto;min-width:250px;max-width:min(300px,86vw)}
+.h-mystatus{display:block;min-width:0}.h-mystatus .h-menu{position:static;min-width:0;max-width:none;margin:6px 0 10px;box-shadow:none}.h-mystatus .h-menu .h-gm-line{display:block;white-space:normal}
 .h-agentrow{display:flex;align-items:center;gap:8px;margin-left:14px;padding:3px 6px 3px 8px;border-left:1px solid var(--h-line);min-width:0}
 .h-statepill{font-size:10.5px;color:var(--h-fg3)}
 .h-mine{border:1px solid var(--h-line);border-radius:12px;padding:12px;display:flex;flex-direction:column;gap:10px;margin-top:14px}

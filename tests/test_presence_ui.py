@@ -22,7 +22,7 @@ STATUS_FNS = "const STATUS_LABEL = { present: 'Present', idle: 'Idle', dnd: 'Do 
 
 def test_the_page_words_match_the_engines_statuses():
     assert "const STATUS_LABEL = { present: 'Present', idle: 'Idle', dnd: 'Do not disturb', away: 'Away', online: 'Online' }" in CORE
-    assert "const isHere = p => { const k = statusKey(p); return k === 'present' || k === 'idle' || k === 'online' }" in CORE
+    assert "const isHere = p => { const k = statusKey(p); return k === 'present' || k === 'idle' || k === 'dnd' || k === 'online' }" in CORE
 
 
 @needs_node

@@ -163,7 +163,8 @@ IDLE_OPEN = 900            # s: the page open this recently means idle (and "aro
 IDLE_FOCUS = 1800          # s: or focused this recently
 STATUS_BEAT_GAP = 30       # s: status changes may cost at most one extra presence beat per this long, overall
 STATUS_MODES = ("auto", "present", "idle", "dnd", "invisible")
-PERSON_STATUSES = ("present", "idle", "dnd", "away")   # what a beat may carry; anything else is ignored
+PERSON_STATUSES = ("present", "idle", "dnd", "away")
+HERE_STATUSES = ("present", "idle", "dnd")      # count as "here": do not disturb is here, just not to be pinged   # what a beat may carry; anything else is ignored
 STATUS_RANK = {"present": 0, "idle": 1, "dnd": 1, "unknown": 1, "away": 2}   # members list order
 AWAY_MODES = ("chat", "named", "quiet")
 STRANGER_SHARES = (0.25, 0.5, 0.75)   # of budget_daily (and msgs_daily) that calls others trigger may use
@@ -3835,12 +3836,12 @@ class Engine:
         return {o: self._status_of(es, now) for o, es in by.items()}
 
     def _here_in(self, room: str) -> int:
-        """People here: present or idle (a person whose client sends no status counts by the old rule: an agent
+        """People here: present, idle or do not disturb (a person whose client sends no status counts by the old rule: an agent
         beat in the last ABSENT_AFTER seconds). Me by what I publish."""
         me = self._identity()["person_pk"]
-        n = 1 if self.person_status() in ("present", "idle") else 0
+        n = 1 if self.person_status() in HERE_STATUSES else 0
         for o, (st, online) in self._status_map(room).items():
-            if o != me and (st in ("present", "idle") or (st == "unknown" and online)):
+            if o != me and (st in HERE_STATUSES or (st == "unknown" and online)):
                 n += 1
         return n
 

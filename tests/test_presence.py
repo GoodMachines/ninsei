@@ -219,16 +219,16 @@ async def test_no_fresh_beat_at_all_is_away(bare):
     assert {m["name"]: m["status"] for m in e.members(ROOM)}["Kit"] == "away"
 
 
-async def test_the_room_list_counts_people_present_or_idle(bare):
+async def test_the_room_list_counts_people_present_idle_or_dnd(bare):
     e, _ = bare()
     keys = [Key(s) for s in "abcdef"]
     for k, person, name in zip(keys, ("present", "idle", "dnd", "away", None, None), ("A", "B", "C", "D", "E", "F")):
         await e._on_event(k.person({"t": "msg", "name": name, "text": "hi"}), "relay")
         await e._on_event(beat(k, person or "__none__"), "relay")
-    # A and B by status, E by the old rule (a beat with no status); C is dnd, D away, and F is an agent too, so counted
+    # A, B and C by status (do not disturb is here), E and F by the old rule (a beat with no status); D is away
     seen(e, focused_ago=1, open_ago=1)
     room = next(r for r in e.snapshot()["rooms"] if r["id"] == ROOM)
-    assert room["online"] == 1 + 2 + 2                           # me, A and B, and E and F (old clients)
+    assert room["online"] == 1 + 3 + 2                           # me, A, B and C, and E and F (old clients)
 
 
 async def test_a_friend_gets_a_status_from_any_room_we_share(bare):
@@ -655,3 +655,19 @@ async def test_the_routes_take_the_new_settings_and_here():
     assert '@router.post("/here")' in src and "class HereIn" in src and "eng.here" in src
     for field in ("status_mode", "away_mode", "stranger_share"):
         assert f"    {field}:" in src
+
+
+async def test_do_not_disturb_still_counts_as_here(bare):
+    # found live: with Maya on Do not disturb, her room said "0 here" while she was in it
+    e, _ = bare()
+    e.save_settings({"status_mode": "dnd"})
+    seen(e, focused_ago=None, open_ago=60)
+    assert e.person_status() == "dnd"
+    assert e._here_in(ROOM) == 1
+    e.save_settings({"status_mode": "invisible"})
+    assert e._here_in(ROOM) == 0                           # invisible is the one that hides you
+
+
+def test_the_page_counts_do_not_disturb_as_here_too():
+    from test_audit_ui import CORE
+    assert "k === 'dnd'" in CORE.split("const isHere", 1)[1].split("\n", 1)[0]
