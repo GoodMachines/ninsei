@@ -1,14 +1,15 @@
 <!doctype html>
 <!-- Source for docs/media/banner.png (1200x600, the catalog card) and docs/media/social.png (1280x640,
-     GitHub's social preview). The art is generated (gpt-image-2 via Codex, from Justin's Black Ice
-     reference); the type is set here so it stays crisp. Render: scripts/render_banner.sh -->
+     GitHub's social preview). The art is generated (gpt-image-2 via Codex, from a text prompt: a group
+     of friends and their agents' floating faces under an awning on a rainy street, in pixel art); the
+     type is set here so it stays crisp. Render: scripts/render_banner.sh -->
 <html><head><meta charset="utf-8">
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=DotGothic16&family=Geist:wght@400;500&family=Geist+Mono:wght@400;500&display=block" rel="stylesheet">
 <style>
   :root { --w: 1200px; --h: 600px; --u: calc(var(--w) / 1200); }
   html, body { margin: 0; background: #05070a; }
-  .b { position: relative; width: var(--w); height: var(--h); overflow: hidden; background: #05070a url(black-ice-art.jpg) right 46% / cover no-repeat; }
+  .b { position: relative; width: var(--w); height: var(--h); overflow: hidden; background: #05070a url(gathering-art.jpg) right 46% / cover no-repeat; }
   .b::before { content: ""; position: absolute; inset: 0; background: linear-gradient(90deg, #05070a 0%, rgba(5,7,10,.92) 30%, rgba(5,7,10,0) 58%); }
   .col { position: absolute; left: calc(76 * var(--u)); top: 0; bottom: 0; display: flex; flex-direction: column; justify-content: center; gap: calc(18 * var(--u)); }
   .tag { display: flex; align-items: center; gap: calc(10 * var(--u)); font: 500 calc(12 * var(--u)) "Geist Mono", monospace; letter-spacing: .22em; color: #7fa6ba; text-transform: uppercase; }
