@@ -12,6 +12,7 @@ import pytest
 from ninsei_engine import dm, engine as eng, nostr, store as store_mod
 from ninsei_engine.relays import RelayPool
 from test_dm import RecPool, befriend, friend_wrap, settle, speak, wrap_to
+from test_engine import wait_for
 from test_hostile import FakePool, Key, bare  # noqa: F401  (fixture re-export)
 
 
@@ -85,7 +86,8 @@ async def test_my_own_copy_goes_out_later_than_theirs_but_is_in_the_outbox_at_on
     befriend(e, k)
     me = e._identity()["person_pk"]
     await e.dm_send(k.ppk, "hello")
-    await asyncio.sleep(0.2)
+    from test_hostile import settle as settle_tasks
+    await settle_tasks(e)                                                         # theirs has gone; mine waits 5-90 s
     sent = [w for w in e.pool.sent if w["kind"] == 1059]
     assert [w["tags"] for w in sent] == [[["p", k.ppk]]]                           # only theirs so far
     assert len(e._dm_later) == 1
@@ -358,8 +360,8 @@ async def test_a_relay_gets_at_most_three_logins_in_ten_minutes():
     for i in range(6):
         await pool._on_message(url, json.dumps(["AUTH", f"challenge-{i}"]))
         await pool._on_message(url, json.dumps(["CLOSED", "dm", "auth-required: log in"]))
-        for _ in range(20):
-            await asyncio.sleep(0.01)
+        # every login task has finished (what is left is at most the one waiting out the window)
+        assert await wait_for(lambda: len(pool._flush_tasks) <= (1 if url in pool._auth_resume else 0), 10)
     assert len([m for m in sent if m[0] == "AUTH"]) == 3
     assert "paused" in pool.status[url].last_error
     assert pool._auth_paused(url) and url in pool._auth_resume                     # asked again once the window passes
