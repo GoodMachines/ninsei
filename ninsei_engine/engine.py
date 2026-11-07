@@ -274,6 +274,27 @@ def skeleton(name) -> str:
     return s.replace("rn", "m").replace("vv", "w")
 
 
+def at_mentions(text: str, name: str, max_ats: int = 20) -> bool:
+    """`@` then the name, compared as skeletons: `@mrs.blobby`, `@MrsBlobby` and `@Mrs. Blobby` all
+    name "Mrs. Blobby". The name must end at a word boundary, so `@Adam` doesn't name "Ada"."""
+    target = skeleton(name)
+    if not target or not text:
+        return False
+    for n, m in enumerate(re.finditer(r"(?<![\w@])@", text)):
+        if n >= max_ats:
+            break
+        tail = text[m.end(): m.end() + len(str(name)) + 12]
+        for j in range(1, len(tail) + 1):
+            sk = skeleton(tail[:j])
+            if sk == target:
+                nxt = tail[j:j + 1]
+                if not (nxt.isalnum() or nxt == "_"):
+                    return True
+            elif not target.startswith(sk):
+                break
+    return False
+
+
 def _nameable(name: str) -> bool:
     """Can this agent name count as 'named in a message'? Short and everyday words can't."""
     sk = skeleton(name)
@@ -1265,7 +1286,18 @@ class Engine:
     # the agent's behaviour
     # ============================================================================================
     def _mentions(self, text: str, name: str) -> bool:
-        return bool(name) and re.search(rf"(?<![\w@])@?{re.escape(name)}\b", text or "", re.I) is not None
+        return bool(name) and (re.search(rf"(?<![\w@])@?{re.escape(name)}\b", text or "", re.I) is not None
+                               or at_mentions(text or "", name))
+
+    def _mentions_me(self, text: str) -> bool:
+        """An `@` aimed at me or my agent: what highlights a message and counts toward a room's badge."""
+        s = self.settings()
+        return any(at_mentions(text, n) for n in (s["display_name"], s["agent_name"]) if n)
+
+    def _others_here(self, room: str) -> bool:
+        """Is anyone besides me in the room right now? People show up through their agents' beats."""
+        me, now = self._identity()["person_pk"], time.time()
+        return any(p["owner"] != me and now - p["at"] < ABSENT_AFTER for p in self.presence.get(room, {}).values())
 
     def _role_of(self, room: str, ev: dict) -> str:
         if self.owner_of(ev):
@@ -1413,8 +1445,8 @@ class Engine:
             return  # talking to someone else's agent
         elif from_owner and re.search(r"\b(anyone|agents|y'all|you all|everyone|@all)\b", text, re.I):
             prio = 60
-        elif from_owner and chatty and re.search(r"\?\s*$", text):
-            prio = 40
+        elif from_owner and chatty and (re.search(r"\?\s*$", text) or not self._others_here(room)):
+            prio = 40  # my owner's question, or anything they say while nobody else is around
         elif not from_agent and random.random() < CHATTINESS[self.settings()["chattiness"]]:
             prio = 20
         else:
@@ -3109,6 +3141,8 @@ class Engine:
                     "owner": owner, "owner_name": owner_name if owner_ok else _short(owner),
                     "face": _face_or(c.get("face"), None) if owner else None, "text": str(c.get("text", ""))[:1200],
                     "reply_to": (nostr.tag_values(e, "e") or [None])[0]}
+            if t == "msg" and not item["mine"] and self._mentions_me(item["text"]):
+                item["mentions_me"] = True
             holder = self._holder(who, name, agent=bool(owner))
             if holder not in (None, e["pubkey"]):
                 # someone else holds this name (compared as skeletons, so look-alikes count)
@@ -3172,11 +3206,15 @@ class Engine:
         rooms = []
         for rid, meta in self.store.rooms().items():
             evs = self.events.get(rid, {})
-            unread = sum(1 for e in evs.values() if e["created_at"] > meta.get("last_read", 0)
-                         and self._content(e).get("t") == "msg" and e["pubkey"] != ident["person_pk"])
+            fresh = [(e, c) for e in evs.values() if e["created_at"] > meta.get("last_read", 0)
+                     and e["pubkey"] != ident["person_pk"] and (c := self._content(e)).get("t") == "msg"]
+            unread = len(fresh)
+            mentions = sum(1 for e, c in fresh if e["pubkey"] != ident["agent_pk"]
+                           and self._mentions_me(str(c.get("text", ""))[:1200]))
             online = sum(1 for p in self.presence.get(rid, {}).values() if time.time() - p["at"] < ABSENT_AFTER)
             rooms.append({"id": rid, "name": meta.get("name", ""), "about": meta.get("about", ""),
-                          "interests": meta.get("interests", []), "unread": unread, "online": online})
+                          "interests": meta.get("interests", []), "unread": unread, "mentions": mentions,
+                          "online": online})
         offers = self.store.get("offers") or {}
         now = time.time()
         pending = [{"id": k, **v} for k, v in offers.items() if v["status"] in ("building", "ready")

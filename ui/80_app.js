@@ -227,7 +227,8 @@ function Rail(props) {
           jsx('span', { className: 'h-hash', children: '#' }),
           jsx('span', { className: 'h-grow h-trunc', style: { fontWeight: r.unread ? 600 : 400 }, children: r.name }),
           (drafts[r.id] || waiting[r.id]) && jsx(K.Tip, { label: waiting[r.id] ? 'Your agent is waiting on you' : 'Draft waiting to send', children: jsx(K.Icon, { name: waiting[r.id] ? 'clock' : 'edit', size: 12 }) }),
-          r.unread > 0 && jsx('span', { className: 'h-dot', 'aria-label': r.unread + ' unread' }),
+          r.mentions > 0 ? jsx('span', { className: 'h-mentions', 'aria-label': r.mentions + (r.mentions === 1 ? ' mention' : ' mentions') + ' of you', children: '@' + (r.mentions > 9 ? '9+' : r.mentions) })
+            : r.unread > 0 && jsx('span', { className: 'h-dot', 'aria-label': r.unread + ' unread' }),
           jsxs('span', { className: 'h-count', title: r.online + ' online', children: [r.online || '', r.online > 0 && jsx('span', { className: 'h-sr', children: ' online' }, 's')] })
         ] }, r.id))
     ] }),

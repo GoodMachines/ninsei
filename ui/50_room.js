@@ -247,7 +247,7 @@ function TimelineItem(props) {
     jsx(Face, { face: m.face, pk: m.pk, state: 'system: waiting', size: 20 }),
     jsx('span', { children: m.text || (m.name + ' is resting: out of budget for today') })
   ] })
-  else if (it.kind === 'msg') body = jsx(Message, { m, first: it.first })
+  else if (it.kind === 'msg') body = jsx(Message, { m, first: it.first, book })
   else if (it.kind === 'offer') body = jsx(OfferCard, { m, store, snap, room })
   else if (it.kind === 'offer_state') body = jsxs('div', { className: 'h-line', children: [offerStateLine(m, room), m.impostor && ' ', m.impostor && jsx(ImpostorChip, { imp: m.impostor })] })
   else if (it.kind === 'share') body = jsx(ShareCard, { m, store, room })
@@ -275,8 +275,9 @@ function Message(props) {
   const f = agent ? faceFor(m.face, m.pk) : null
   const imp = m.impostor
   const who = { kind: agent ? 'agent' : 'person', pk: m.pk, name: m.name, face: m.face, owner_name: m.owner_name }
+  const text = jsx(MentionText, { text: m.text, book: props.book })
   return jsxs('div', { className: cx('h-msg', agent && 'h-agent'), 'data-role': m.role, 'data-first': props.first,
-    'data-impostor': !!imp, style: agent ? { '--hue': f.hue } : undefined, children: [
+    'data-impostor': !!imp, 'data-mentioned': !!m.mentions_me, style: agent ? { '--hue': f.hue } : undefined, children: [
       jsx('div', { className: 'h-gutter', children: props.first ? jsx(ProfileButton, { who, label: 'Show ' + m.name + '’s card',
         children: agent ? jsx(Face, { face: m.face, pk: m.pk, state: 'activity: idle', size: 28, name: m.name }) : jsx(Initial, { name: m.name }) }) : null }),
       jsxs('div', { style: { minWidth: 0 }, children: [
@@ -285,14 +286,23 @@ function Message(props) {
           agent && jsx('span', { className: 'h-owner', children: m.mine ? 'your agent' : (m.owner_name ? m.owner_name + "'s agent" : 'agent') }),
           jsx('span', { className: 'h-faint h-tiny', children: fmtTime(m.ts) })
         ] }),
-        agent ? jsx('div', { className: 'h-bubble', children: jsx('div', { className: 'h-text', children: m.text }) })
-          : jsx('div', { className: 'h-text', children: m.text }),
+        agent ? jsx('div', { className: 'h-bubble', children: jsx('div', { className: 'h-text', children: text }) })
+          : jsx('div', { className: 'h-text', children: text }),
         imp && jsx(ImpostorChip, { imp }),
         m.delivery && jsx('div', { className: 'h-faint h-tiny', role: m.delivery === 'failed' ? 'alert' : undefined,
           children: m.delivery === 'pending' ? 'Not delivered yet. Ninsei will resend it when a relay is back.'
             : 'Not delivered. The relays turned it down or it waited too long.' })
       ] })
     ] })
+}
+
+// Message text with each '@name' of someone in the room drawn as a mention; yours stand out more.
+function MentionText(props) {
+  const parts = mentionParts(props.text, mentionNames(props.book))
+  if (parts.length === 1 && !parts[0].name) return props.text
+  return jsx(Fragment, { children: parts.map((p, i) => p.name
+    ? jsx('span', { className: 'h-at', 'data-me': p.me, children: p.text }, i)
+    : jsx(Fragment, { children: p.text }, i)) })
 }
 
 // The safety moment: a display name is not an identity. Owners are recognised by key only.
@@ -533,12 +543,41 @@ function Draft(props) {
 
 // ---- composer --------------------------------------------------------------------------------
 
+// Everyone you can @ in this room: your agent first, then who's here, then the rest. Never you, never a lookalike.
+function mentionCandidates(room) {
+  const out = []
+  for (const p of (room && room.members) || []) {
+    if (!p.you && !p.impostor) out.push({ pk: p.pk, name: p.name, kind: 'person', sub: p.online ? 'here now' : 'person', online: !!p.online })
+    for (const a of p.agents || []) if (!a.impostor) out.push({ pk: a.pk, name: a.name, kind: 'agent', face: a.face, yours: !!a.yours,
+      sub: a.yours ? 'your agent' : p.name + '’s agent', online: !!(a.yours || p.online) })
+  }
+  return out.sort((a, b) => (!!b.yours - !!a.yours) || (!!b.online - !!a.online) || a.name.localeCompare(b.name))
+}
+
 function Composer(props) {
   const { store, room, gameOn } = props
   const [text, setText] = useState('')
   const [menu, setMenu] = useState(false)
   const [busy, setBusy] = useState(false)
+  const [caret, setCaret] = useState(0)
+  const [pick, setPick] = useState(0)
+  const [shut, setShut] = useState(-1)  // the '@' position the menu was dismissed at, with Escape
   const ta = useRef(null)
+  const caretTo = useRef(null)
+  const cands = useMemo(() => mentionCandidates(room), [room.members])
+  const mq = mentionQuery(text, caret)
+  const opts = mq && mq.at !== shut ? mentionMatches(cands, mq.q) : []
+  const open = opts.length > 0
+  const sel = Math.min(pick, opts.length - 1)
+  const listId = 'h-at-' + room.id
+  const track = e => setCaret(e.target.selectionStart || 0)
+  const choose = c => {
+    const before = text.slice(0, mq.at) + '@' + c.name + ' '
+    setText(before + text.slice(caret).replace(/^\s+/, ''))
+    caretTo.current = before.length
+    setCaret(before.length)
+    setPick(0)
+  }
   const send = async () => {
     const t = text.trim()
     if (!t || busy) return
@@ -553,15 +592,37 @@ function Composer(props) {
     if (!el) return
     el.style.height = 'auto'
     el.style.height = Math.min(160, el.scrollHeight) + 'px'
+    if (caretTo.current != null) { el.focus(); el.setSelectionRange(caretTo.current, caretTo.current); caretTo.current = null }
   }, [text])
+  const onKey = e => {
+    if (open && !e.nativeEvent.isComposing) {
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        e.preventDefault()
+        setPick((sel + (e.key === 'ArrowDown' ? 1 : opts.length - 1)) % opts.length)
+        return
+      }
+      if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); choose(opts[sel]); return }
+      if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); setShut(mq.at); return }
+    }
+    if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); send() }
+  }
   const startGame = async mode => {
     setMenu(false)
     try { await store.post('/game/start', { room: room.id, mode }, gameName(mode) + ' is starting') } catch (_) { /* toasted */ }
   }
   return jsxs('div', { className: 'h-compose-box', style: { position: 'relative' }, children: [
-    jsx('textarea', { ref: ta, rows: 1, value: text, placeholder: 'Message ' + room.name, 'aria-label': 'Message',
-      onChange: e => setText(e.target.value),
-      onKeyDown: e => { if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); send() } } }),
+    open && jsx('div', { className: 'h-ac', id: listId, role: 'listbox', 'aria-label': 'Mention someone', children: opts.map((c, i) =>
+      jsxs('div', { id: listId + '-' + i, role: 'option', className: 'h-ac-opt', 'aria-selected': i === sel,
+        onMouseDown: e => { e.preventDefault(); choose(c) }, onMouseEnter: () => setPick(i), children: [
+          c.kind === 'agent' ? jsx(Face, { face: c.face, pk: c.pk, state: 'activity: idle', size: 22, name: c.name }) : jsx(Initial, { name: c.name }),
+          jsx('b', { className: 'h-trunc', children: c.name }),
+          jsx('span', { className: 'h-ac-sub h-trunc', children: c.sub })
+        ] }, c.pk)) }),
+    jsx('textarea', { ref: ta, rows: 1, value: text, placeholder: 'Message ' + room.name + ' (type @ to mention someone)', 'aria-label': 'Message',
+      role: 'combobox', 'aria-autocomplete': 'list', 'aria-expanded': open, 'aria-controls': open ? listId : undefined,
+      'aria-activedescendant': open ? listId + '-' + sel : undefined,
+      onChange: e => { setText(e.target.value); track(e); setPick(0); if (!mentionQuery(e.target.value, e.target.selectionStart)) setShut(-1) }, onSelect: track, onClick: track, onKeyUp: e => { if (!open || !/Arrow(Up|Down)/.test(e.key)) track(e) },
+      onKeyDown: onKey }),
     jsxs('div', { style: { position: 'relative' }, children: [
       jsx(K.Tip, { label: 'Games', children: jsx(K.Button, { variant: 'ghost', size: 'icon', 'aria-label': 'Games', 'aria-expanded': menu,
         onClick: () => setMenu(!menu), children: jsx(K.Icon, { name: 'game', size: 15 }) }) }),

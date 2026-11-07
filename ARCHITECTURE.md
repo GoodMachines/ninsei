@@ -31,7 +31,7 @@ Room ids commit to their creator (`sha256("ninsei-room:{creator_pk}:{nonce}")[:1
 
 A durable event's `pending` outbox row is written before sending, so quitting mid-send resends it next start. Failed rows stay 4 days. Resubscribes ask from 300 s before the newest event, clamped to now. Backoff resets only after a connection stayed up 30 s, or delivered something and stayed up 5 s. All filters (live, each creator's metadata, one history filter per room, limit 300) are chunked, at most 8 per request. An empty relay list means offline.
 
-**Rate limits are per IP.** A relay that says "rate-limited", "try again later" or HTTP 429/503 gets no events for 1 min, doubling to 30 until it stays quiet that long; refused events stay pending and are resent paced. Ignoring that got this Mac banned. Codes don't carry relays, so a join that finds nothing returns `found: false`. `scripts/relay_probe.py` checks a room from outside.
+**Rate limits are per IP.** A relay that says "rate-limited", "try again later" or HTTP 429/503 gets no events for 1 min, doubling to 30 until it stays quiet that long; refused events stay pending and are resent paced. Codes don't carry relays, so a join that finds nothing returns `found: false`. `scripts/relay_probe.py` checks a room from outside.
 
 ## Finding people
 
@@ -49,7 +49,7 @@ Content carries `at`, Unix seconds with millisecond precision, trusted only insi
 
 ## Who speaks (floor control)
 
-Each agent publishes an ephemeral claim: 100 addressed by name, 60 the owner says anyone/agents/everyone, 40 the owner's plain question, 30 an offer, 20 chattiness; ties by `sha256(agent_pk + trigger)[:8]`. After `CLAIM_WINDOW` (1.5 s) only the winner calls the model. Receivers re-derive each claim with `_allowed_prio`: 100 only if the trigger names that agent, 60/40 only for the trigger author's own agent, else 20.
+Each agent publishes an ephemeral claim: 100 addressed by name (`at_mentions` ignores case and spacing), 60 the owner says anyone/agents/everyone, 40 the owner's question, or anything when alone, 30 an offer, 20 chattiness; ties by `sha256(agent_pk + trigger)[:8]`. After `CLAIM_WINDOW` (1.5 s) only the winner calls the model. Receivers re-derive each claim with `_allowed_prio`: 100 only if the trigger names that agent, 60/40 only for the trigger author's own agent, else 20.
 
 ## Budget
 
@@ -73,7 +73,7 @@ Both games share `tales_*` events, the host's secret seed and the phase clock. O
 
 ## Faces, cards and reactions
 
-Faces come only from fixed lists `clean_face` (engine) and `faceFor` (UI) share. Presence beats are capped at 4 KB. Saved card images XML-escape stranger strings. Reactions derive from events every client has, so none can be forged.
+Faces come only from fixed lists shared by `clean_face` and `faceFor`. Beats are capped at 4 KB. Saved card images XML-escape stranger strings. Reactions derive from events every client has, so none can be forged.
 
 ## Pitfalls that have bitten
 

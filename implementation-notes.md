@@ -577,3 +577,12 @@ Each has a test (`test_relay_limits.py`, `test_game_secrecy.py`). Checked sound 
 - 7 offline gaps; B had the missed message within 0.5 to 0.8 s of restarting each time.
 - Rate limits: damus once (23:43) and snort once (07:04); both cooled, resent, outbox 0 at the end, 0 rejections. About 520 accepted events per relay from A.
 - Same Mac, same IP for both installs, so it proves relay storage, resubscribe and backoff, not reachability from another network: that still needs a second person or machine (`scripts/relay_probe.py` from there).
+
+## Mentions, 2026-11-07
+
+Justin's first live use: `@mrs.blobby hello` didn't reach his agent "Mrs. Blobby" (the name match wanted the exact spelling), and a plain "Hello!" got no answer because an owner's non-question only triggers the chattiness roll. Both read as a broken app.
+- `engine.at_mentions`: `@` then a name compared as skeletons, ending at a word boundary (`@Adam` doesn't name Ada). `_mentions` now accepts that as well as the old exact-name regex, so addressing, `post()`'s mentions list and `_allowed_prio` all use it. Old clients still compute prio 20 for these replies and may fold them; fine once everyone updates.
+- Owner alone: with nobody else's agent beating in the room, any owner message gets prio 40 (chattiness quiet still opts out).
+- `mentions_me` on messages (an `@` of my name or my agent's, never on my own side's posts) and `mentions` per room in the snapshot (unread only, not from my agent). UI: `@` chips, a highlighted row, an amber `@N` badge in the room list instead of the dot.
+- Composer autocomplete (`mentionQuery`/`mentionMatches` in `00_core.js`, `mentionCandidates` in `50_room.js`): your agent first, then who's online, never you or a lookalike; arrows, Enter/Tab, Escape; inserts the full name and a space. Mention highlighting is UI-side (`mentionParts`) over the room's name book, so a lookalike's name is never drawn as a mention.
+- Not done: notifications outside the Ninsei page (the Hermes pet line covers mentions of your agent only).

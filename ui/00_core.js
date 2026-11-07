@@ -378,6 +378,67 @@ function nameBook(room, me) {
   return book
 }
 
+// ---- mentions, Discord style: '@' then a name, compared without case, spaces or dots, so
+// '@mrs.blobby' names "Mrs. Blobby". The engine's at_mentions() applies the same rule.
+function squashName(s) { return String(s || '').normalize('NFKC').toLowerCase().replace(/[\s_.\-'’`"]/g, '') }
+
+// The names a message can mention: everyone in the book except lookalikes. `me` marks you and your agent.
+function mentionNames(book) {
+  return Object.keys(book || {}).filter(pk => !book[pk].impostor && book[pk].name)
+    .map(pk => ({ pk, name: book[pk].name, me: !!(book[pk].you || book[pk].yours) }))
+}
+
+// Splits text into plain runs and mention runs ({ text, name, me }), longest name first.
+function mentionParts(text, names) {
+  text = String(text || '')
+  const cands = (names || []).map(n => Object.assign({ sq: squashName(n.name) }, n)).filter(n => n.sq)
+    .sort((a, b) => b.sq.length - a.sq.length)
+  const out = []
+  if (!cands.length) return [{ text }]
+  const re = /(^|[^\p{L}\p{N}_@])@/gu
+  let last = 0, m, ats = 0
+  while ((m = re.exec(text)) && ats++ < 40) {
+    const at = m.index + m[1].length
+    const start = at + 1
+    let hit = null
+    for (const c of cands) {
+      const tail = text.slice(start, start + c.name.length + 12)
+      for (let j = 1; j <= tail.length; j++) {
+        const sq = squashName(tail.slice(0, j))
+        if (sq === c.sq) { if (!/[\p{L}\p{N}_]/u.test(tail.charAt(j))) hit = { c, end: start + j }; break }
+        if (!c.sq.startsWith(sq)) break
+      }
+      if (hit) break
+    }
+    if (!hit) continue
+    if (at > last) out.push({ text: text.slice(last, at) })
+    out.push({ text: text.slice(at, hit.end), name: hit.c.name, me: !!hit.c.me })
+    last = hit.end
+    re.lastIndex = hit.end
+  }
+  if (last < text.length || !out.length) out.push({ text: text.slice(last) })
+  return out
+}
+
+// The '@name' being typed just before the caret: { at, q }, or null when there isn't one.
+function mentionQuery(text, caret) {
+  const before = String(text || '').slice(0, caret)
+  const at = before.lastIndexOf('@')
+  if (at < 0 || (at > 0 && /[\p{L}\p{N}_@]/u.test(before.charAt(at - 1)))) return null
+  const q = before.slice(at + 1)
+  if (q.length > 32 || /\n|^\s|\s\s/.test(q)) return null
+  return { at, q }
+}
+
+// Who to offer for a query: the squashed name starts with it, or one of the name's words does.
+function mentionMatches(cands, q, limit) {
+  const sq = squashName(q)
+  const w = String(q || '').toLowerCase().trim()
+  if (/\s$/.test(q) && (cands || []).some(c => squashName(c.name) === sq)) return []  // a finished name and a space
+  return (cands || []).filter(c => squashName(c.name).startsWith(sq)
+    || (w && String(c.name).toLowerCase().split(/\s+/).some(x => x.startsWith(w)))).slice(0, limit || 6)
+}
+
 function whoLabel(book, pk) {
   const b = book[pk]
   if (!b) return 'someone'

@@ -84,6 +84,16 @@ const CSS = TOKENS + `
 .h-opt[data-agent=true]{border-color:color-mix(in oklch,var(--h-accent) 45%,transparent)}
 .h-person-row .h-impostor,.h-agentrow .h-impostor{margin-top:0;padding:0 7px 0 5px;gap:4px;font-size:10.5px;line-height:18px;flex-shrink:0}
 .h-msg[data-impostor=true] .h-text{color:var(--h-fg2)}
+.h-at{color:color-mix(in oklch,var(--h-accent) 75%,var(--h-fg));background:color-mix(in oklch,var(--h-accent) 14%,transparent);border-radius:4px;padding:0 2px;font-weight:500}
+.h-at[data-me=true]{color:var(--h-fg);background:color-mix(in oklch,var(--h-warn) 26%,transparent)}
+.h-msg[data-mentioned=true]{background:color-mix(in oklch,var(--h-warn) 7%,transparent);box-shadow:inset 2px 0 0 var(--h-warn);border-radius:0 6px 6px 0}
+.h-navrow .h-mentions{flex:none;min-width:18px;height:16px;padding:0 5px;border-radius:999px;display:grid;place-items:center;font-size:10.5px;font-weight:700;line-height:1;color:var(--h-bg);background:var(--h-warn)}
+.h-ac{position:absolute;left:0;right:0;bottom:calc(100% + 6px);z-index:30;max-height:240px;overflow:auto;padding:4px;border:1px solid var(--h-line2);border-radius:10px;background:var(--h-card);box-shadow:var(--h-shadow)}
+.h-ac-opt{display:flex;align-items:center;gap:8px;min-width:0;padding:5px 8px;border-radius:7px;cursor:pointer}
+.h-ac-opt[aria-selected=true]{background:color-mix(in oklch,var(--h-accent) 18%,transparent)}
+.h-ac-opt .h-initial{width:22px;height:22px;font-size:11px}
+.h-ac-opt b{font-weight:600}
+.h-ac-sub{color:var(--h-fg3);font-size:12px}
 
 .h-card{border:1px solid var(--h-line2);border-radius:12px;padding:12px 14px;background:var(--h-card);margin:6px 0 6px 42px;display:flex;flex-direction:column;gap:8px}
 .h-card.h-agent{border-color:color-mix(in oklch,var(--tint) 35%,var(--h-line2))}

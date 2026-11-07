@@ -414,6 +414,67 @@ function nameBook(room, me) {
   return book
 }
 
+// ---- mentions, Discord style: '@' then a name, compared without case, spaces or dots, so
+// '@mrs.blobby' names "Mrs. Blobby". The engine's at_mentions() applies the same rule.
+function squashName(s) { return String(s || '').normalize('NFKC').toLowerCase().replace(/[\s_.\-'’`"]/g, '') }
+
+// The names a message can mention: everyone in the book except lookalikes. `me` marks you and your agent.
+function mentionNames(book) {
+  return Object.keys(book || {}).filter(pk => !book[pk].impostor && book[pk].name)
+    .map(pk => ({ pk, name: book[pk].name, me: !!(book[pk].you || book[pk].yours) }))
+}
+
+// Splits text into plain runs and mention runs ({ text, name, me }), longest name first.
+function mentionParts(text, names) {
+  text = String(text || '')
+  const cands = (names || []).map(n => Object.assign({ sq: squashName(n.name) }, n)).filter(n => n.sq)
+    .sort((a, b) => b.sq.length - a.sq.length)
+  const out = []
+  if (!cands.length) return [{ text }]
+  const re = /(^|[^\p{L}\p{N}_@])@/gu
+  let last = 0, m, ats = 0
+  while ((m = re.exec(text)) && ats++ < 40) {
+    const at = m.index + m[1].length
+    const start = at + 1
+    let hit = null
+    for (const c of cands) {
+      const tail = text.slice(start, start + c.name.length + 12)
+      for (let j = 1; j <= tail.length; j++) {
+        const sq = squashName(tail.slice(0, j))
+        if (sq === c.sq) { if (!/[\p{L}\p{N}_]/u.test(tail.charAt(j))) hit = { c, end: start + j }; break }
+        if (!c.sq.startsWith(sq)) break
+      }
+      if (hit) break
+    }
+    if (!hit) continue
+    if (at > last) out.push({ text: text.slice(last, at) })
+    out.push({ text: text.slice(at, hit.end), name: hit.c.name, me: !!hit.c.me })
+    last = hit.end
+    re.lastIndex = hit.end
+  }
+  if (last < text.length || !out.length) out.push({ text: text.slice(last) })
+  return out
+}
+
+// The '@name' being typed just before the caret: { at, q }, or null when there isn't one.
+function mentionQuery(text, caret) {
+  const before = String(text || '').slice(0, caret)
+  const at = before.lastIndexOf('@')
+  if (at < 0 || (at > 0 && /[\p{L}\p{N}_@]/u.test(before.charAt(at - 1)))) return null
+  const q = before.slice(at + 1)
+  if (q.length > 32 || /\n|^\s|\s\s/.test(q)) return null
+  return { at, q }
+}
+
+// Who to offer for a query: the squashed name starts with it, or one of the name's words does.
+function mentionMatches(cands, q, limit) {
+  const sq = squashName(q)
+  const w = String(q || '').toLowerCase().trim()
+  if (/\s$/.test(q) && (cands || []).some(c => squashName(c.name) === sq)) return []  // a finished name and a space
+  return (cands || []).filter(c => squashName(c.name).startsWith(sq)
+    || (w && String(c.name).toLowerCase().split(/\s+/).some(x => x.startsWith(w)))).slice(0, limit || 6)
+}
+
 function whoLabel(book, pk) {
   const b = book[pk]
   if (!b) return 'someone'
@@ -722,6 +783,16 @@ const CSS = TOKENS + `
 .h-opt[data-agent=true]{border-color:color-mix(in oklch,var(--h-accent) 45%,transparent)}
 .h-person-row .h-impostor,.h-agentrow .h-impostor{margin-top:0;padding:0 7px 0 5px;gap:4px;font-size:10.5px;line-height:18px;flex-shrink:0}
 .h-msg[data-impostor=true] .h-text{color:var(--h-fg2)}
+.h-at{color:color-mix(in oklch,var(--h-accent) 75%,var(--h-fg));background:color-mix(in oklch,var(--h-accent) 14%,transparent);border-radius:4px;padding:0 2px;font-weight:500}
+.h-at[data-me=true]{color:var(--h-fg);background:color-mix(in oklch,var(--h-warn) 26%,transparent)}
+.h-msg[data-mentioned=true]{background:color-mix(in oklch,var(--h-warn) 7%,transparent);box-shadow:inset 2px 0 0 var(--h-warn);border-radius:0 6px 6px 0}
+.h-navrow .h-mentions{flex:none;min-width:18px;height:16px;padding:0 5px;border-radius:999px;display:grid;place-items:center;font-size:10.5px;font-weight:700;line-height:1;color:var(--h-bg);background:var(--h-warn)}
+.h-ac{position:absolute;left:0;right:0;bottom:calc(100% + 6px);z-index:30;max-height:240px;overflow:auto;padding:4px;border:1px solid var(--h-line2);border-radius:10px;background:var(--h-card);box-shadow:var(--h-shadow)}
+.h-ac-opt{display:flex;align-items:center;gap:8px;min-width:0;padding:5px 8px;border-radius:7px;cursor:pointer}
+.h-ac-opt[aria-selected=true]{background:color-mix(in oklch,var(--h-accent) 18%,transparent)}
+.h-ac-opt .h-initial{width:22px;height:22px;font-size:11px}
+.h-ac-opt b{font-weight:600}
+.h-ac-sub{color:var(--h-fg3);font-size:12px}
 
 .h-card{border:1px solid var(--h-line2);border-radius:12px;padding:12px 14px;background:var(--h-card);margin:6px 0 6px 42px;display:flex;flex-direction:column;gap:8px}
 .h-card.h-agent{border-color:color-mix(in oklch,var(--tint) 35%,var(--h-line2))}
@@ -3433,7 +3504,7 @@ function TimelineItem(props) {
     jsx(Face, { face: m.face, pk: m.pk, state: 'system: waiting', size: 20 }),
     jsx('span', { children: m.text || (m.name + ' is resting: out of budget for today') })
   ] })
-  else if (it.kind === 'msg') body = jsx(Message, { m, first: it.first })
+  else if (it.kind === 'msg') body = jsx(Message, { m, first: it.first, book })
   else if (it.kind === 'offer') body = jsx(OfferCard, { m, store, snap, room })
   else if (it.kind === 'offer_state') body = jsxs('div', { className: 'h-line', children: [offerStateLine(m, room), m.impostor && ' ', m.impostor && jsx(ImpostorChip, { imp: m.impostor })] })
   else if (it.kind === 'share') body = jsx(ShareCard, { m, store, room })
@@ -3461,8 +3532,9 @@ function Message(props) {
   const f = agent ? faceFor(m.face, m.pk) : null
   const imp = m.impostor
   const who = { kind: agent ? 'agent' : 'person', pk: m.pk, name: m.name, face: m.face, owner_name: m.owner_name }
+  const text = jsx(MentionText, { text: m.text, book: props.book })
   return jsxs('div', { className: cx('h-msg', agent && 'h-agent'), 'data-role': m.role, 'data-first': props.first,
-    'data-impostor': !!imp, style: agent ? { '--hue': f.hue } : undefined, children: [
+    'data-impostor': !!imp, 'data-mentioned': !!m.mentions_me, style: agent ? { '--hue': f.hue } : undefined, children: [
       jsx('div', { className: 'h-gutter', children: props.first ? jsx(ProfileButton, { who, label: 'Show ' + m.name + '’s card',
         children: agent ? jsx(Face, { face: m.face, pk: m.pk, state: 'activity: idle', size: 28, name: m.name }) : jsx(Initial, { name: m.name }) }) : null }),
       jsxs('div', { style: { minWidth: 0 }, children: [
@@ -3471,14 +3543,23 @@ function Message(props) {
           agent && jsx('span', { className: 'h-owner', children: m.mine ? 'your agent' : (m.owner_name ? m.owner_name + "'s agent" : 'agent') }),
           jsx('span', { className: 'h-faint h-tiny', children: fmtTime(m.ts) })
         ] }),
-        agent ? jsx('div', { className: 'h-bubble', children: jsx('div', { className: 'h-text', children: m.text }) })
-          : jsx('div', { className: 'h-text', children: m.text }),
+        agent ? jsx('div', { className: 'h-bubble', children: jsx('div', { className: 'h-text', children: text }) })
+          : jsx('div', { className: 'h-text', children: text }),
         imp && jsx(ImpostorChip, { imp }),
         m.delivery && jsx('div', { className: 'h-faint h-tiny', role: m.delivery === 'failed' ? 'alert' : undefined,
           children: m.delivery === 'pending' ? 'Not delivered yet. Ninsei will resend it when a relay is back.'
             : 'Not delivered. The relays turned it down or it waited too long.' })
       ] })
     ] })
+}
+
+// Message text with each '@name' of someone in the room drawn as a mention; yours stand out more.
+function MentionText(props) {
+  const parts = mentionParts(props.text, mentionNames(props.book))
+  if (parts.length === 1 && !parts[0].name) return props.text
+  return jsx(Fragment, { children: parts.map((p, i) => p.name
+    ? jsx('span', { className: 'h-at', 'data-me': p.me, children: p.text }, i)
+    : jsx(Fragment, { children: p.text }, i)) })
 }
 
 // The safety moment: a display name is not an identity. Owners are recognised by key only.
@@ -3719,12 +3800,41 @@ function Draft(props) {
 
 // ---- composer --------------------------------------------------------------------------------
 
+// Everyone you can @ in this room: your agent first, then who's here, then the rest. Never you, never a lookalike.
+function mentionCandidates(room) {
+  const out = []
+  for (const p of (room && room.members) || []) {
+    if (!p.you && !p.impostor) out.push({ pk: p.pk, name: p.name, kind: 'person', sub: p.online ? 'here now' : 'person', online: !!p.online })
+    for (const a of p.agents || []) if (!a.impostor) out.push({ pk: a.pk, name: a.name, kind: 'agent', face: a.face, yours: !!a.yours,
+      sub: a.yours ? 'your agent' : p.name + '’s agent', online: !!(a.yours || p.online) })
+  }
+  return out.sort((a, b) => (!!b.yours - !!a.yours) || (!!b.online - !!a.online) || a.name.localeCompare(b.name))
+}
+
 function Composer(props) {
   const { store, room, gameOn } = props
   const [text, setText] = useState('')
   const [menu, setMenu] = useState(false)
   const [busy, setBusy] = useState(false)
+  const [caret, setCaret] = useState(0)
+  const [pick, setPick] = useState(0)
+  const [shut, setShut] = useState(-1)  // the '@' position the menu was dismissed at, with Escape
   const ta = useRef(null)
+  const caretTo = useRef(null)
+  const cands = useMemo(() => mentionCandidates(room), [room.members])
+  const mq = mentionQuery(text, caret)
+  const opts = mq && mq.at !== shut ? mentionMatches(cands, mq.q) : []
+  const open = opts.length > 0
+  const sel = Math.min(pick, opts.length - 1)
+  const listId = 'h-at-' + room.id
+  const track = e => setCaret(e.target.selectionStart || 0)
+  const choose = c => {
+    const before = text.slice(0, mq.at) + '@' + c.name + ' '
+    setText(before + text.slice(caret).replace(/^\s+/, ''))
+    caretTo.current = before.length
+    setCaret(before.length)
+    setPick(0)
+  }
   const send = async () => {
     const t = text.trim()
     if (!t || busy) return
@@ -3739,15 +3849,37 @@ function Composer(props) {
     if (!el) return
     el.style.height = 'auto'
     el.style.height = Math.min(160, el.scrollHeight) + 'px'
+    if (caretTo.current != null) { el.focus(); el.setSelectionRange(caretTo.current, caretTo.current); caretTo.current = null }
   }, [text])
+  const onKey = e => {
+    if (open && !e.nativeEvent.isComposing) {
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        e.preventDefault()
+        setPick((sel + (e.key === 'ArrowDown' ? 1 : opts.length - 1)) % opts.length)
+        return
+      }
+      if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); choose(opts[sel]); return }
+      if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); setShut(mq.at); return }
+    }
+    if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); send() }
+  }
   const startGame = async mode => {
     setMenu(false)
     try { await store.post('/game/start', { room: room.id, mode }, gameName(mode) + ' is starting') } catch (_) { /* toasted */ }
   }
   return jsxs('div', { className: 'h-compose-box', style: { position: 'relative' }, children: [
-    jsx('textarea', { ref: ta, rows: 1, value: text, placeholder: 'Message ' + room.name, 'aria-label': 'Message',
-      onChange: e => setText(e.target.value),
-      onKeyDown: e => { if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); send() } } }),
+    open && jsx('div', { className: 'h-ac', id: listId, role: 'listbox', 'aria-label': 'Mention someone', children: opts.map((c, i) =>
+      jsxs('div', { id: listId + '-' + i, role: 'option', className: 'h-ac-opt', 'aria-selected': i === sel,
+        onMouseDown: e => { e.preventDefault(); choose(c) }, onMouseEnter: () => setPick(i), children: [
+          c.kind === 'agent' ? jsx(Face, { face: c.face, pk: c.pk, state: 'activity: idle', size: 22, name: c.name }) : jsx(Initial, { name: c.name }),
+          jsx('b', { className: 'h-trunc', children: c.name }),
+          jsx('span', { className: 'h-ac-sub h-trunc', children: c.sub })
+        ] }, c.pk)) }),
+    jsx('textarea', { ref: ta, rows: 1, value: text, placeholder: 'Message ' + room.name + ' (type @ to mention someone)', 'aria-label': 'Message',
+      role: 'combobox', 'aria-autocomplete': 'list', 'aria-expanded': open, 'aria-controls': open ? listId : undefined,
+      'aria-activedescendant': open ? listId + '-' + sel : undefined,
+      onChange: e => { setText(e.target.value); track(e); setPick(0); if (!mentionQuery(e.target.value, e.target.selectionStart)) setShut(-1) }, onSelect: track, onClick: track, onKeyUp: e => { if (!open || !/Arrow(Up|Down)/.test(e.key)) track(e) },
+      onKeyDown: onKey }),
     jsxs('div', { style: { position: 'relative' }, children: [
       jsx(K.Tip, { label: 'Games', children: jsx(K.Button, { variant: 'ghost', size: 'icon', 'aria-label': 'Games', 'aria-expanded': menu,
         onClick: () => setMenu(!menu), children: jsx(K.Icon, { name: 'game', size: 15 }) }) }),
@@ -4947,7 +5079,8 @@ function Rail(props) {
           jsx('span', { className: 'h-hash', children: '#' }),
           jsx('span', { className: 'h-grow h-trunc', style: { fontWeight: r.unread ? 600 : 400 }, children: r.name }),
           (drafts[r.id] || waiting[r.id]) && jsx(K.Tip, { label: waiting[r.id] ? 'Your agent is waiting on you' : 'Draft waiting to send', children: jsx(K.Icon, { name: waiting[r.id] ? 'clock' : 'edit', size: 12 }) }),
-          r.unread > 0 && jsx('span', { className: 'h-dot', 'aria-label': r.unread + ' unread' }),
+          r.mentions > 0 ? jsx('span', { className: 'h-mentions', 'aria-label': r.mentions + (r.mentions === 1 ? ' mention' : ' mentions') + ' of you', children: '@' + (r.mentions > 9 ? '9+' : r.mentions) })
+            : r.unread > 0 && jsx('span', { className: 'h-dot', 'aria-label': r.unread + ' unread' }),
           jsxs('span', { className: 'h-count', title: r.online + ' online', children: [r.online || '', r.online > 0 && jsx('span', { className: 'h-sr', children: ' online' }, 's')] })
         ] }, r.id))
     ] }),
