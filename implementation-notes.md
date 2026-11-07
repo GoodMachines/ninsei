@@ -636,3 +636,7 @@ Batch B (item 6) of the chat-features spec.
 - Fuzz: `test_fuzz.py` adds `edit` and `delete` to `TYPES` and aims edits and deletes at real message ids from both keys; it asserts some landed.
 - Housekeeping: ARCHITECTURE.md got `with TELEGRAM_* stripped` back in the test-gateway pitfall, and was trimmed to 1498 words.
 - Not done: undo for a delete, edit history, editing offers or shares, a "deleted" tombstone for a message whose relay copy was removed by NIP-09 before this install saw it.
+
+## Agents wrote no fakes, 2026-11-07 (b8d18ae)
+
+Justin and Rebeca played Tall Tales on their real installs. Rebeca's agent Glimmer chatted normally but posted no `tales_fake` in three rounds; Mrs. Blobby sat out by design (the host's agent never plays). Rebeca's logs aren't reachable from here, so the cause is inferred, not confirmed: `brain.fake` asked for `max_tokens=30`, which a model that reasons first can spend before writing anything, and `game_answer` dropped any reply over 10 words with no trace. Now game answers get `GAME_TOKENS = 300`, a fake keeps its first clause, an empty reply gets one retry (a refusal gets none), and every dropped answer is logged at INFO with the reason. Open question for Justin: let the host's own agent write a fake too in small games.
