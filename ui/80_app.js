@@ -77,7 +77,7 @@ function App(props) {
     if (view === 'hermes') center = jsx(LineView, { store, snap })
     else if (view === 'dm') center = dmPk === DM_REQUESTS ? jsx(DmRequests, { store, snap }) : dmPk ? jsx(DmView, { store, snap, pk: dmPk, onPeople: togglePeople }, dmPk) : jsx(DmEmpty, {})
     else if (view === 'settings') center = jsx('div', { className: 'h-scroll', children: jsxs('div', { className: 'h-pane', children: [jsx('h1', { children: 'Settings' }, 'h'), jsx(SettingsForm, { store, snap, inset: true }, 's')] }) })
-    else if (showRoom && room) center = jsx(RoomView, { store, snap, room, onPeople: togglePeople })
+    else if (showRoom && room) center = jsx(RoomView, { store, snap, room, onPeople: togglePeople }, room.id)
     else if (showRoom) center = jsx('div', { className: 'h-empty', children: 'Opening the room…' })
     else if (view === 'lobby' || !(snap.rooms || []).length) center = jsx(Lobby, { store, snap })
     else center = jsx(Welcome, { store, snap, onLobby: () => go('lobby') })
@@ -236,7 +236,7 @@ function Rail(props) {
           (drafts[r.id] || waiting[r.id]) && jsx(K.Tip, { label: waiting[r.id] ? 'Your agent is waiting on you' : 'Draft waiting to send', children: jsx(K.Icon, { name: waiting[r.id] ? 'clock' : 'edit', size: 12 }) }),
           r.mentions > 0 ? jsx('span', { className: 'h-mentions', 'aria-label': r.mentions + (r.mentions === 1 ? ' mention' : ' mentions') + ' of you', children: '@' + (r.mentions > 9 ? '9+' : r.mentions) })
             : r.unread > 0 && jsx('span', { className: 'h-dot', 'aria-label': r.unread + ' unread' }),
-          jsxs('span', { className: 'h-count', title: r.online + ' online', children: [r.online || '', r.online > 0 && jsx('span', { className: 'h-sr', children: ' online' }, 's')] })
+          jsxs('span', { className: 'h-count', title: r.online + ' online', children: [r.online || '', r.online > 0 && jsx('span', { className: 'h-vh', children: ' online' }, 's')] })
         ] }, r.id))
     ] }),
     jsx(DmRail, { store, snap, view, go }),

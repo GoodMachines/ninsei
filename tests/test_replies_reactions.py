@@ -8,7 +8,7 @@ import pytest
 
 from ninsei_engine import nostr
 from ninsei_engine.engine import CLICKS_PER_MIN, KIND_ROOM, MAX_REACT_NAMES, QUOTE_CHARS, REACTIONS, valid_reaction
-from test_audit_ui import APP, CORE, NODE, ROOM as ROOM_JS, STYLE, fn, needs_node, run as run_js
+from test_audit_ui import APP, CORE, NODE, ROOM as ROOM_JS, STYLE, composer_js, fn, needs_node, run as run_js
 from test_engine import quiet, read, run, setup_room, wait_for, world  # noqa: F401  (fixture)
 from test_hostile import Key, ROOM, bare, settle  # noqa: F401  (fixture)
 
@@ -399,7 +399,7 @@ def test_the_hover_bar_quote_and_chips_are_wired():
 @needs_node
 def test_the_composer_shows_who_you_reply_to_and_sends_the_reply_id():
     js = "".join(fn(CORE, n) for n in ("squashName", "mentionNames", "mentionParts", "mentionQuery", "mentionMatches")) \
-        + fn(ROOM_JS, "mentionCandidates") + fn(ROOM_JS, "Composer") + """
+        + composer_js() + fn(ROOM_JS, "mentionCandidates") + fn(ROOM_JS, "Composer") + """
 function useMemo(f) { return f() }
 const useLayoutEffect = useEffect
 function Face() {}; function Initial() {}; function PersonMark() {}; function typingPing() {}; function GamesMenu() {}; function gameName(m) { return m }
@@ -464,11 +464,11 @@ def test_the_ui_and_engine_agree_on_the_eight():
 def test_a_message_shows_its_quote_chips_and_bar_and_they_post_the_right_things():
     js = "".join(fn(ROOM_JS, n) for n in ("Message", "MessageBody", "MessageBar", "ReactionPicker", "ReactionChips", "ReactionChip", "QuoteLine")) + """
 const useEnter = () => ({ current: null })
-globalThis.P = { listen: () => () => {} }; globalThis.document = {}
-const SPRING = { pop: {} }; const motion = { reduced: () => true }
+globalThis.P = { listen: () => () => {}, setTimeout: () => () => {} }; globalThis.document = {}
+const SPRING = { pop: {}, calm: {} }; const motion = { reduced: () => true }
 const cx = (...a) => a.filter(Boolean).join(' ')
 function ProfileButton() {}; function Face() {}; function Initial() {}; function PersonMark() {}; function RichText() {}; function ImpostorChip() {}
-const faceFor = () => ({ hue: 1 }); const fmtTime = () => '10:00'
+const faceFor = () => ({ hue: 1 }); const fmtTime = () => '10:00'; const fmtFull = () => 'full'
 const REACTION_LIST = ['a', 'b']
 K.Tip = function Tip() {}
 const posts = [], replies = [], jumps = []

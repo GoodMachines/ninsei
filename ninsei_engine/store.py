@@ -351,6 +351,15 @@ class Store:
             row = self._db.execute("SELECT status FROM event_outbox WHERE id=?", (eid,)).fetchone()
         return row[0] if row else None
 
+    def event_outbox_event(self, eid: str) -> Optional[dict]:
+        """The signed event of an outbox row, pending or failed (for a resend)."""
+        with self._lock:
+            row = self._db.execute("SELECT json FROM event_outbox WHERE id=?", (eid,)).fetchone()
+        try:
+            return json.loads(row[0]) if row else None
+        except ValueError:
+            return None
+
     def event_outbox_pending(self) -> list[tuple[dict, float]]:
         with self._lock:
             rows = self._db.execute(
@@ -556,6 +565,16 @@ class Store:
                                  "ORDER BY created_at, arrived_at, id LIMIT ?)", (big[0], total - DM_TOTAL))
             self._db.commit()
             return "added"
+
+    def dm_message(self, mid: str) -> Optional[dict]:
+        with self._lock:
+            r = self._db.execute("SELECT id, peer, sender, text, created_at, wrap FROM dm_messages WHERE id=?", (mid,)).fetchone()
+        return dict(zip(("id", "peer", "sender", "text", "created_at", "wrap"), r)) if r else None
+
+    def dm_delete(self, mid: str) -> None:
+        with self._lock:
+            self._db.execute("DELETE FROM dm_messages WHERE id=?", (mid,))
+            self._db.commit()
 
     def dm_messages(self, peer: str, limit: int = 200) -> list[dict]:
         with self._lock:

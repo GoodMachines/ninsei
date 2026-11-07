@@ -94,6 +94,214 @@ function joinNames(names) {
   return names.slice(0, -1).join(', ') + ' and ' + names[names.length - 1]
 }
 
+// ---- reading a long conversation: days, older messages, drafts ----------------------------------------------
+
+// "Today", "Yesterday", else "Mon, Nov 3" (the year too once it isn't this one), in the viewer's own locale.
+function dayLabel(ts, now) {
+  const d = new Date(ts * 1000)
+  if (isNaN(d.getTime())) return ''
+  now = now || new Date()
+  const days = Math.round((new Date(now.getFullYear(), now.getMonth(), now.getDate()) - new Date(d.getFullYear(), d.getMonth(), d.getDate())) / 86400000)
+  if (days === 0) return 'Today'
+  if (days === 1) return 'Yesterday'
+  return d.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric', year: d.getFullYear() === now.getFullYear() ? undefined : 'numeric' })
+}
+
+function dayKey(ts) {
+  const d = new Date(ts * 1000)
+  return isNaN(d.getTime()) ? '' : d.getFullYear() + '-' + d.getMonth() + '-' + d.getDate()
+}
+
+// The whole date and time, for the hover text of every time label.
+function fmtFull(ts) {
+  const d = new Date(ts * 1000)
+  if (isNaN(d.getTime())) return ''
+  return d.toLocaleString([], { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', hour: 'numeric', minute: '2-digit' })
+}
+
+// Older messages loaded with "Load earlier messages" sit in front of the snapshot's newest window. The window
+// slides as messages arrive; the ones that slide out join the older run, so no gap opens, and nothing shows twice.
+function mergeOlder(older, prev, snap) {
+  if (!older.length) return older
+  const inSnap = new Set(snap.map(m => m.id))
+  let out = older
+  if (prev && snap.length) {
+    const k = prev.findIndex(m => m.id === snap[0].id)
+    if (k > 0) out = out.concat(prev.slice(0, k))
+  }
+  const have = new Set()
+  return out.filter(m => !inSnap.has(m.id) && !have.has(m.id) && (have.add(m.id), true))
+}
+
+// What each conversation (a room id, or "dm-<key>") has loaded beyond the snapshot, kept while you are elsewhere.
+const EARLIER = new Map()
+const EARLIER_CAP = 1500
+
+function earlierState(key) {
+  let st = EARLIER.get(key)
+  if (!st) { st = { older: [], more: null, prev: null }; EARLIER.set(key, st) }
+  return st
+}
+
+// Where each conversation was scrolled to when you left it ({ top, stick }), in memory.
+const SCROLLED = new Map()
+
+// Unsent text per room and per private conversation. Memory first; also kept in the page's storage (a
+// quota-safe `P.prefs`) so a restart finds it, capped at DRAFT_KEEP drafts of DRAFT_MAX characters.
+const DRAFTS = new Map()
+const DRAFT_MAX = 2000
+const DRAFT_KEEP = 40
+let draftStop = null
+const draftDirty = new Set()
+
+function draftGet(key) {
+  if (DRAFTS.has(key)) return DRAFTS.get(key)
+  let v = ''
+  try { const all = P.prefs.get('drafts', {}); v = all && typeof all[key] === 'string' ? all[key].slice(0, DRAFT_MAX) : '' } catch (_) { v = '' }
+  DRAFTS.set(key, v)
+  return v
+}
+
+function draftSet(key, text) {
+  text = String(text || '').slice(0, DRAFT_MAX)
+  DRAFTS.set(key, text)
+  draftDirty.add(key)
+  if (draftStop) draftStop()
+  draftStop = P.setTimeout(() => {
+    draftStop = null
+    try {
+      const all = Object.assign({}, P.prefs.get('drafts', {}))
+      for (const k of draftDirty) {
+        const t = DRAFTS.get(k) || ''
+        delete all[k]                       // re-added below, so the newest drafts sit last and the oldest are the ones dropped
+        if (t.trim()) all[k] = t
+      }
+      draftDirty.clear()
+      const ks = Object.keys(all)
+      for (const k of ks.slice(0, Math.max(0, ks.length - DRAFT_KEEP))) delete all[k]
+      P.prefs.set('drafts', all)
+    } catch (_) { /* storage unavailable: the draft lives in memory only */ }
+  }, 400)
+}
+
+// Messages you just sent, shown at once while the engine takes them: { tmp, text, quote, ts, state, id }.
+// `state` is "sending" until the engine answers, "posted" (waiting to show up in the room's own list) or
+// "failed" (the engine said no: Retry sends it again, Discard drops it). Kept outside the view, so a send in
+// flight survives switching rooms.
+const OUTBOX = new Map()
+const OUTBOX_FNS = new Set()
+let OUTBOX_N = 0
+
+function outboxSet(key, fn) {
+  const next = fn(OUTBOX.get(key) || [])
+  if (next.length) OUTBOX.set(key, next); else OUTBOX.delete(key)
+  OUTBOX_FNS.forEach(f => f())
+}
+
+function useOutbox(key) {
+  const [, bump] = useState(0)
+  useEffect(() => {
+    const f = () => bump(n => n + 1)
+    OUTBOX_FNS.add(f)
+    return () => { OUTBOX_FNS.delete(f) }
+  }, [])
+  return OUTBOX.get(key) || []
+}
+
+// Send `text`: it appears at once as a faint message of yours, and `post(text, reply)` (a promise) does the work.
+function outboxSend(key, text, reply, post) {
+  const tmp = 'tmp-' + (++OUTBOX_N)
+  const entry = { tmp, text, reply: reply || null, ts: Math.floor(Date.now() / 1000), state: 'sending', id: '' }
+  outboxSet(key, l => l.concat(entry))
+  const patch = ch => outboxSet(key, l => l.map(e => (e.tmp === tmp ? Object.assign({}, e, ch) : e)))
+  return Promise.resolve().then(() => post(text, reply)).then(
+    out => patch({ state: 'posted', id: (out && out.id) || '' }),
+    () => patch({ state: 'failed' }))
+}
+
+// The list's own message for each posted entry has arrived (or the entry failed and was dropped): forget those.
+function outboxSweep(key, ids) {
+  const l = OUTBOX.get(key) || []
+  if (l.some(e => e.state === 'posted' && e.id && ids.has(e.id))) outboxSet(key, list => list.filter(e => !(e.state === 'posted' && e.id && ids.has(e.id))))
+}
+
+// An item the timeline can draw for an entry of the outbox: a message of yours, faint while sending.
+function outboxItem(e, me) {
+  const it = { id: e.tmp, ts: e.ts, t: 'msg', pk: (me && me.pk) || '', role: 'person', mine: true, name: (me && me.name) || 'You',
+    text: e.text, reactions: [], optimistic: true, delivery: e.state === 'failed' ? 'failed' : 'sending' }
+  if (e.reply) { it.reply_to = e.reply.id; it.quote = { id: e.reply.id, name: e.reply.name, text: e.reply.text } }
+  if (e.state === 'failed') it.local = true
+  return it
+}
+
+// ---- :shortcode: emoji --------------------------------------------------------------------------------------
+// A small built-in table (no packages). The menu appears after ":" and two letters; the closing ":" of a full
+// code turns it into the character at once.
+const EMOJI_SHORTCODES = [
+  ['fire', '🔥'], ['smile', '😄'], ['grin', '😁'], ['joy', '😂'], ['rofl', '🤣'], ['smiley', '😃'], ['slight_smile', '🙂'], ['wink', '😉'],
+  ['blush', '😊'], ['heart_eyes', '😍'], ['kissing_heart', '😘'], ['yum', '😋'], ['stuck_out_tongue', '😛'], ['sunglasses', '😎'],
+  ['nerd', '🤓'], ['thinking', '🤔'], ['raised_eyebrow', '🤨'], ['neutral_face', '😐'], ['expressionless', '😑'], ['unamused', '😒'],
+  ['roll_eyes', '🙄'], ['grimace', '😬'], ['relieved', '😌'], ['pensive', '😔'], ['sleepy', '😪'], ['sleeping', '😴'], ['mask', '😷'],
+  ['sweat_smile', '😅'], ['sweat', '😓'], ['disappointed', '😞'], ['worried', '😟'], ['angry', '😠'], ['rage', '😡'], ['cry', '😢'],
+  ['sob', '😭'], ['scream', '😱'], ['fearful', '😨'], ['flushed', '😳'], ['dizzy_face', '😵'], ['exploding_head', '🤯'],
+  ['hushed', '😯'], ['open_mouth', '😮'], ['astonished', '😲'], ['partying_face', '🥳'], ['pleading', '🥺'], ['hugs', '🤗'],
+  ['upside_down', '🙃'], ['zany', '🤪'], ['shushing', '🤫'], ['face_palm', '🤦'], ['shrug', '🤷'], ['skull', '💀'], ['ghost', '👻'],
+  ['alien', '👽'], ['robot', '🤖'], ['poop', '💩'], ['clown', '🤡'], ['see_no_evil', '🙈'], ['hear_no_evil', '🙉'], ['speak_no_evil', '🙊'],
+  ['thumbsup', '👍'], ['+1', '👍'], ['thumbsdown', '👎'], ['-1', '👎'], ['ok_hand', '👌'], ['v', '✌️'], ['crossed_fingers', '🤞'],
+  ['metal', '🤘'], ['wave', '👋'], ['clap', '👏'], ['raised_hands', '🙌'], ['pray', '🙏'], ['handshake', '🤝'], ['muscle', '💪'],
+  ['point_up', '☝️'], ['point_down', '👇'], ['point_left', '👈'], ['point_right', '👉'], ['fist', '✊'], ['punch', '👊'],
+  ['eyes', '👀'], ['brain', '🧠'], ['heart', '❤️'], ['orange_heart', '🧡'], ['yellow_heart', '💛'], ['green_heart', '💚'],
+  ['blue_heart', '💙'], ['purple_heart', '💜'], ['black_heart', '🖤'], ['broken_heart', '💔'], ['sparkling_heart', '💖'],
+  ['sparkles', '✨'], ['star', '⭐'], ['boom', '💥'], ['zap', '⚡'], ['100', '💯'], ['tada', '🎉'], ['confetti', '🎊'],
+  ['balloon', '🎈'], ['gift', '🎁'], ['trophy', '🏆'], ['medal', '🏅'], ['crown', '👑'], ['gem', '💎'], ['rocket', '🚀'],
+  ['check', '✅'], ['white_check_mark', '✅'], ['heavy_check_mark', '✔️'], ['x', '❌'], ['warning', '⚠️'], ['no_entry', '⛔'],
+  ['question', '❓'], ['exclamation', '❗'], ['bulb', '💡'], ['bell', '🔔'], ['mute', '🔇'], ['lock', '🔒'], ['key', '🔑'],
+  ['mag', '🔍'], ['memo', '📝'], ['book', '📖'], ['books', '📚'], ['pushpin', '📌'], ['paperclip', '📎'], ['link', '🔗'],
+  ['calendar', '📅'], ['hourglass', '⏳'], ['alarm_clock', '⏰'], ['computer', '💻'], ['keyboard', '⌨️'], ['phone', '📱'],
+  ['camera', '📷'], ['movie_camera', '🎥'], ['bug', '🐛'], ['gear', '⚙️'], ['wrench', '🔧'], ['hammer', '🔨'], ['package', '📦'],
+  ['chart', '📈'], ['money', '💰'], ['sunny', '☀️'], ['cloud', '☁️'], ['rain', '🌧️'], ['snowflake', '❄️'], ['rainbow', '🌈'],
+  ['moon', '🌙'], ['earth', '🌍'], ['ocean', '🌊'], ['tree', '🌳'], ['seedling', '🌱'], ['flower', '🌸'], ['sunflower', '🌻'],
+  ['dog', '🐶'], ['cat', '🐱'], ['fox', '🦊'], ['panda', '🐼'], ['frog', '🐸'], ['unicorn', '🦄'], ['bee', '🐝'], ['turtle', '🐢'],
+  ['octopus', '🐙'], ['whale', '🐳'], ['owl', '🦉'], ['butterfly', '🦋'], ['coffee', '☕'], ['tea', '🍵'], ['beer', '🍺'],
+  ['wine', '🍷'], ['pizza', '🍕'], ['burger', '🍔'], ['fries', '🍟'], ['taco', '🌮'], ['sushi', '🍣'], ['cake', '🎂'],
+  ['cookie', '🍪'], ['ice_cream', '🍦'], ['apple', '🍎'], ['banana', '🍌'], ['avocado', '🥑'], ['popcorn', '🍿'],
+  ['music', '🎵'], ['guitar', '🎸'], ['headphones', '🎧'], ['art', '🎨'], ['video_game', '🎮'], ['game_die', '🎲'],
+  ['soccer', '⚽'], ['basketball', '🏀'], ['run', '🏃'], ['bike', '🚲'], ['car', '🚗'], ['airplane', '✈️'], ['house', '🏠']
+]
+
+// ":" then 2 to 32 letters, digits, "_", "+" or "-", right before the caret and after nothing or a space or "(".
+// Digits alone (a time, "10:30") never count.
+function shortcodeQuery(text, caret) {
+  const before = String(text || '').slice(0, caret)
+  const m = /(^|[\s(]):([a-z0-9_+\-]{2,32})$/i.exec(before)
+  if (!m || /^\d+$/.test(m[2])) return null
+  return { at: m.index + m[1].length, q: m[2].toLowerCase() }
+}
+
+// Up to `limit` codes: those starting with the query first, then those containing it.
+function shortcodeMatches(q, limit) {
+  q = String(q || '').toLowerCase()
+  if (!q) return []
+  const seen = new Set()
+  const starts = [], within = []
+  for (const [code, ch] of EMOJI_SHORTCODES) {
+    const i = code.indexOf(q)
+    if (i < 0 || seen.has(ch + code)) continue
+    seen.add(ch + code)
+    ;(i === 0 ? starts : within).push({ key: code, code, emoji: ch })
+  }
+  return starts.concat(within).slice(0, limit || 8)
+}
+
+// A just-typed ":code:" ending at the caret that names a code in the table: where it starts and what it becomes.
+function shortcodeClosed(text, caret) {
+  const before = String(text || '').slice(0, caret)
+  const m = /(^|[\s(]):([a-z0-9_+\-]{2,32}):$/i.exec(before)
+  if (!m) return null
+  const hit = EMOJI_SHORTCODES.find(x => x[0] === m[2].toLowerCase())
+  return hit ? { at: m.index + m[1].length, emoji: hit[1] } : null
+}
+
 // ---- profile pictures ---------------------------------------------------------------------------------------
 // The picker draws the chosen photo onto a 256 pixel canvas and re-encodes it (WebP, else JPEG) under 48 KB. A canvas
 // keeps pixels only, so EXIF (GPS position, camera) is gone; the original file is never uploaded. The engine checks

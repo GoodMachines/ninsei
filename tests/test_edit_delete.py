@@ -7,7 +7,7 @@ import pytest
 
 from ninsei_engine import nostr
 from ninsei_engine.engine import CLICKS_PER_MIN, KIND_ROOM, REACTIONS, valid_edit
-from test_audit_ui import ROOM as ROOM_JS, STYLE, fn, needs_node, run as run_js
+from test_audit_ui import CORE, ROOM as ROOM_JS, STYLE, fn, needs_node, run as run_js
 from test_engine import quiet, read, run, setup_room, wait_for, world  # noqa: F401  (fixture)
 from test_hostile import Key, ROOM, bare, settle  # noqa: F401  (fixture)
 
@@ -395,7 +395,7 @@ def test_edit_and_delete_are_wired_into_the_bar_and_the_message():
 @needs_node
 def test_a_deleted_message_reads_message_deleted_and_an_edited_one_is_marked():
     js = fn(ROOM_JS, "MessageBody") + """
-const fmtTime = ts => 'T' + ts
+const fmtFull = ts => 'F' + ts
 const gone = mount(MessageBody, { m: { id: 'a', text: '', deleted: true }, book: {} })
 const edited = mount(MessageBody, { m: { id: 'b', text: 'new words', edited: true, edited_at: 7 }, book: {} })
 const plain = mount(MessageBody, { m: { id: 'c', text: 'as sent' }, book: {} })
@@ -407,7 +407,7 @@ out({ gone: text(gone.tree), hasEditedBody: !!body(edited, 'new words'), mark: m
 """
     r = run_js(js)
     assert r["gone"] == "Message deleted"
-    assert r["hasEditedBody"] and "(edited)" in r["mark"] and "T7" in r["title"]
+    assert r["hasEditedBody"] and "(edited)" in r["mark"] and "F7" in r["title"]
     assert r["plainMark"] is False and r["hasPlainBody"]
 
 

@@ -110,6 +110,16 @@ class DeleteIn(BaseModel):
     target: str
 
 
+class MsgRef(BaseModel):
+    room: str
+    id: str
+
+
+class DmMsgRef(BaseModel):
+    pk: str
+    id: str
+
+
 class ReactIn(BaseModel):
     room: str
     target: str
@@ -263,6 +273,25 @@ async def react(body: ReactIn):
     return await _run(eng.react, body.room, body.target, body.emoji, body.on)
 
 
+@router.post("/post/retry")
+async def post_retry(body: MsgRef):
+    eng = await _engine()
+    return await _run(eng.retry_post, body.room, body.id)
+
+
+@router.post("/post/discard")
+async def post_discard(body: MsgRef):
+    eng = await _engine()
+    return await _run(eng.discard_post, body.room, body.id)
+
+
+@router.get("/messages/earlier")
+async def messages_earlier(room: str = Query(..., max_length=64), before: str = Query(..., max_length=64),
+                           limit: int = Query(100, ge=1, le=100)):
+    eng = await _engine()
+    return await _sync(eng.messages_before, room, before, limit)
+
+
 @router.post("/edit")
 async def edit(body: EditIn):
     eng = await _engine()
@@ -278,10 +307,23 @@ async def delete(body: DeleteIn):
 # ---- private messages between two people (NIP-17): never agents, never a model -------------------------
 
 @router.get("/dm")
-async def dm_thread(pk: str = Query(..., max_length=64), read: bool = True):
-    """One conversation. `read=0` loads it without marking it read (the window is in the background)."""
+async def dm_thread(pk: str = Query(..., max_length=64), read: bool = True, before: str = Query("", max_length=64)):
+    """One conversation. `read=0` loads it without marking it read (the window is in the background).
+    `before=<message id>` returns the page just older than that message instead."""
     eng = await _engine()
-    return await _sync(eng.dm_thread, pk, read)
+    return await _sync(eng.dm_thread, pk, read, before)
+
+
+@router.post("/dm/retry")
+async def dm_retry(body: DmMsgRef):
+    eng = await _engine()
+    return await _run(eng.dm_retry, body.pk, body.id)
+
+
+@router.post("/dm/discard")
+async def dm_discard(body: DmMsgRef):
+    eng = await _engine()
+    return await _run(eng.dm_discard, body.pk, body.id)
 
 
 @router.post("/dm/send")

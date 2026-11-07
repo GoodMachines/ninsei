@@ -5,7 +5,7 @@ import re
 
 import pytest
 
-from test_audit_ui import CORE, ROOM, SETUP, STYLE, fn, const, needs_node, run, src
+from test_audit_ui import CORE, ROOM, SETUP, STYLE, composer_js, fn, const, needs_node, run, src
 
 PARTS = src("30_parts.js")
 FACE = src("10_face.js")
@@ -202,7 +202,7 @@ def test_the_composer_signals_typing_only_for_room_text_and_never_in_a_private_c
     js = fn(CORE, "clamp") + """
 const calls = []
 function typingPing(id) { calls.push(id) }
-""" + fn(ROOM, "mentionCandidates") + fn(ROOM, "Composer") + """
+""" + composer_js() + fn(ROOM, "mentionCandidates") + fn(ROOM, "Composer") + """
 function mentionQuery() { return null }; function mentionMatches() { return [] }
 function useMemo(f) { return f() }
 const useLayoutEffect = useEffect

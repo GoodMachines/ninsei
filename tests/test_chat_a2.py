@@ -312,9 +312,9 @@ def test_messages_use_the_one_renderer_and_offer_pitches_stay_plain():
 
 @needs_node
 def test_the_new_line_goes_before_the_first_message_from_someone_else_after_last_read():
-    js = fn(ROOM_JS, "groupItems") + """
+    js = fn(ROOM_JS, "groupItems") + fn(CORE, "dayKey") + """
 const m = (id, ts, extra) => Object.assign({ id, ts, t: 'msg', pk: 'p' + id, text: id }, extra)
-const line = (msgs, after) => groupItems(msgs, after).map(i => i.kind === 'new' ? '--NEW--' : i.m ? i.m.id : i.kind)
+const line = (msgs, after) => groupItems(msgs, after).filter(i => i.kind !== 'day').map(i => i.kind === 'new' ? '--NEW--' : i.m ? i.m.id : i.kind)
 const msgs = [m('a', 10), m('b', 20, { mine: true }), m('c', 30), m('d', 40)]
 const first = groupItems(msgs, 15).find(i => i.m && i.m.id === 'c')
 out({
@@ -332,6 +332,11 @@ out({
     assert r["firstHasHeader"] is True
 
 
+TIMELINE_HOOKS = "".join(fn(ROOM_JS, n) for n in ("useEarlier", "useScrollKeeper", "EarlierButton")) + "".join(
+    fn(CORE, n) for n in ("dayKey", "dayLabel", "fmtFull", "mergeOlder", "earlierState", "outboxSet", "useOutbox", "outboxSweep", "outboxItem", "errText", "errStatus")) + """
+const EARLIER = new Map(), SCROLLED = new Map(), OUTBOX = new Map(), OUTBOX_FNS = new Set(), EARLIER_CAP = 1500
+"""
+
 TIMELINE_PRELUDE = """
 function useMemo(f) { return f() }
 const useLayoutEffect = useEffect
@@ -347,7 +352,7 @@ K.Icon = function Icon() {}
 
 @needs_node
 def test_jump_to_latest_appears_after_a_screen_of_scroll_counts_new_messages_and_springs_down():
-    js = fn(ROOM_JS, "groupItems") + fn(ROOM_JS, "Timeline") + fn(ROOM_JS, "JumpPill") + TIMELINE_PRELUDE + """
+    js = fn(ROOM_JS, "groupItems") + fn(ROOM_JS, "Timeline") + fn(ROOM_JS, "JumpPill") + TIMELINE_PRELUDE + TIMELINE_HOOKS + """
 const m = (id, ts, extra) => Object.assign({ id, ts, t: 'msg', pk: 'p', name: 'Zed', text: id }, extra)
 const room = { id: 'r', messages: [m('a', 1), m('b', 2), m('c', 3)], members: [] }
 const props = (r, after) => ({ store: {}, snap: {}, room: r, book: {}, newAfter: after })
@@ -473,7 +478,7 @@ out({ a: matchRanges('Café au lait CAFE', 'cafe'), b: matchRanges('naïve Naive
 
 @needs_node
 def test_the_search_panel_queries_moves_with_arrows_opens_loaded_results_and_shows_others_in_context():
-    js = fn(CORE, "foldText") + fn(CORE, "matchRanges") + fn(CORE, "errText") + fn(CORE, "errStatus") + fn(ROOM_JS, "SearchPanel") + fn(ROOM_JS, "SearchRow") + """
+    js = fn(CORE, "foldText") + fn(CORE, "matchRanges") + fn(CORE, "errText") + fn(CORE, "errStatus") + fn(CORE, "dayKey") + fn(CORE, "dayLabel") + fn(CORE, "fmtFull") + fn(ROOM_JS, "SearchPanel") + fn(ROOM_JS, "SearchRow") + """
 function useMemo(f) { return f() }
 const useEnter = () => ({ current: null })
 function ImpostorChip() {}; const fmtWhen = () => 'now'
@@ -490,7 +495,7 @@ const root = mount(SearchPanel, { room: { id: 'r1' }, onClose: () => { closed++ 
 const input = () => find(root.tree, n => n.type === 'input')
 const key = k => ({ key: k, nativeEvent: { isComposing: false }, preventDefault() {}, stopPropagation() {} })
 input().props.onChange({ target: { value: 'needle' } }); await settle()
-const rows = () => (find(root.tree, n => n.props && n.props.role === 'listbox') || { props: { children: [] } }).props.children
+const rows = () => [].concat((find(root.tree, n => n.props && n.props.role === 'listbox') || { props: { children: [] } }).props.children).filter(r => r && r.type === SearchRow)
 const marks = find(mount(SearchRow, rows()[0].props).tree, n => n.type === 'mark')
 root.update(root.props)          // mount() points the harness's setters at the newest root: point them back
 const nResults = rows().length
@@ -498,7 +503,7 @@ const active0 = input().props['aria-activedescendant']
 input().props.onKeyDown(key('ArrowDown')); await settle()
 const active1 = input().props['aria-activedescendant']
 input().props.onKeyDown(key('Enter')); await settle()                 // y1 is not loaded: shown in context
-const ctxRows = () => (find(root.tree, n => n.props && n.props.className === 'h-search-ctx') || { props: { children: [] } }).props.children
+const ctxRows = () => [].concat((find(root.tree, n => n.props && n.props.className === 'h-search-ctx') || { props: { children: [] } }).props.children).flat().filter(r => r && r.type === SearchRow)
 const inContext = ctxRows().length
 input().props.onKeyDown(key('Escape')); await settle()                // back to the results
 const afterEsc = [closed, !!find(root.tree, n => n.props && n.props.role === 'listbox')]
@@ -511,7 +516,7 @@ out({ asked, picked, nResults, active0, active1, marked: marks && marks.props.ch
     assert r["asked"][1].startswith("/search/context?room=r1&id=y1")
     assert r["nResults"] == 2 and r["active0"] == "h-sr-0" and r["active1"] == "h-sr-1"
     assert r["marked"] == "needle"
-    assert r["picked"] == ["y1", "x1"] and r["inContext"] == 2          # a back button and the 3 messages
+    assert r["picked"] == ["y1", "x1"] and r["inContext"] == 3          # the 3 messages around it
     assert r["afterEsc"] == [0, True]                                    # Escape left the context view, not the panel
     assert r["closed"] == 2                                              # the loaded pick, then Escape
 

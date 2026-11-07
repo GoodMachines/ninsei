@@ -4,7 +4,7 @@ import pytest
 
 from ninsei_engine import engine as eng
 from ninsei_engine.engine import at_mentions
-from test_audit_ui import APP, CORE, ROOM, STYLE, fn, needs_node, run as run_js
+from test_audit_ui import APP, CORE, ROOM, STYLE, composer_js, fn, needs_node, run as run_js
 from test_engine import read, run, quiet, setup_room, wait_for, world  # noqa: F401  (fixture)
 
 
@@ -116,7 +116,7 @@ out([
 
 @needs_node
 def test_composer_offers_room_members_and_enter_inserts_the_full_name():
-    js = MENTION_JS() + fn(ROOM, "mentionCandidates") + fn(ROOM, "Composer") + """
+    js = MENTION_JS() + composer_js() + fn(ROOM, "mentionCandidates") + fn(ROOM, "Composer") + """
 function useMemo(f) { return f() }
 const useLayoutEffect = useEffect
 function Face() {}; function Initial() {}; function PersonMark() {}; function typingPing() {}; function GamesMenu() {}; function gameName(m) { return m }
@@ -132,8 +132,8 @@ const area = () => find(root.tree, n => n.type === 'textarea')
 const ev = (value, caret) => ({ target: { value, selectionStart: caret } })
 const key = k => ({ key: k, shiftKey: false, nativeEvent: { isComposing: false }, preventDefault() {}, stopPropagation() {} })
 area().props.onChange(ev('hey @', 5)); await settle()
-const all = find(root.tree, n => n.props && n.props.role === 'listbox')
-const listed = all ? kids(all).map(o => text(o)) : null
+const all = find(root.tree, n => n.type === SuggestMenu)
+const listed = all ? all.props.options.map(o => o.name + o.sub) : null
 area().props.onChange(ev('hey @mrs', 8)); await settle()
 area().props.onKeyDown(key('Enter')); await settle()
 const after = area().props.value

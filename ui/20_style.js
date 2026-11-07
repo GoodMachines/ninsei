@@ -123,6 +123,15 @@ const CSS = TOKENS + `
 .h-tlwrap>.h-scroll{flex:1;min-height:0}
 .h-newline{display:flex;align-items:center;gap:10px;margin:12px 0 4px;color:var(--h-bad);font-size:11px;font-weight:700;letter-spacing:.04em;text-transform:uppercase}
 .h-newline::before,.h-newline::after{content:"";flex:1;height:1px;background:color-mix(in oklch,var(--h-bad) 55%,transparent)}
+.h-day{display:flex;align-items:center;gap:10px;margin:14px 0 4px;color:var(--h-fg3);font-size:11px;font-weight:600;letter-spacing:.03em}
+.h-day::before,.h-day::after{content:"";flex:1;height:1px;background:var(--h-line)}
+.h-earlier{display:flex;justify-content:center;padding:4px 0 8px}
+.h-gtime{align-self:start;padding-top:3px;font-size:10px;line-height:1.45;color:var(--h-fg3);opacity:0;white-space:nowrap;font-variant-numeric:tabular-nums}
+.h-msg:hover .h-gtime,.h-msg:focus-within .h-gtime{opacity:1}
+.h-msg[data-faint=true]{opacity:.5}
+.h-failrow{display:flex;flex-wrap:wrap;align-items:center;gap:4px 8px;margin-top:2px;color:var(--h-bad)}
+.h-ac-emoji{width:22px;text-align:center;font-size:17px;line-height:1;flex:none}
+.h-sr-day{padding:8px 10px 2px;font-size:10.5px;font-weight:600;letter-spacing:.03em;color:var(--h-fg3)}
 .h-jump{position:absolute;left:0;right:0;bottom:10px;display:flex;justify-content:center;pointer-events:none;z-index:6}
 .h-jump-btn{pointer-events:auto;display:inline-flex;align-items:center;gap:6px;height:30px;padding:0 13px 0 10px;border:1px solid var(--h-line2);border-radius:999px;background:var(--h-card);color:var(--h-fg);font:inherit;font-size:12.5px;font-weight:600;cursor:pointer;box-shadow:0 8px 22px -10px var(--h-shadow)}
 .h-jump-btn:hover{background:var(--h-hover)}
@@ -267,7 +276,7 @@ const CSS = TOKENS + `
 .h-field label,.h-field .h-label{font-size:12px;font-weight:600;color:var(--h-fg2)}
 .h-field .h-hint{font-size:11.5px;color:var(--h-fg3)}
 .h-field .h-err{color:var(--h-bad)}
-.h-sr{position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}
+.h-vh{position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}
 .h-two{display:grid;grid-template-columns:1fr 1fr;gap:14px}
 @container (max-width: 560px){.h-two{grid-template-columns:1fr}}
 .h-shapes{display:flex;flex-wrap:wrap;gap:6px}

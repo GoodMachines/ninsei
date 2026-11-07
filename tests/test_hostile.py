@@ -34,6 +34,9 @@ class FakePool:
     def delivery(self, event_id):
         return "sent"
 
+    def sending(self, event_id):
+        return False
+
 
 class Key:
     """A stranger: a person key and a bound agent key."""

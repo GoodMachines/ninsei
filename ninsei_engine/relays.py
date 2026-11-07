@@ -520,6 +520,34 @@ class RelayPool:
             st = self._store.event_outbox_status(event_id)
         return st or "sent"
 
+    def sending(self, event_id: str) -> bool:
+        """True while the event is inside its first wait for relay answers."""
+        return event_id in self._inflight
+
+    async def retry(self, event_id: str) -> str:
+        """Send an undelivered event again, the very same signed event (same id, so a relay that already has it
+        keeps one copy). Works for a pending or a failed one; anything else (sent, unknown) is left alone.
+        Returns the delivery state afterwards."""
+        if self.delivery(event_id) == "sent":
+            return "sent"
+        row = self._outbox.get(event_id)
+        ev = row[0] if row else (self._store.event_outbox_event(event_id) if self._store is not None else None)
+        if ev is None:
+            return "sent"
+        self._outbox.pop(event_id, None)     # a fresh clock, and the full-outbox rule can't have just failed it
+        self._delivery.pop(event_id, None)
+        await self.publish(ev)
+        return self.delivery(event_id)
+
+    def discard(self, event_id: str) -> bool:
+        """Forget an undelivered event: it is never sent again. False when it was delivered (or is unknown)."""
+        if self.delivery(event_id) == "sent" or event_id in self._inflight:
+            return False
+        self._outbox.pop(event_id, None)
+        self._delivery.pop(event_id, None)
+        self._store_call("event_outbox_drop", [event_id])
+        return True
+
     def _set_delivery(self, eid: str, status: str) -> None:
         self._delivery[eid] = status
         if len(self._delivery) > 2000:

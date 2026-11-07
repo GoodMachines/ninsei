@@ -26,8 +26,18 @@ const fmtAgo = () = > 'now'
 EXTRA = EXTRA.replace("() = >", "() =>")
 
 
+# what DmView takes from core and the room file: older messages, scroll memory and the faint just-sent messages
+DM_HOOKS = "".join(fn(ROOM, n) for n in ("useEarlier", "useScrollKeeper", "EarlierButton")) + "".join(
+    fn(CORE, n) for n in ("mergeOlder", "earlierState", "outboxSet", "useOutbox", "outboxSend", "outboxSweep", "outboxItem")) + """
+const EARLIER = new Map(), SCROLLED = new Map(), OUTBOX = new Map(), OUTBOX_FNS = new Set(), EARLIER_CAP = 1500
+let OUTBOX_N = 0
+const NO_MSGS = []
+function DayLine() {}
+"""
+
+
 def dm_js(body: str) -> str:
-    return EXTRA + fn(CORE, "cleanSnippet") + fn(CORE, "mentionAlerts") + fn(DM, "DmRail") + fn(DM, "useDmThread") + fn(DM, "DmView") \
+    return EXTRA + DM_HOOKS + fn(CORE, "cleanSnippet") + fn(CORE, "mentionAlerts") + fn(DM, "DmRail") + fn(DM, "useDmThread") + fn(DM, "DmView") \
         + fn(DM, "DmItem") + fn(DM, "DmRequests") + fn(CARD, "FriendAction") + "const DM_REQUESTS = 'requests'\n" + body
 
 
@@ -259,11 +269,11 @@ def test_the_friend_button_is_on_other_peoples_cards_and_a_friend_goes_to_their_
     assert "openDm" in APP and "store.setDm(pk); go('dm')" in APP
     assert "DmRail" in APP and "DmView" in APP and "DmAbout" in APP
     # nothing of the room's message actions leaks into a conversation: Message is drawn without a store
-    assert "jsx(Message, { m: props.it.m, first: props.it.first, book: {} })" in DM
+    assert "jsx(Message, { m: props.it.m, first: props.it.first, book: {}, onRetry: props.onRetry, onDiscard: props.onDiscard })" in DM
 
 
 def test_the_composer_in_dm_mode_has_no_games_no_mentions_and_the_room_composer_is_unchanged():
     comp = fn(ROOM, "Composer")
     assert "const dm = props.dm" in comp and "!dm && jsxs('div', { style: { position: 'relative' }, children: [" in comp
-    assert "cands = useMemo(() => dm ? [] : mentionCandidates(room)" in comp and "if (dm) await dm.onSend(t)" in comp
-    assert "store.post('/post', body)" in comp
+    assert "cands = useMemo(() => dm ? [] : mentionCandidates(room)" in comp and "if (dm) dm.onSend(t)" in comp
+    assert "props.onSubmit(t, reply)" in comp and "store.post('/post', reply ? { room: room.id, text: t, reply: reply.id } : { room: room.id, text: t })" in comp

@@ -4,6 +4,7 @@
 // A friend request has no words at all: only who is asking. It waits under Requests until you accept or ignore it.
 // ---------------------------------------------------------------------------------------------
 
+const NO_MSGS = []  // a stable empty list, so a conversation that hasn't loaded doesn't look like a new snapshot each render
 const DM_REQUESTS = 'requests'  // store.dm() value that opens the Requests list instead of one conversation
 
 // The sidebar's "Direct messages": your friends (and any old conversation), then Requests (if any) as one row.
@@ -51,32 +52,47 @@ function useDmThread(store, pk, rev) {
 function DmView(props) {
   const { store, snap, pk } = props
   const { data, err, load } = useDmThread(store, pk, snap.dms ? snap.dms.rev : 0)
-  const scroller = useRef(null)
-  const stick = useRef(true)
   const seen = useRef(null)
   const [asking, setAsking] = useState(false)
   const [removing, setRemoving] = useState(false)
-  const msgs = (data && data.messages) || []
+  const [loadingMore, setLoadingMore] = useState(false)
+  const key = 'dm-' + pk
+  const fetchPage = useCallback(id => P.rest('/dm?pk=' + encodeURIComponent(pk) + '&read=0&before=' + encodeURIComponent(id)).then(d => ({ messages: d.messages, more: d.earlier })), [pk])
+  const er = useEarlier(key, (data && data.messages) || NO_MSGS, data && data.earlier, fetchPage)
+  // what you just sent shows at once, faint, until the conversation has it
+  const sent = useOutbox(key)
+  const have = useMemo(() => new Set(er.msgs.map(m => m.id)), [er.msgs])
+  useEffect(() => { outboxSweep(key, have) }, [have, sent])
+  const mine = sent.filter(e => !(e.state === 'posted' && e.id && have.has(e.id)))
+  const msgs = mine.length ? er.msgs.concat(mine.map(e => outboxItem(e, snap.me))) : er.msgs
+  const loadEarlier = useCallback(async () => { setLoadingMore(true); try { return await er.load() } finally { setLoadingMore(false) } }, [er.load])
+  const keeper = useScrollKeeper(key, !!data, msgs, er.more, loadEarlier)
+  const { scroller, stick } = keeper
   if (data && seen.current === null) seen.current = new Set(msgs.map(m => m.id))
   const fresh = id => {
-    if (!seen.current || seen.current.has(id)) return false
+    if (!seen.current) return false
+    if (seen.current.has(id)) return false
     seen.current.add(id)
-    return true
+    return !er.olderIds.has(id)
   }
-  const onScroll = () => {
-    const el = scroller.current
-    if (el) stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80
-  }
-  const lastId = msgs.length ? msgs[msgs.length - 1].id : ''
-  useLayoutEffect(() => {
-    const el = scroller.current
-    if (el && stick.current) el.scrollTop = el.scrollHeight
-  }, [msgs.length, lastId])
+  if (seen.current) for (const e of sent) if (e.id) seen.current.add(e.id)
   const name = (data && data.name) || 'Someone'
-  const send = async text => {
-    await store.post('/dm/send', { pk, text })
+  // Sending: the message appears at once; a send the engine refuses becomes Retry / Discard in place
+  const send = text => {
     stick.current = true
-    await load()
+    return outboxSend(key, text, null, t => store.post('/dm/send', { pk, text: t }).then(out => load().then(() => out)))
+  }
+  const retry = m => {
+    if (m.local) {
+      const e = (OUTBOX.get(key) || []).find(x => x.tmp === m.id)
+      if (!e) return
+      outboxSet(key, l => l.filter(x => x.tmp !== m.id))
+      send(e.text)
+    } else store.post('/dm/retry', { pk, id: m.id }).then(load, () => {})   // the very same sealed message
+  }
+  const discard = m => {
+    if (m.local) outboxSet(key, l => l.filter(x => x.tmp !== m.id))
+    else store.post('/dm/discard', { pk, id: m.id }).then(load, () => {})
   }
   const friendPost = async (path, okMsg) => { try { await store.post(path, { pk }, okMsg); await load() } catch (_) { /* toasted */ } }
   const addFriend = () => friendPost('/friend/request', 'Friend request sent to ' + name + '.')
@@ -130,15 +146,16 @@ function DmView(props) {
         jsx(K.Button, { variant: 'ghost', size: 'sm', onClick: hide, children: 'Hide ' + name }, 'h')
       ] })
     ] }) }) }),
-    jsx('div', { className: 'h-scroll', ref: scroller, onScroll, children: jsxs('div', { className: 'h-timeline', role: 'log', 'aria-live': 'polite', 'aria-label': 'Private messages with ' + name, children: [
+    jsx('div', { className: 'h-scroll', ref: scroller, onScroll: keeper.onScroll, children: jsxs('div', { className: 'h-timeline', role: 'log', 'aria-live': 'polite', 'aria-label': 'Private messages with ' + name, children: [
+      er.more && jsx(EarlierButton, { onClick: keeper.loadMore, busy: loadingMore }),
       err && jsx(Notice, { icon: 'warning', role: 'alert', children: err }),
       !data && !err && jsx('div', { className: 'h-empty', children: 'Opening the conversation…' }),
-      data && data.friend && msgs.length === 0 && jsxs('div', { className: 'h-empty', children: [
+      data && data.friend && msgs.length === 0 && mine.length === 0 && jsxs('div', { className: 'h-empty', children: [
         jsx(K.Icon, { name: 'lock', size: 22 }),
         jsx('b', { children: 'Say hello to ' + name }),
         jsx('div', { style: { maxWidth: 420 }, children: 'Only the two of you can read what you write here. It is encrypted on its way, and your agent never sees it.' })
       ] }),
-      items.map(it => it.kind === 'msg' && jsx(DmItem, { it, animate: fresh(it.key) }, it.key))
+      items.map(it => (it.kind === 'day' ? jsx(DmItem, { it, animate: false }, it.key) : it.kind === 'msg' && jsx(DmItem, { it, animate: fresh(it.key), onRetry: retry, onDiscard: discard }, it.key)))
     ] }) }),
     data && data.friend && jsx('div', { className: 'h-composer', children: jsx(Composer, { store, room: composeRoom, snap, dm: dmSend }) }),
     jsx(Modal, { open: removing, onClose: () => setRemoving(false), title: 'Remove ' + name + ' from your friends?',
@@ -158,7 +175,8 @@ function DmView(props) {
 
 function DmItem(props) {
   const ref = useEnter(props.animate)
-  return jsx('div', { ref, children: jsx(Message, { m: props.it.m, first: props.it.first, book: {} }) })
+  if (props.it.kind === 'day') return jsx(DayLine, { ts: props.it.ts })
+  return jsx('div', { ref, children: jsx(Message, { m: props.it.m, first: props.it.first, book: {}, onRetry: props.onRetry, onDiscard: props.onDiscard }) })
 }
 
 // Friend requests. There is nothing to read: a request has no message, only who is asking (by the name your rooms

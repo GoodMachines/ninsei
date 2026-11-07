@@ -32,6 +32,22 @@ def const(text: str, name: str) -> str:
     return re.search(r"^const " + name + r" = .*$", text, re.M).group(0) + "\n"
 
 
+def block(text: str, name: str) -> str:
+    """A multi-line top-level `const name = [ ... ]` or `{ ... }` up to its closing line."""
+    start = text.index("const " + name + " = ")
+    return text[start:text.index("\n]\n", start) + 3] if text[start:].split("\n", 1)[0].rstrip().endswith("[") else text[start:text.index("\n}\n", start) + 3]
+
+
+def composer_js() -> str:
+    """What Composer needs besides itself: drafts, the :shortcode: helpers and the suggestion list. Tests that
+    mount it get a `P` with a no-op timer and storage that holds nothing; a test can replace `P` after."""
+    return "".join(fn(CORE, n) for n in ("draftGet", "draftSet", "shortcodeQuery", "shortcodeMatches", "shortcodeClosed")) \
+        + fn(ROOM, "SuggestMenu") + block(CORE, "EMOJI_SHORTCODES") + """
+const DRAFTS = new Map(), DRAFT_MAX = 2000, DRAFT_KEEP = 40, draftDirty = new Set(); let draftStop = null
+globalThis.P = Object.assign({ setTimeout: () => () => {}, prefs: { get: (k, d) => d, set() {} } }, globalThis.P || {})
+"""
+
+
 # A hooks runtime small enough to read: state, refs and effects with dependency lists, re-rendered
 # on a microtask. jsx() makes plain objects, so a test walks the tree and calls onClick itself.
 HARNESS = r"""
@@ -329,8 +345,14 @@ def test_reduced_motion_covers_thinking_and_spinner():
 def test_presence_is_announced():
     person = fn(ROOM, "Person")
     assert "role: 'img', 'aria-label': p.online ? 'online' : 'away'" in person
-    assert "h-sr" in APP and "' online'" in APP, "the rail's count says what it counts"
-    assert ".h-sr{position:absolute" in STYLE
+    assert "h-vh" in APP and "' online'" in APP, "the rail's count says what it counts"
+    assert ".h-vh{position:absolute" in STYLE
+
+
+def test_the_visually_hidden_helper_does_not_share_a_name_with_search_results():
+    """`.h-sr` once meant both: the later rule (visually hidden) won, and every search result was clipped to 1px."""
+    assert ".h-sr{position:absolute" not in STYLE
+    assert len(re.findall(r"^\.h-sr\{", STYLE, re.M)) == 1
 
 
 def test_profile_sheet_focuses_close_and_traps_tab():

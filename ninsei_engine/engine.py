@@ -27,7 +27,7 @@ from typing import Any, Callable, Iterable, Optional
 from . import avatar, dm, game, nip44, nostr
 from .brain import Brain, BudgetExhausted, Line
 from .relays import RelayPool
-from .store import EVENT_ROOM_CAP, FRIEND_REQUESTS, Store, today
+from .store import DM_PER_PEER, EVENT_ROOM_CAP, FRIEND_REQUESTS, Store, today
 from .topics import TopicTracker
 from .toy import OFFER_ID_RE, SHARE_SERIALIZED_LIMIT, inject_csp, scan_secrets, serialized_size
 
@@ -96,6 +96,9 @@ SILENT_TYPES = ("react", "edit", "delete")  # events that change how a message r
 MENTION_SNIPPET = 60       # how much of a mention the room list carries, for the alert
 SEARCH_Q_MAX = 100         # longest search text (the API clips the same way)
 SEARCH_LIMIT_MAX = 100
+MESSAGES_SHOWN = 120       # timeline items a room snapshot carries; older ones load a page at a time
+EARLIER_PAGE = 100         # items per "Load earlier messages"
+SENDING_SECONDS = 6        # a fresh own event still waiting for its first relay answer reads "sending", not "not delivered"
 SEARCH_CONTEXT = 3         # messages shown on each side of a search result that isn't loaded
 QUOTE_CHARS = 120          # how much of the replied-to message a quote carries
 ROOM_HISTORY_LIMIT = 300   # history events asked of the relays per room, and per room, not across all rooms
@@ -3279,6 +3282,47 @@ class Engine:
         self.store.mark_read(room, ev["created_at"])
         return {"id": ev["id"]}
 
+    def _delivery_of(self, eid: str, created_at: int) -> str:
+        """"sent", "sending" (inside its first wait for a relay's answer, or only just made), "pending" (queued,
+        will be resent) or "failed". Only my own events are asked."""
+        d = self.pool.delivery(eid)
+        if d == "sent" and self.pool.sending(eid):
+            return "sending"
+        if d == "pending" and time.time() - created_at < SENDING_SECONDS:
+            return "sending"
+        return d
+
+    def _own_undelivered(self, room: str, target: str) -> dict:
+        """My own person message here that has not reached a relay (pending or failed): what Retry and Discard act on."""
+        if room not in self.events:
+            raise ValueError("you aren't in that room")
+        te = self.events[room].get(target) if isinstance(target, str) else None
+        if te is None or te["pubkey"] != self._identity()["person_pk"] or self.owner_of(te) \
+                or self._content(te).get("t") != "msg":
+            raise ValueError("that message isn't yours or isn't here any more")
+        if self.pool is None or self.pool.delivery(target) == "sent":
+            raise ValueError("that message was delivered")
+        if self.pool.sending(target):
+            raise ValueError("that message is still being sent")
+        return te
+
+    async def retry_post(self, room: str, target: str) -> dict:
+        """Send an undelivered message of mine again: the same signed event from the outbox, never a second one."""
+        self._own_undelivered(room, target)
+        self._pace_click()
+        self._spawn(self.pool.retry(target))
+        return {"id": target, "delivery": "sending"}
+
+    async def discard_post(self, room: str, target: str) -> dict:
+        """Take back an undelivered message of mine: it leaves the timeline and is never sent."""
+        self._own_undelivered(room, target)
+        if not self.pool.discard(target):
+            raise ValueError("that message was delivered")
+        self.events[room].pop(target, None)
+        self.store.drop_events([target])
+        self._bump()
+        return {"ok": True}
+
     def _pace_click(self) -> None:
         """Anything one click can publish (a reaction, an edit, a delete) shares one local pace, so a held key or a
         script can't spend the relays' per-IP allowance. Raises a message the UI shows as a toast."""
@@ -3848,31 +3892,71 @@ class Engine:
         return {"threads": rows, "unread": unread, "requests": len(lists["requests"]), "pending": pending, "rel": rel,
                 "rev": self._dm_rev}
 
-    def dm_thread(self, pk: str, read: bool = True) -> dict:
-        """One conversation for the DM view. `read` marks it read (the UI passes false when it isn't on screen)."""
+    def dm_thread(self, pk: str, read: bool = True, before: str = "") -> dict:
+        """One conversation for the DM view. `read` marks it read (the UI passes false when it isn't on screen).
+        `before` (a message id) returns instead the page just older than it, for "Load earlier messages".
+        `earlier` says whether older messages are still kept on this computer."""
         pk = str(pk or "").lower()
         if not re.fullmatch(r"[0-9a-f]{64}", pk):
             raise ValueError("that isn't a person's key")
         ident = self._identity()
         info = self._dm_book({pk}).get(pk) or {"name": "", "flag": None}
         rel = self.store.friend_rel(pk)
-        if read:
+        if read and not before:
             self.store.dm_mark_read(pk)
         me = self.settings()["display_name"] or "You"
+        allrows = self.store.dm_messages(pk, DM_PER_PEER)
+        if before:
+            i = next((n for n, m in enumerate(allrows) if m["id"] == before), None)
+            lo = 0 if i is None else max(0, i - EARLIER_PAGE)
+            rows = [] if i is None else allrows[lo:i]
+            earlier = lo > 0
+        else:
+            rows = allrows[-DM_THREAD_MESSAGES:]
+            earlier = len(allrows) > DM_THREAD_MESSAGES
         out = []
-        for m in self.store.dm_messages(pk, DM_THREAD_MESSAGES):
+        for m in rows:
             mine = m["sender"] == ident["person_pk"]
             item = {"id": m["id"], "ts": m["created_at"], "t": "msg", "pk": m["sender"], "role": "person", "mine": mine,
                     "name": me if mine else self._dm_label(pk, info), "text": m["text"][:dm.MAX_TEXT]}
             if info["flag"] and not mine:
                 item["impostor"] = info["flag"]   # the room's own flag: a lookalike is never shown as the real name
             if mine and m["wrap"] and self.pool:
-                d = self.pool.delivery(m["wrap"])
+                d = self._delivery_of(m["wrap"], m["created_at"])
                 if d != "sent":
                     item["delivery"] = d
             out.append(item)
         return {"pk": pk, "name": self._dm_label(pk, info), "impostor": bool(info["flag"]), "friend": rel == "friend",
-                "rel": rel, "hidden": pk in self._hidden, "messages": out}
+                "rel": rel, "hidden": pk in self._hidden, "messages": out, "earlier": earlier}
+
+    def _own_dm_undelivered(self, pk: str, mid: str) -> dict:
+        pk = str(pk or "").lower()
+        row = self.store.dm_message(mid) if isinstance(mid, str) else None
+        if row is None or row["peer"] != pk or row["sender"] != self._identity()["person_pk"] or not row["wrap"]:
+            raise ValueError("that message isn't here any more")
+        if self.pool is None or self.pool.delivery(row["wrap"]) == "sent":
+            raise ValueError("that message was delivered")
+        if self.pool.sending(row["wrap"]):
+            raise ValueError("that message is still being sent")
+        return row
+
+    async def dm_retry(self, pk: str, mid: str) -> dict:
+        """Send an undelivered private message again: the same sealed wrap, never a second message."""
+        row = self._own_dm_undelivered(pk, mid)
+        self._pace_click()
+        self._spawn(self.pool.retry(row["wrap"]))
+        return {"id": mid, "delivery": "sending"}
+
+    async def dm_discard(self, pk: str, mid: str) -> dict:
+        """Take back an undelivered private message: gone from this computer, never sent. (The copy wrapped to
+        myself for my other installs is not tracked by message, so if it had gone out they would keep it.)"""
+        row = self._own_dm_undelivered(pk, mid)
+        if not self.pool.discard(row["wrap"]):
+            raise ValueError("that message was delivered")
+        self.store.dm_delete(mid)
+        self._dm_rev += 1
+        self._bump()
+        return {"ok": True}
 
     async def dm_send(self, pk: str, text: str) -> dict:
         """Send a private message to a friend: one rumor, sealed and wrapped for them and again for me. The copy
@@ -4176,6 +4260,29 @@ class Engine:
         return q
 
     def messages(self, room: str, limit: int = 120) -> list[dict]:
+        return self._timeline(room)[-limit:]
+
+    def messages_view(self, room: str) -> tuple[list[dict], bool]:
+        """What the room view shows (the newest MESSAGES_SHOWN) and whether older items are kept locally."""
+        allm = self._timeline(room)
+        return allm[-MESSAGES_SHOWN:], len(allm) > MESSAGES_SHOWN
+
+    def messages_before(self, room: str, before: str, limit: int = EARLIER_PAGE) -> dict:
+        """The page of timeline items just older than item `before` (oldest first) and whether still older ones
+        exist, for "Load earlier messages". Same view as `messages` (hidden people, folded replies, flags), taken
+        from what this computer keeps for the room. An id that is no longer here gives an empty page."""
+        try:
+            limit = max(1, min(int(limit), EARLIER_PAGE))
+        except (TypeError, ValueError):
+            limit = EARLIER_PAGE
+        allm = self._timeline(room)
+        i = next((n for n, m in enumerate(allm) if m["id"] == before), None)
+        if i is None:
+            return {"messages": [], "more": False}
+        lo = max(0, i - limit)
+        return {"messages": allm[lo:i], "more": lo > 0}
+
+    def _timeline(self, room: str) -> list[dict]:
         ident = self._identity()
         evs = self._sorted(room)
         who = self._who(room, evs)  # one pass for every name below, never a lookup per message
@@ -4276,7 +4383,7 @@ class Engine:
             if c.get("system") == "budget" and owner:
                 item["system"] = "budget"
             if item["mine"] and self.pool:  # only our own events can be undelivered; "sent" stays implicit
-                d = self.pool.delivery(e["id"])
+                d = self._delivery_of(e["id"], e["created_at"])
                 if d != "sent":
                     item["delivery"] = d
             if t == "offer":
@@ -4302,14 +4409,14 @@ class Engine:
             elif t in ("tales_reveal", "tales_end", "tales_start") and not owner:
                 continue
             out.append(item)
-        return out[-limit:]
+        return out
 
     def _searchable(self, room: str) -> list[dict]:
         """Every message the room view would show, oldest first, not just the last 120. The same view, so
         hidden people, folded agent replies and impostor flags behave exactly as in the timeline."""
         if room not in self.events:
             return []
-        return [m for m in self.messages(room, limit=10 ** 9) if m["t"] == "msg" and not m.get("system") and not m.get("deleted")]
+        return [m for m in self._timeline(room) if m["t"] == "msg" and not m.get("system") and not m.get("deleted")]
 
     @staticmethod
     def _search_item(m: dict) -> dict:
@@ -4410,8 +4517,9 @@ class Engine:
         members: list[dict] = []
         if room and room in self.events:
             members = self.members(room)
+            shown, earlier = self.messages_view(room)
             snap["room"] = {"id": room, **self.room_meta(room), "members": members,
-                            "messages": self.messages(room), "game": self.game_view(room),
+                            "messages": shown, "earlier": earlier, "game": self.game_view(room),
                             "typing": self.typing_view(room)}
             if mark and snap["room"]["messages"]:  # mark=False: the room is loaded but not on screen
                 self.store.mark_read(room, snap["room"]["messages"][-1]["ts"])

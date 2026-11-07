@@ -130,6 +130,214 @@ function joinNames(names) {
   return names.slice(0, -1).join(', ') + ' and ' + names[names.length - 1]
 }
 
+// ---- reading a long conversation: days, older messages, drafts ----------------------------------------------
+
+// "Today", "Yesterday", else "Mon, Nov 3" (the year too once it isn't this one), in the viewer's own locale.
+function dayLabel(ts, now) {
+  const d = new Date(ts * 1000)
+  if (isNaN(d.getTime())) return ''
+  now = now || new Date()
+  const days = Math.round((new Date(now.getFullYear(), now.getMonth(), now.getDate()) - new Date(d.getFullYear(), d.getMonth(), d.getDate())) / 86400000)
+  if (days === 0) return 'Today'
+  if (days === 1) return 'Yesterday'
+  return d.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric', year: d.getFullYear() === now.getFullYear() ? undefined : 'numeric' })
+}
+
+function dayKey(ts) {
+  const d = new Date(ts * 1000)
+  return isNaN(d.getTime()) ? '' : d.getFullYear() + '-' + d.getMonth() + '-' + d.getDate()
+}
+
+// The whole date and time, for the hover text of every time label.
+function fmtFull(ts) {
+  const d = new Date(ts * 1000)
+  if (isNaN(d.getTime())) return ''
+  return d.toLocaleString([], { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', hour: 'numeric', minute: '2-digit' })
+}
+
+// Older messages loaded with "Load earlier messages" sit in front of the snapshot's newest window. The window
+// slides as messages arrive; the ones that slide out join the older run, so no gap opens, and nothing shows twice.
+function mergeOlder(older, prev, snap) {
+  if (!older.length) return older
+  const inSnap = new Set(snap.map(m => m.id))
+  let out = older
+  if (prev && snap.length) {
+    const k = prev.findIndex(m => m.id === snap[0].id)
+    if (k > 0) out = out.concat(prev.slice(0, k))
+  }
+  const have = new Set()
+  return out.filter(m => !inSnap.has(m.id) && !have.has(m.id) && (have.add(m.id), true))
+}
+
+// What each conversation (a room id, or "dm-<key>") has loaded beyond the snapshot, kept while you are elsewhere.
+const EARLIER = new Map()
+const EARLIER_CAP = 1500
+
+function earlierState(key) {
+  let st = EARLIER.get(key)
+  if (!st) { st = { older: [], more: null, prev: null }; EARLIER.set(key, st) }
+  return st
+}
+
+// Where each conversation was scrolled to when you left it ({ top, stick }), in memory.
+const SCROLLED = new Map()
+
+// Unsent text per room and per private conversation. Memory first; also kept in the page's storage (a
+// quota-safe `P.prefs`) so a restart finds it, capped at DRAFT_KEEP drafts of DRAFT_MAX characters.
+const DRAFTS = new Map()
+const DRAFT_MAX = 2000
+const DRAFT_KEEP = 40
+let draftStop = null
+const draftDirty = new Set()
+
+function draftGet(key) {
+  if (DRAFTS.has(key)) return DRAFTS.get(key)
+  let v = ''
+  try { const all = P.prefs.get('drafts', {}); v = all && typeof all[key] === 'string' ? all[key].slice(0, DRAFT_MAX) : '' } catch (_) { v = '' }
+  DRAFTS.set(key, v)
+  return v
+}
+
+function draftSet(key, text) {
+  text = String(text || '').slice(0, DRAFT_MAX)
+  DRAFTS.set(key, text)
+  draftDirty.add(key)
+  if (draftStop) draftStop()
+  draftStop = P.setTimeout(() => {
+    draftStop = null
+    try {
+      const all = Object.assign({}, P.prefs.get('drafts', {}))
+      for (const k of draftDirty) {
+        const t = DRAFTS.get(k) || ''
+        delete all[k]                       // re-added below, so the newest drafts sit last and the oldest are the ones dropped
+        if (t.trim()) all[k] = t
+      }
+      draftDirty.clear()
+      const ks = Object.keys(all)
+      for (const k of ks.slice(0, Math.max(0, ks.length - DRAFT_KEEP))) delete all[k]
+      P.prefs.set('drafts', all)
+    } catch (_) { /* storage unavailable: the draft lives in memory only */ }
+  }, 400)
+}
+
+// Messages you just sent, shown at once while the engine takes them: { tmp, text, quote, ts, state, id }.
+// `state` is "sending" until the engine answers, "posted" (waiting to show up in the room's own list) or
+// "failed" (the engine said no: Retry sends it again, Discard drops it). Kept outside the view, so a send in
+// flight survives switching rooms.
+const OUTBOX = new Map()
+const OUTBOX_FNS = new Set()
+let OUTBOX_N = 0
+
+function outboxSet(key, fn) {
+  const next = fn(OUTBOX.get(key) || [])
+  if (next.length) OUTBOX.set(key, next); else OUTBOX.delete(key)
+  OUTBOX_FNS.forEach(f => f())
+}
+
+function useOutbox(key) {
+  const [, bump] = useState(0)
+  useEffect(() => {
+    const f = () => bump(n => n + 1)
+    OUTBOX_FNS.add(f)
+    return () => { OUTBOX_FNS.delete(f) }
+  }, [])
+  return OUTBOX.get(key) || []
+}
+
+// Send `text`: it appears at once as a faint message of yours, and `post(text, reply)` (a promise) does the work.
+function outboxSend(key, text, reply, post) {
+  const tmp = 'tmp-' + (++OUTBOX_N)
+  const entry = { tmp, text, reply: reply || null, ts: Math.floor(Date.now() / 1000), state: 'sending', id: '' }
+  outboxSet(key, l => l.concat(entry))
+  const patch = ch => outboxSet(key, l => l.map(e => (e.tmp === tmp ? Object.assign({}, e, ch) : e)))
+  return Promise.resolve().then(() => post(text, reply)).then(
+    out => patch({ state: 'posted', id: (out && out.id) || '' }),
+    () => patch({ state: 'failed' }))
+}
+
+// The list's own message for each posted entry has arrived (or the entry failed and was dropped): forget those.
+function outboxSweep(key, ids) {
+  const l = OUTBOX.get(key) || []
+  if (l.some(e => e.state === 'posted' && e.id && ids.has(e.id))) outboxSet(key, list => list.filter(e => !(e.state === 'posted' && e.id && ids.has(e.id))))
+}
+
+// An item the timeline can draw for an entry of the outbox: a message of yours, faint while sending.
+function outboxItem(e, me) {
+  const it = { id: e.tmp, ts: e.ts, t: 'msg', pk: (me && me.pk) || '', role: 'person', mine: true, name: (me && me.name) || 'You',
+    text: e.text, reactions: [], optimistic: true, delivery: e.state === 'failed' ? 'failed' : 'sending' }
+  if (e.reply) { it.reply_to = e.reply.id; it.quote = { id: e.reply.id, name: e.reply.name, text: e.reply.text } }
+  if (e.state === 'failed') it.local = true
+  return it
+}
+
+// ---- :shortcode: emoji --------------------------------------------------------------------------------------
+// A small built-in table (no packages). The menu appears after ":" and two letters; the closing ":" of a full
+// code turns it into the character at once.
+const EMOJI_SHORTCODES = [
+  ['fire', '🔥'], ['smile', '😄'], ['grin', '😁'], ['joy', '😂'], ['rofl', '🤣'], ['smiley', '😃'], ['slight_smile', '🙂'], ['wink', '😉'],
+  ['blush', '😊'], ['heart_eyes', '😍'], ['kissing_heart', '😘'], ['yum', '😋'], ['stuck_out_tongue', '😛'], ['sunglasses', '😎'],
+  ['nerd', '🤓'], ['thinking', '🤔'], ['raised_eyebrow', '🤨'], ['neutral_face', '😐'], ['expressionless', '😑'], ['unamused', '😒'],
+  ['roll_eyes', '🙄'], ['grimace', '😬'], ['relieved', '😌'], ['pensive', '😔'], ['sleepy', '😪'], ['sleeping', '😴'], ['mask', '😷'],
+  ['sweat_smile', '😅'], ['sweat', '😓'], ['disappointed', '😞'], ['worried', '😟'], ['angry', '😠'], ['rage', '😡'], ['cry', '😢'],
+  ['sob', '😭'], ['scream', '😱'], ['fearful', '😨'], ['flushed', '😳'], ['dizzy_face', '😵'], ['exploding_head', '🤯'],
+  ['hushed', '😯'], ['open_mouth', '😮'], ['astonished', '😲'], ['partying_face', '🥳'], ['pleading', '🥺'], ['hugs', '🤗'],
+  ['upside_down', '🙃'], ['zany', '🤪'], ['shushing', '🤫'], ['face_palm', '🤦'], ['shrug', '🤷'], ['skull', '💀'], ['ghost', '👻'],
+  ['alien', '👽'], ['robot', '🤖'], ['poop', '💩'], ['clown', '🤡'], ['see_no_evil', '🙈'], ['hear_no_evil', '🙉'], ['speak_no_evil', '🙊'],
+  ['thumbsup', '👍'], ['+1', '👍'], ['thumbsdown', '👎'], ['-1', '👎'], ['ok_hand', '👌'], ['v', '✌️'], ['crossed_fingers', '🤞'],
+  ['metal', '🤘'], ['wave', '👋'], ['clap', '👏'], ['raised_hands', '🙌'], ['pray', '🙏'], ['handshake', '🤝'], ['muscle', '💪'],
+  ['point_up', '☝️'], ['point_down', '👇'], ['point_left', '👈'], ['point_right', '👉'], ['fist', '✊'], ['punch', '👊'],
+  ['eyes', '👀'], ['brain', '🧠'], ['heart', '❤️'], ['orange_heart', '🧡'], ['yellow_heart', '💛'], ['green_heart', '💚'],
+  ['blue_heart', '💙'], ['purple_heart', '💜'], ['black_heart', '🖤'], ['broken_heart', '💔'], ['sparkling_heart', '💖'],
+  ['sparkles', '✨'], ['star', '⭐'], ['boom', '💥'], ['zap', '⚡'], ['100', '💯'], ['tada', '🎉'], ['confetti', '🎊'],
+  ['balloon', '🎈'], ['gift', '🎁'], ['trophy', '🏆'], ['medal', '🏅'], ['crown', '👑'], ['gem', '💎'], ['rocket', '🚀'],
+  ['check', '✅'], ['white_check_mark', '✅'], ['heavy_check_mark', '✔️'], ['x', '❌'], ['warning', '⚠️'], ['no_entry', '⛔'],
+  ['question', '❓'], ['exclamation', '❗'], ['bulb', '💡'], ['bell', '🔔'], ['mute', '🔇'], ['lock', '🔒'], ['key', '🔑'],
+  ['mag', '🔍'], ['memo', '📝'], ['book', '📖'], ['books', '📚'], ['pushpin', '📌'], ['paperclip', '📎'], ['link', '🔗'],
+  ['calendar', '📅'], ['hourglass', '⏳'], ['alarm_clock', '⏰'], ['computer', '💻'], ['keyboard', '⌨️'], ['phone', '📱'],
+  ['camera', '📷'], ['movie_camera', '🎥'], ['bug', '🐛'], ['gear', '⚙️'], ['wrench', '🔧'], ['hammer', '🔨'], ['package', '📦'],
+  ['chart', '📈'], ['money', '💰'], ['sunny', '☀️'], ['cloud', '☁️'], ['rain', '🌧️'], ['snowflake', '❄️'], ['rainbow', '🌈'],
+  ['moon', '🌙'], ['earth', '🌍'], ['ocean', '🌊'], ['tree', '🌳'], ['seedling', '🌱'], ['flower', '🌸'], ['sunflower', '🌻'],
+  ['dog', '🐶'], ['cat', '🐱'], ['fox', '🦊'], ['panda', '🐼'], ['frog', '🐸'], ['unicorn', '🦄'], ['bee', '🐝'], ['turtle', '🐢'],
+  ['octopus', '🐙'], ['whale', '🐳'], ['owl', '🦉'], ['butterfly', '🦋'], ['coffee', '☕'], ['tea', '🍵'], ['beer', '🍺'],
+  ['wine', '🍷'], ['pizza', '🍕'], ['burger', '🍔'], ['fries', '🍟'], ['taco', '🌮'], ['sushi', '🍣'], ['cake', '🎂'],
+  ['cookie', '🍪'], ['ice_cream', '🍦'], ['apple', '🍎'], ['banana', '🍌'], ['avocado', '🥑'], ['popcorn', '🍿'],
+  ['music', '🎵'], ['guitar', '🎸'], ['headphones', '🎧'], ['art', '🎨'], ['video_game', '🎮'], ['game_die', '🎲'],
+  ['soccer', '⚽'], ['basketball', '🏀'], ['run', '🏃'], ['bike', '🚲'], ['car', '🚗'], ['airplane', '✈️'], ['house', '🏠']
+]
+
+// ":" then 2 to 32 letters, digits, "_", "+" or "-", right before the caret and after nothing or a space or "(".
+// Digits alone (a time, "10:30") never count.
+function shortcodeQuery(text, caret) {
+  const before = String(text || '').slice(0, caret)
+  const m = /(^|[\s(]):([a-z0-9_+\-]{2,32})$/i.exec(before)
+  if (!m || /^\d+$/.test(m[2])) return null
+  return { at: m.index + m[1].length, q: m[2].toLowerCase() }
+}
+
+// Up to `limit` codes: those starting with the query first, then those containing it.
+function shortcodeMatches(q, limit) {
+  q = String(q || '').toLowerCase()
+  if (!q) return []
+  const seen = new Set()
+  const starts = [], within = []
+  for (const [code, ch] of EMOJI_SHORTCODES) {
+    const i = code.indexOf(q)
+    if (i < 0 || seen.has(ch + code)) continue
+    seen.add(ch + code)
+    ;(i === 0 ? starts : within).push({ key: code, code, emoji: ch })
+  }
+  return starts.concat(within).slice(0, limit || 8)
+}
+
+// A just-typed ":code:" ending at the caret that names a code in the table: where it starts and what it becomes.
+function shortcodeClosed(text, caret) {
+  const before = String(text || '').slice(0, caret)
+  const m = /(^|[\s(]):([a-z0-9_+\-]{2,32}):$/i.exec(before)
+  if (!m) return null
+  const hit = EMOJI_SHORTCODES.find(x => x[0] === m[2].toLowerCase())
+  return hit ? { at: m.index + m[1].length, emoji: hit[1] } : null
+}
+
 // ---- profile pictures ---------------------------------------------------------------------------------------
 // The picker draws the chosen photo onto a 256 pixel canvas and re-encodes it (WebP, else JPEG) under 48 KB. A canvas
 // keeps pixels only, so EXIF (GPS position, camera) is gone; the original file is never uploaded. The engine checks
@@ -1194,6 +1402,15 @@ const CSS = TOKENS + `
 .h-tlwrap>.h-scroll{flex:1;min-height:0}
 .h-newline{display:flex;align-items:center;gap:10px;margin:12px 0 4px;color:var(--h-bad);font-size:11px;font-weight:700;letter-spacing:.04em;text-transform:uppercase}
 .h-newline::before,.h-newline::after{content:"";flex:1;height:1px;background:color-mix(in oklch,var(--h-bad) 55%,transparent)}
+.h-day{display:flex;align-items:center;gap:10px;margin:14px 0 4px;color:var(--h-fg3);font-size:11px;font-weight:600;letter-spacing:.03em}
+.h-day::before,.h-day::after{content:"";flex:1;height:1px;background:var(--h-line)}
+.h-earlier{display:flex;justify-content:center;padding:4px 0 8px}
+.h-gtime{align-self:start;padding-top:3px;font-size:10px;line-height:1.45;color:var(--h-fg3);opacity:0;white-space:nowrap;font-variant-numeric:tabular-nums}
+.h-msg:hover .h-gtime,.h-msg:focus-within .h-gtime{opacity:1}
+.h-msg[data-faint=true]{opacity:.5}
+.h-failrow{display:flex;flex-wrap:wrap;align-items:center;gap:4px 8px;margin-top:2px;color:var(--h-bad)}
+.h-ac-emoji{width:22px;text-align:center;font-size:17px;line-height:1;flex:none}
+.h-sr-day{padding:8px 10px 2px;font-size:10.5px;font-weight:600;letter-spacing:.03em;color:var(--h-fg3)}
 .h-jump{position:absolute;left:0;right:0;bottom:10px;display:flex;justify-content:center;pointer-events:none;z-index:6}
 .h-jump-btn{pointer-events:auto;display:inline-flex;align-items:center;gap:6px;height:30px;padding:0 13px 0 10px;border:1px solid var(--h-line2);border-radius:999px;background:var(--h-card);color:var(--h-fg);font:inherit;font-size:12.5px;font-weight:600;cursor:pointer;box-shadow:0 8px 22px -10px var(--h-shadow)}
 .h-jump-btn:hover{background:var(--h-hover)}
@@ -1338,7 +1555,7 @@ const CSS = TOKENS + `
 .h-field label,.h-field .h-label{font-size:12px;font-weight:600;color:var(--h-fg2)}
 .h-field .h-hint{font-size:11.5px;color:var(--h-fg3)}
 .h-field .h-err{color:var(--h-bad)}
-.h-sr{position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}
+.h-vh{position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}
 .h-two{display:grid;grid-template-columns:1fr 1fr;gap:14px}
 @container (max-width: 560px){.h-two{grid-template-columns:1fr}}
 .h-shapes{display:flex;flex-wrap:wrap;gap:6px}
@@ -4068,16 +4285,50 @@ function RoomView(props) {
   // search: the panel under the header, and the timeline's jump (set by Timeline) for a result that is loaded
   const [searching, setSearching] = useState(false)
   const jumpRef = useRef(null)
+  const bottomRef = useRef(null)
   useEffect(() => { setSearching(false) }, [room.id])
   const closeSearch = useCallback(() => {
     setSearching(false)
     const b = typeof document !== 'undefined' && document.querySelector && document.querySelector('.h-head [data-search-btn]')
     if (b && b.focus) b.focus()
   }, [])
+  // Sending: your message shows at once, faint; a send the engine refuses becomes Retry / Discard in place
+  const submit = useCallback((text, replyTo) => {
+    if (bottomRef.current) bottomRef.current()
+    return outboxSend(room.id, text, replyTo, (t, r) => store.post('/post', r ? { room: room.id, text: t, reply: r.id } : { room: room.id, text: t }))
+  }, [room.id])
+  const onRetry = useCallback(m => {
+    if (m.local) {   // the engine never had it: send the same words again
+      const e = (OUTBOX.get(room.id) || []).find(x => x.tmp === m.id)
+      if (!e) return
+      outboxSet(room.id, l => l.filter(x => x.tmp !== m.id))
+      submit(e.text, e.reply)
+    } else store.post('/post/retry', { room: room.id, id: m.id }).catch(() => {})   // the very same signed message
+  }, [room.id, submit])
+  const onDiscard = useCallback(m => {
+    if (m.local) outboxSet(room.id, l => l.filter(x => x.tmp !== m.id))
+    else store.post('/post/discard', { room: room.id, id: m.id }).catch(() => {})
+  }, [room.id])
+  // Up arrow in an empty composer: edit your last message (a person's message of yours that is not deleted)
+  const [editReq, setEditReq] = useState(null)
+  const editN = useRef(0)
+  const onEditLast = useCallback(() => {
+    const list = room.messages || []
+    for (let i = list.length - 1; i >= 0; i--) {
+      const m = list[i]
+      if (m.t === 'msg' && m.mine && m.role === 'person' && !m.deleted && !m.system) { setEditReq({ id: m.id, n: ++editN.current }); return true }
+    }
+    return false
+  }, [room.messages])
+  const onEditDone = useCallback(() => setEditReq(null), [])
+  const onFocusComposer = useCallback(() => {
+    const t = typeof document !== 'undefined' && document.querySelector && document.querySelector('.h-compose-box textarea')
+    if (t && t.focus) t.focus()
+  }, [])
   return jsxs(Fragment, { children: [
     jsx(RoomHeader, { store, room, snap, onPeople: props.onPeople, searching, onSearch: () => (searching ? closeSearch() : setSearching(true)) }),
     searching && jsx(SearchPanel, { room, onClose: closeSearch, onPick: id => !!(jumpRef.current && jumpRef.current(id, true)) }, room.id),
-    jsx(Timeline, { store, snap, room, book, onReply, newAfter: readMark.current.ts, jumpRef }),
+    jsx(Timeline, { store, snap, room, book, onReply, newAfter: readMark.current.ts, jumpRef, bottomRef, onRetry, onDiscard, editReq, onEditDone, onFocusComposer }),
     jsxs('div', { className: 'h-composer', children: [
       // pinned above the input: model notice, the running game, drafts. Scrolls on its own if tall.
       jsxs('div', { className: 'h-pinned', children: [
@@ -4087,7 +4338,7 @@ function RoomView(props) {
         drafts.length > 0 && jsx(DraftTray, { store, drafts })
       ] }),
       jsx(TypingLine, { list: room.typing }),
-      jsx(Composer, { store, room, snap, gameOn: !!(game && game.phase !== 'end'), reply: replyTo, onCancelReply })
+      jsx(Composer, { store, room, snap, gameOn: !!(game && game.phase !== 'end'), reply: replyTo, onCancelReply, onSubmit: submit, onEditLast })
     ] })
   ] })
 }
@@ -4131,59 +4382,160 @@ function RoomHeader(props) {
 
 // ---- timeline -------------------------------------------------------------------------------
 
-function Timeline(props) {
-  const { store, snap, room, book, onReply } = props
+// The messages a conversation shows: the snapshot's newest window, with whatever "Load earlier messages" has
+// fetched in front of it (kept in EARLIER, so it is still there when you come back). `fetchPage(id)` resolves to
+// { messages, more } for the page just older than message `id`.
+function useEarlier(key, snapMsgs, snapMore, fetchPage) {
+  const [, bump] = useState(0)
+  const st = earlierState(key)
+  if (st.prev !== snapMsgs) { st.older = mergeOlder(st.older, st.prev, snapMsgs); st.prev = snapMsgs }
+  const more = st.more === null ? !!snapMore : st.more
+  const msgs = useMemo(() => (st.older.length ? st.older.concat(snapMsgs) : snapMsgs), [st.older, snapMsgs])
+  const olderIds = useMemo(() => new Set(st.older.map(m => m.id)), [st.older])
+  const load = useCallback(async () => {
+    const cur = earlierState(key)
+    const oldest = cur.older[0] || (cur.prev && cur.prev[0])
+    if (!oldest) return false
+    let page
+    try { page = await fetchPage(oldest.id) } catch (e) { P.toast('error', errText(e)); return false }
+    const got = (page && page.messages) || []
+    const have = new Set(cur.older.map(m => m.id))
+    const merged = got.filter(m => !have.has(m.id)).concat(cur.older)
+    const cut = Math.max(0, merged.length - EARLIER_CAP)
+    cur.older = cut ? merged.slice(cut) : merged
+    cur.more = !!(page && page.more) || cut > 0
+    bump(n => n + 1)
+    return true
+  }, [key, fetchPage])
+  return { msgs, more, olderIds, load }
+}
+
+// Scrolling that remembers. Stays at the bottom while you are there; keeps what you were reading in place when
+// older messages are put in front of it; remembers where you were when you leave and come back (SCROLLED); and,
+// the first time there is no remembered place, opens at the "New messages" line when there is one. `ready` says
+// the list is drawn (a private conversation loads after it mounts).
+function useScrollKeeper(key, ready, msgs, more, loadEarlier) {
   const scroller = useRef(null)
   const stick = useRef(true)
+  const anchor = useRef(null)
+  const loading = useRef(false)
+  const placed = useRef(false)
+  const firstId = msgs.length ? msgs[0].id : ''
+  const lastId = msgs.length ? msgs[msgs.length - 1].id : ''
+  const loadMore = async () => {
+    const el = scroller.current
+    if (loading.current || !loadEarlier || !el) return
+    loading.current = true
+    anchor.current = { h: el.scrollHeight, t: el.scrollTop, first: firstId }
+    try { await loadEarlier() } finally { loading.current = false }
+  }
+  const onScroll = () => {
+    const el = scroller.current
+    if (!el) return
+    stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80
+    if (placed.current) SCROLLED.set(key, { top: el.scrollTop, stick: stick.current })
+    if (more && el.scrollTop < 48) loadMore()
+  }
+  useLayoutEffect(() => {
+    const el = scroller.current
+    if (!el) return
+    const a = anchor.current
+    if (a && firstId !== a.first) { el.scrollTop = a.t + (el.scrollHeight - a.h); anchor.current = null; return }
+    if (a && !loading.current) anchor.current = null
+    if (stick.current) el.scrollTop = el.scrollHeight
+  }, [msgs.length, lastId, firstId])
+  // once, when the list first has something to show: where you were, else the New messages line, else the end
+  useLayoutEffect(() => {
+    const el = scroller.current
+    if (!el || !ready || placed.current) return
+    placed.current = true
+    const saved = SCROLLED.get(key)
+    if (saved && !saved.stick) { stick.current = false; el.scrollTop = saved.top; return }
+    const line = el.querySelector && el.querySelector('[data-newline]')
+    if (line) {
+      stick.current = false
+      el.scrollTop += line.getBoundingClientRect().top - el.getBoundingClientRect().top - 28
+    } else el.scrollTop = el.scrollHeight
+  }, [ready, key])
+  return { scroller, stick, onScroll, loadMore }
+}
+
+// The button (and the auto-load on scrolling to the top) for older messages.
+function EarlierButton(props) {
+  return jsx('div', { className: 'h-earlier', children: jsx(K.Button, { variant: 'ghost', size: 'sm', onClick: props.onClick, disabled: props.busy,
+    children: props.busy ? 'Loading…' : 'Load earlier messages' }) })
+}
+
+function Timeline(props) {
+  const { store, snap, room, book, onReply } = props
   const seen = useRef(null)
-  const msgs = room.messages || []
+  const [loadingMore, setLoadingMore] = useState(false)
+  const fetchPage = useCallback(id => P.rest('/messages/earlier?room=' + encodeURIComponent(room.id) + '&before=' + encodeURIComponent(id)), [room.id])
+  const er = useEarlier(room.id, room.messages || [], room.earlier, fetchPage)
+  // what you just sent shows at once, faint, until the room's own list has it
+  const sent = useOutbox(room.id)
+  const have = useMemo(() => new Set(er.msgs.map(m => m.id)), [er.msgs])
+  useEffect(() => { outboxSweep(room.id, have) }, [have, sent])
+  const mine = sent.filter(e => !(e.state === 'posted' && e.id && have.has(e.id)))
+  const msgs = mine.length ? er.msgs.concat(mine.map(e => outboxItem(e, snap.me))) : er.msgs
+  const loadEarlier = useCallback(async () => { setLoadingMore(true); try { return await er.load() } finally { setLoadingMore(false) } }, [er.load])
+  const keeper = useScrollKeeper(room.id, true, msgs, er.more, loadEarlier)
+  const { scroller, stick } = keeper
   // The id of the newest message when you scrolled up more than a screen (null while you are near the
   // bottom): the "Jump to latest" pill counts what came after it.
   const [away, setAway] = useState(null)
   const lastId = useRef('')
   lastId.current = msgs.length ? msgs[msgs.length - 1].id : ''
 
-  // anything present on first render is history and does not animate in
+  // anything present on first render, or loaded as earlier history, does not animate in
   if (seen.current === null) seen.current = new Set(msgs.map(m => m.id))
+  for (const e of sent) if (e.id) seen.current.add(e.id)   // its own message replacing the faint one is not news
   const fresh = id => {
     if (seen.current.has(id)) return false
     seen.current.add(id)
-    return true
+    return !er.olderIds.has(id)
   }
 
   const onScroll = () => {
     const el = scroller.current
     if (!el) return
+    keeper.onScroll()
     const gap = el.scrollHeight - el.scrollTop - el.clientHeight
-    stick.current = gap < 80
     const far = gap > Math.max(el.clientHeight, 200)
     setAway(prev => (far ? (prev === null ? lastId.current : prev) : null))
   }
-  useLayoutEffect(() => {
-    const el = scroller.current
-    if (el && stick.current) el.scrollTop = el.scrollHeight
-  }, [msgs.length, msgs.length && msgs[msgs.length - 1].id])
+  // sending takes you to the end, wherever you were reading
+  if (props.bottomRef) props.bottomRef.current = () => { stick.current = true; const el = scroller.current; if (el) el.scrollTop = el.scrollHeight }
 
   // Scroll to a message and flash it, when it is among the messages loaded. A quote's click says so when it
   // isn't; a search result (`quiet`) just reports false and shows the message in its own panel instead.
   const jump = useCallback((id, quiet) => {
     const el = scroller.current
     const node = el && [].find.call(el.querySelectorAll('[data-mid]'), n => n.getAttribute('data-mid') === id)
-    if (!node) { if (!quiet) P.toast('info', 'That message is further back than what is loaded.'); return false }
+    if (!node) { if (!quiet) P.toast('info', 'That message is further back than what is loaded. Load earlier messages to reach it.'); return false }
     springIntoView(node)
     flash(node)
     return true
   }, [])
   if (props.jumpRef) props.jumpRef.current = jump
+  // Up arrow in the empty composer: bring your last message into view for editing
+  const editReq = props.editReq
+  useEffect(() => {
+    const el = scroller.current
+    const node = editReq && el && [].find.call(el.querySelectorAll('[data-mid]'), n => n.getAttribute('data-mid') === editReq.id)
+    if (node) springIntoView(node)
+  }, [editReq])
   const toLatest = () => { const el = scroller.current; if (el) springScrollTo(el, el.scrollHeight - el.clientHeight) }
 
   const k = away === null ? -1 : msgs.findIndex(m => m.id === away)
   const since = away === null ? 0 : (k < 0 ? msgs : msgs.slice(k + 1)).filter(m => m.t === 'msg' && !m.system && !m.deleted).length
   const items = groupItems(msgs, props.newAfter)
+  const actions = { onReply, onJump: jump, onRetry: props.onRetry, onDiscard: props.onDiscard, editReq, onEditDone: props.onEditDone, onFocusComposer: props.onFocusComposer }
   return jsxs('div', { className: 'h-tlwrap', children: [
     jsx('div', { className: 'h-scroll', ref: scroller, onScroll, children: jsxs('div', { className: 'h-timeline', role: 'log', 'aria-live': 'polite', children: [
+      er.more && jsx(EarlierButton, { onClick: keeper.loadMore, busy: loadingMore }),
       items.length === 0 && jsx('div', { className: 'h-empty', children: 'Quiet in here. Say hello, or start a game of Tall Tales.' }),
-      items.map(it => jsx(TimelineItem, { it, store, snap, room, book, onReply, onJump: jump, animate: fresh(it.key) }, it.key)),
+      items.map(it => jsx(TimelineItem, Object.assign({ it, store, snap, room, book, animate: fresh(it.key) }, actions), it.key)),
       jsx(Thinking, { room })
     ] }) }),
     away !== null && jsx(JumpPill, { count: since, onClick: toLatest })
@@ -4239,7 +4591,15 @@ function groupItems(msgs, newAfter) {
   const out = []
   let prev = null
   let marked = !newAfter
+  let day = ''
   for (const m of msgs) {
+    // a day line before the first item of each day (the first one loaded too): "Today", "Yesterday", "Mon, Nov 3"
+    const dk = dayKey(m.ts)
+    if (dk && dk !== day) {
+      day = dk
+      out.push({ kind: 'day', key: 'day-' + dk, ts: m.ts })
+      prev = null
+    }
     // "New messages": before the first message from someone else that arrived after you last read the room
     if (!marked && m.t === 'msg' && !m.system && !m.mine && !m.deleted && m.ts > newAfter) {
       out.push({ kind: 'new', key: 'new-line' })
@@ -4275,14 +4635,16 @@ function TimelineItem(props) {
   const ref = useEnter(props.animate)
   const m = it.m
   let body = null
-  if (it.kind === 'new') body = jsx('div', { className: 'h-newline', role: 'separator', 'aria-label': 'New messages', children: jsx('span', { children: 'New messages' }) })
+  if (it.kind === 'day') body = jsx(DayLine, { ts: it.ts })
+  else if (it.kind === 'new') body = jsx('div', { className: 'h-newline', 'data-newline': true, role: 'separator', 'aria-label': 'New messages', children: jsx('span', { children: 'New messages' }) })
   else if (it.kind === 'joins') body = jsx('div', { className: 'h-line', children: joinNames(it.names) + ' joined' })
   else if (it.kind === 'join') body = jsxs('div', { className: 'h-line', children: [m.name + ' joined ', jsx(ImpostorChip, { imp: m.impostor })] })
   else if (m.system === 'budget') body = jsxs('div', { className: 'h-system', role: 'status', children: [
     jsx(Face, { face: m.face, pk: m.pk, state: 'system: waiting', size: 20 }),
     jsx('span', { children: m.text || (m.name + ' is resting: out of budget for today') })
   ] })
-  else if (it.kind === 'msg') body = jsx(Message, { m, first: it.first, book, store, roomId: room.id, onReply: props.onReply, onJump: props.onJump })
+  else if (it.kind === 'msg') body = jsx(Message, { m, first: it.first, book, store, roomId: room.id, onReply: props.onReply, onJump: props.onJump,
+    onRetry: props.onRetry, onDiscard: props.onDiscard, editReq: props.editReq, onEditDone: props.onEditDone, onFocusComposer: props.onFocusComposer })
   else if (it.kind === 'offer') body = jsx(OfferCard, { m, store, snap, room })
   else if (it.kind === 'offer_state') body = jsxs('div', { className: 'h-line', children: [offerStateLine(m, room), m.impostor && ' ', m.impostor && jsx(ImpostorChip, { imp: m.impostor })] })
   else if (it.kind === 'share') body = jsx(ShareCard, { m, store, room })
@@ -4293,6 +4655,12 @@ function TimelineItem(props) {
   else if (it.kind === 'tales_end') body = jsx('div', { className: 'h-line', children: gameName(m.mode) + ' is over' })
   if (!body) return null
   return jsx('div', { ref, children: body })
+}
+
+// The line between days. Its words are for sighted readers and screen readers alike.
+function DayLine(props) {
+  const label = dayLabel(props.ts)
+  return jsx('div', { className: 'h-day', role: 'separator', 'aria-label': label, title: fmtFull(props.ts), children: jsx('span', { children: label }) })
 }
 
 function offerStateLine(m, room) {
@@ -4329,10 +4697,33 @@ function Message(props) {
   const [editing, setEditing] = useState(false)
   const [asking, setAsking] = useState(false)
   const editBtn = useRef(null)
-  const own = !!(props.store && m.mine && !agent && !m.deleted)
+  const viaKey = useRef(false)   // editing began with the Up arrow in the composer: focus returns there
+  const own = !!(props.store && m.mine && !agent && !m.deleted && !m.optimistic)
   const who = { kind: agent ? 'agent' : 'person', pk: m.pk, name: m.name, face: m.face, owner_name: m.owner_name }
   const text = jsx(MessageBody, { m, book: props.book })
-  const stopEdit = () => { setEditing(false); P.setTimeout(() => editBtn.current && editBtn.current.focus && editBtn.current.focus(), 0) }
+  const stopEdit = () => {
+    setEditing(false)
+    if (viaKey.current && props.onFocusComposer) { viaKey.current = false; P.setTimeout(props.onFocusComposer, 0); return }
+    P.setTimeout(() => editBtn.current && editBtn.current.focus && editBtn.current.focus(), 0)
+  }
+  // The Up arrow in an empty composer asks the room view to edit your last message: that one opens its editor.
+  const reqId = props.editReq ? props.editReq.id : ''
+  useEffect(() => {
+    if (reqId && reqId === m.id && own && !editing) { viaKey.current = true; setEditing(true); if (props.onEditDone) props.onEditDone() }
+  }, [props.editReq])
+  // a message that is still going out is faint, and settles to full strength when a relay has it
+  const faint = m.delivery === 'sending' || m.delivery === 'pending'
+  const wasFaint = useRef(faint)
+  const node = useRef(null)
+  useEffect(() => {
+    const el = node.current
+    const was = wasFaint.current
+    wasFaint.current = faint
+    if (!el || faint || !was || motion.reduced()) return
+    const sp = motion.spring({ from: 0.5, to: 1, k: SPRING.calm.k, c: SPRING.calm.c, onUpdate: x => { el.style.opacity = String(Math.min(1, x)) },
+      onRest: () => { el.style.opacity = '' } })
+    return () => sp.stop()
+  }, [faint])
   const saveEdit = async t => {
     try { await props.store.post('/edit', { room: props.roomId, target: m.id, text: t }); stopEdit() } catch (_) { /* toasted */ }
   }
@@ -4348,15 +4739,16 @@ function Message(props) {
   ] : null
   const react = (emoji, on) => props.store.post('/react', { room: props.roomId, target: m.id, emoji, on }).catch(() => {})
   const mineSet = (m.reactions || []).filter(r => r.mine).map(r => r.emoji)
-  return jsxs('div', { className: cx('h-msg', agent && 'h-agent'), 'data-role': m.role, 'data-first': props.first, 'data-mid': m.id, 'data-bar': picking,
-    'data-impostor': !!imp, 'data-mentioned': !!m.mentions_me, style: agent ? { '--hue': f.hue } : undefined, children: [
+  return jsxs('div', { className: cx('h-msg', agent && 'h-agent'), ref: node, 'data-role': m.role, 'data-first': props.first, 'data-mid': m.id, 'data-bar': picking,
+    'data-faint': faint || undefined, 'aria-busy': m.delivery === 'sending' || undefined, 'data-impostor': !!imp, 'data-mentioned': !!m.mentions_me, style: agent ? { '--hue': f.hue } : undefined, children: [
       jsx('div', { className: 'h-gutter', children: props.first ? jsx(ProfileButton, { who, label: 'Show ' + m.name + '’s card',
-        children: agent ? jsx(Face, { face: m.face, pk: m.pk, state: 'activity: idle', size: 28, name: m.name }) : jsx(PersonMark, { pk: m.pk, name: m.name, flagged: !!imp }) }) : null }),
+        children: agent ? jsx(Face, { face: m.face, pk: m.pk, state: 'activity: idle', size: 28, name: m.name }) : jsx(PersonMark, { pk: m.pk, name: m.name, flagged: !!imp }) })
+        : jsx('span', { className: 'h-gtime', 'aria-hidden': true, title: fmtFull(m.ts), children: fmtTime(m.ts) }) }),
       jsxs('div', { style: { minWidth: 0 }, children: [
         props.first && jsxs('div', { className: 'h-meta', children: [
           jsx(ProfileButton, { who, label: 'Show ' + m.name + '’s card', children: jsx('b', { children: m.name }) }),
           agent && jsx('span', { className: 'h-owner', children: m.mine ? 'your agent' : (m.owner_name ? m.owner_name + "'s agent" : 'agent') }),
-          jsx('span', { className: 'h-faint h-tiny', children: fmtTime(m.ts) })
+          jsx('span', { className: 'h-faint h-tiny', title: fmtFull(m.ts), children: fmtTime(m.ts) })
         ] }),
         m.quote && jsx(QuoteLine, { quote: m.quote, onJump: props.onJump }),
         editing ? jsx(MessageEditor, { text: m.text, onSave: saveEdit, onCancel: stopEdit })
@@ -4364,11 +4756,14 @@ function Message(props) {
           : jsx('div', { className: 'h-text', children: text }),
         imp && jsx(ImpostorChip, { imp }),
         (m.reactions || []).length > 0 && jsx(ReactionChips, { reactions: m.reactions, onToggle: (emoji, on) => react(emoji, on) }),
-        m.delivery && jsx('div', { className: 'h-faint h-tiny', role: m.delivery === 'failed' ? 'alert' : undefined,
-          children: m.delivery === 'pending' ? 'Not delivered yet. Ninsei will resend it when a relay is back.'
-            : 'Not delivered. The relays turned it down or it waited too long.' })
+        (m.delivery === 'pending' || m.delivery === 'failed') && jsxs('div', { className: 'h-faint h-tiny h-failrow', role: m.delivery === 'failed' ? 'alert' : undefined, children: [
+          jsx('span', { children: m.delivery === 'pending' ? 'Not delivered yet. Ninsei will resend it when a relay is back.'
+            : m.local ? 'Not sent.' : 'Not delivered. The relays turned it down or it waited too long.' }),
+          m.delivery === 'failed' && props.onRetry && jsx(K.Button, { variant: 'ghost', size: 'sm', onClick: () => props.onRetry(m), children: 'Retry' }),
+          m.delivery === 'failed' && props.onDiscard && jsx(K.Button, { variant: 'ghost', size: 'sm', onClick: () => props.onDiscard(m), children: 'Discard' })
+        ] })
       ] }),
-      props.store && !m.deleted && jsx(MessageBar, { m, picking, setPicking, mine: mineSet, onReply: props.onReply, extra,
+      props.store && !m.deleted && !m.optimistic && jsx(MessageBar, { m, picking, setPicking, mine: mineSet, onReply: props.onReply, extra,
         onPick: emoji => react(emoji, !mineSet.includes(emoji)) }),
       asking && jsx(DeleteConfirm, { open: true, onConfirm: doDelete, onClose: () => setAsking(false) })
     ] })
@@ -4381,7 +4776,7 @@ function MessageBody(props) {
   if (m.deleted) return jsx('span', { className: 'h-deleted-t', children: 'Message deleted' })
   return jsxs(Fragment, { children: [
     jsx(RichText, { text: m.text, book: props.book }),
-    m.edited && jsx('span', { className: 'h-edited', title: 'Edited ' + fmtTime(m.edited_at || m.ts), children: ' (edited)' })
+    m.edited && jsx('span', { className: 'h-edited', title: 'Edited ' + fmtFull(m.edited_at || m.ts), children: ' (edited)' })
   ] })
 }
 
@@ -4612,10 +5007,17 @@ function SearchPanel(props) {
     ctx
       ? jsxs('div', { className: 'h-search-ctx', children: [
           jsx(K.Button, { variant: 'ghost', size: 'sm', onClick: () => setCtx(null), children: 'Back to results' }),
-          ctx.messages.map(m => jsx(SearchRow, { m, q: term, current: m.id === ctx.id }, m.id))
+          ctx.messages.flatMap((m, i) => [
+            (i === 0 || dayKey(m.ts) !== dayKey(ctx.messages[i - 1].ts)) && jsx('div', { className: 'h-sr-day', role: 'presentation', 'aria-hidden': true, children: dayLabel(m.ts) }, 'day-' + i),
+            jsx(SearchRow, { m, q: term, current: m.id === ctx.id }, m.id)
+          ])
         ] })
       : list.length > 0 && jsx('div', { className: 'h-search-list', id: 'h-search-list', role: 'listbox', 'aria-label': 'Search results',
-          children: list.map((r, i) => jsx(SearchRow, { m: r, q: term, option: true, active: i === active, id: 'h-sr-' + i, onClick: () => { setActive(i); open(r) } }, r.id)) })
+          children: list.flatMap((r, i) => [
+            // a day line where the day changes (results are newest first)
+            (i === 0 || dayKey(r.ts) !== dayKey(list[i - 1].ts)) && jsx('div', { className: 'h-sr-day', role: 'presentation', 'aria-hidden': true, children: dayLabel(r.ts) }, 'day-' + i),
+            jsx(SearchRow, { m: r, q: term, option: true, active: i === active, id: 'h-sr-' + i, onClick: () => { setActive(i); open(r) } }, r.id)
+          ]) })
   ] })
 }
 
@@ -4641,7 +5043,7 @@ function SearchRow(props) {
         jsx('b', { children: m.name }),
         m.role === 'agent' && jsx('span', { className: 'h-faint h-tiny', children: 'agent' }),
         m.impostor && jsx(ImpostorChip, { imp: m.impostor }),
-        jsx('span', { className: 'h-faint h-tiny', children: fmtWhen(m.ts) })
+        jsx('span', { className: 'h-faint h-tiny', title: fmtFull(m.ts), children: fmtWhen(m.ts) })
       ] }),
       jsx('div', { className: 'h-sr-t', children: [from > 0 && '…', parts, from + 260 < full.length && '…'] })
     ] })
@@ -4913,43 +5315,64 @@ function mentionCandidates(room) {
   return out.sort((a, b) => (!!b.yours - !!a.yours) || (!!b.online - !!a.online) || a.name.localeCompare(b.name))
 }
 
+// The list under the box for "@" and ":" alike: `options` are { key, left, name, sub }, `sel` the highlighted one.
+function SuggestMenu(props) {
+  return jsx('div', { className: 'h-ac', id: props.id, role: 'listbox', 'aria-label': props.label, children: props.options.map((c, i) =>
+    jsxs('div', { id: props.id + '-' + i, role: 'option', className: 'h-ac-opt', 'aria-selected': i === props.sel,
+      onMouseDown: e => { e.preventDefault(); props.onChoose(c) }, onMouseEnter: () => props.onHover(i), children: [
+        c.left,
+        jsx('b', { className: 'h-trunc', children: c.name }),
+        c.sub ? jsx('span', { className: 'h-ac-sub h-trunc', children: c.sub }) : null
+      ] }, c.key)) })
+}
+
 function Composer(props) {
   const { store, room, gameOn, reply, onCancelReply } = props
   // dm: a private conversation ({ onSend, placeholder, max }): no @ list (your agent is not in it), no games, no replies
   const dm = props.dm
-  const [text, setText] = useState('')
+  // unsent text is kept per room and per private conversation (room.id is 'dm-<key>' there)
+  const [text, setTextState] = useState(() => draftGet(room.id))
   const [menu, setMenu] = useState(false)
-  const [busy, setBusy] = useState(false)
   const [caret, setCaret] = useState(0)
   const [pick, setPick] = useState(0)
-  const [shut, setShut] = useState(-1)  // the '@' position the menu was dismissed at, with Escape
+  const [shut, setShut] = useState(-1)  // the '@' or ':' position the menu was dismissed at, with Escape
   const ta = useRef(null)
   const caretTo = useRef(null)
+  const setText = v => { setTextState(v); draftSet(room.id, v) }
   const cands = useMemo(() => dm ? [] : mentionCandidates(room), [room.members, !!dm])
   const mq = mentionQuery(text, caret)
-  const opts = mq && mq.at !== shut ? mentionMatches(cands, mq.q) : []
-  const open = opts.length > 0
+  const mopts = mq && mq.at !== shut ? mentionMatches(cands, mq.q) : []
+  const sq = mopts.length ? null : shortcodeQuery(text, caret)
+  const eopts = sq && sq.at !== shut ? shortcodeMatches(sq.q, 8) : []
+  const open = mopts.length > 0 || eopts.length > 0
+  const opts = mopts.length ? mopts : eopts
   const sel = Math.min(pick, opts.length - 1)
   const listId = 'h-at-' + room.id
   const track = e => setCaret(e.target.selectionStart || 0)
   const choose = c => {
-    const before = text.slice(0, mq.at) + '@' + c.name + ' '
-    setText(before + text.slice(caret).replace(/^\s+/, ''))
-    caretTo.current = before.length
-    setCaret(before.length)
+    if (mopts.length) {
+      const before = text.slice(0, mq.at) + '@' + c.name + ' '
+      setText(before + text.slice(caret).replace(/^\s+/, ''))
+      caretTo.current = before.length
+      setCaret(before.length)
+    } else {   // an emoji: the typed ":fi" becomes the character, and a space follows so you can keep typing
+      const before = text.slice(0, sq.at) + c.emoji + ' '
+      setText(before + text.slice(caret).replace(/^ /, ''))
+      caretTo.current = before.length
+      setCaret(before.length)
+    }
     setPick(0)
   }
-  const send = async () => {
+  // Enter sends at once: the message appears faint in the timeline, and a refusal turns into Retry / Discard there
+  const send = () => {
     const t = text.trim()
-    if (!t || busy) return
-    setBusy(true)
+    if (!t) return
     setText('')
-    const body = reply ? { room: room.id, text: t, reply: reply.id } : { room: room.id, text: t }
-    try {
-      if (dm) await dm.onSend(t)
-      else { await store.post('/post', body); if (reply && onCancelReply) onCancelReply() }
-    } catch (_) { setText(t) }
-    setBusy(false)
+    setCaret(0)
+    if (reply && onCancelReply) onCancelReply()
+    if (dm) dm.onSend(t)
+    else if (props.onSubmit) props.onSubmit(t, reply)
+    else store.post('/post', reply ? { room: room.id, text: t, reply: reply.id } : { room: room.id, text: t }).catch(() => setText(t))
     ta.current && ta.current.focus()
   }
   useLayoutEffect(() => {
@@ -4970,14 +5393,43 @@ function Composer(props) {
         return
       }
       if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); choose(opts[sel]); return }
-      if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); setShut(mq.at); return }
+      if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); setShut(mopts.length ? mq.at : sq.at); return }
+    }
+    // Up arrow in an empty box: edit your last message (rooms only; a private message can't be edited)
+    if (e.key === 'ArrowUp' && !text && props.onEditLast && !e.nativeEvent.isComposing && !e.shiftKey && !e.altKey && !e.metaKey && !e.ctrlKey) {
+      if (props.onEditLast()) e.preventDefault()
+      return
     }
     if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); send() }
+  }
+  const onChange = e => {
+    const v = e.target.value
+    let c = e.target.selectionStart || 0
+    const done = shortcodeClosed(v, c)   // ":fire:" typed out in full
+    if (done && !(e.nativeEvent && e.nativeEvent.isComposing)) {
+      const nv = v.slice(0, done.at) + done.emoji + v.slice(c)
+      c = done.at + done.emoji.length
+      setText(nv)
+      caretTo.current = c
+      setCaret(c)
+      setPick(0)
+      return
+    }
+    setText(v)
+    setCaret(c)
+    setPick(0)
+    if (!mentionQuery(v, c) && !shortcodeQuery(v, c)) setShut(-1)
+    if (!dm && v.trim()) typingPing(room.id)
   }
   const startGame = async mode => {
     setMenu(false)
     try { await store.post('/game/start', { room: room.id, mode }, gameName(mode) + ' is starting') } catch (_) { /* toasted */ }
   }
+  const menuOpts = mopts.length
+    ? mopts.map(c => ({ key: c.pk, name: c.name, sub: c.sub, emoji: '',
+        left: c.kind === 'agent' ? jsx(Face, { face: c.face, pk: c.pk, state: 'activity: idle', size: 22, name: c.name }) : jsx(PersonMark, { pk: c.pk, name: c.name, size: 22 }) }))
+    : eopts.map(c => ({ key: c.key, name: ':' + c.code + ':', sub: '', emoji: c.emoji, left: jsx('span', { className: 'h-ac-emoji', 'aria-hidden': true, children: c.emoji }) }))
+  const pickOf = i => (mopts.length ? mopts[i] : eopts[i])
   return jsxs('div', { className: 'h-compose-box', style: { position: 'relative' }, 'data-private': dm ? true : undefined, children: [
     reply && jsxs('div', { className: 'h-replying', children: [
       jsx(K.Icon, { name: 'reply', size: 12 }),
@@ -4985,25 +5437,19 @@ function Composer(props) {
       jsx('button', { type: 'button', className: 'h-bar-btn', 'aria-label': 'Cancel reply', onClick: onCancelReply, children: jsx(K.Icon, { name: 'close', size: 12 }) })
     ] }),
     dm && jsx(K.Icon, { name: 'lock', size: 13 }),
-    open && jsx('div', { className: 'h-ac', id: listId, role: 'listbox', 'aria-label': 'Mention someone', children: opts.map((c, i) =>
-      jsxs('div', { id: listId + '-' + i, role: 'option', className: 'h-ac-opt', 'aria-selected': i === sel,
-        onMouseDown: e => { e.preventDefault(); choose(c) }, onMouseEnter: () => setPick(i), children: [
-          c.kind === 'agent' ? jsx(Face, { face: c.face, pk: c.pk, state: 'activity: idle', size: 22, name: c.name }) : jsx(PersonMark, { pk: c.pk, name: c.name, size: 22 }),
-          jsx('b', { className: 'h-trunc', children: c.name }),
-          jsx('span', { className: 'h-ac-sub h-trunc', children: c.sub })
-        ] }, c.pk)) }),
+    open && jsx(SuggestMenu, { id: listId, label: mopts.length ? 'Mention someone' : 'Emoji', options: menuOpts, sel,
+      onChoose: c => choose(pickOf(menuOpts.indexOf(c))), onHover: setPick }),
     jsx('textarea', { ref: ta, rows: 1, value: text, placeholder: dm ? dm.placeholder : 'Message ' + room.name + ' (type @ to mention someone)', 'aria-label': dm ? dm.placeholder : 'Message', maxLength: dm ? dm.max : undefined,
-      role: dm ? undefined : 'combobox', 'aria-autocomplete': dm ? undefined : 'list', 'aria-expanded': dm ? undefined : open, 'aria-controls': open ? listId : undefined,
+      role: 'combobox', 'aria-autocomplete': 'list', 'aria-expanded': open, 'aria-controls': open ? listId : undefined,
       'aria-activedescendant': open ? listId + '-' + sel : undefined,
-      onChange: e => { setText(e.target.value); track(e); setPick(0); if (!mentionQuery(e.target.value, e.target.selectionStart)) setShut(-1)
-        if (!dm && e.target.value.trim()) typingPing(room.id) }, onSelect: track, onClick: track, onKeyUp: e => { if (!open || !/Arrow(Up|Down)/.test(e.key)) track(e) },
+      onChange, onSelect: track, onClick: track, onKeyUp: e => { if (!open || !/Arrow(Up|Down)/.test(e.key)) track(e) },
       onKeyDown: onKey }),
     !dm && jsxs('div', { style: { position: 'relative' }, children: [
       jsx(K.Tip, { label: 'Games', children: jsx(K.Button, { variant: 'ghost', size: 'icon', 'aria-label': 'Games', 'aria-expanded': menu,
         onClick: () => setMenu(!menu), children: jsx(K.Icon, { name: 'game', size: 15 }) }) }),
       menu && jsx(GamesMenu, { onClose: () => setMenu(false), onStart: startGame, gameOn })
     ] }),
-    jsx(K.Button, { variant: 'primary', size: 'icon', 'aria-label': 'Send', disabled: !text.trim() || busy, onClick: send,
+    jsx(K.Button, { variant: 'primary', size: 'icon', 'aria-label': 'Send', disabled: !text.trim(), onClick: send,
       children: jsx(K.Icon, { name: 'send', size: 14 }) })
   ] })
 }
@@ -5322,6 +5768,7 @@ function LineAbout(props) {
 // A friend request has no words at all: only who is asking. It waits under Requests until you accept or ignore it.
 // ---------------------------------------------------------------------------------------------
 
+const NO_MSGS = []  // a stable empty list, so a conversation that hasn't loaded doesn't look like a new snapshot each render
 const DM_REQUESTS = 'requests'  // store.dm() value that opens the Requests list instead of one conversation
 
 // The sidebar's "Direct messages": your friends (and any old conversation), then Requests (if any) as one row.
@@ -5369,32 +5816,47 @@ function useDmThread(store, pk, rev) {
 function DmView(props) {
   const { store, snap, pk } = props
   const { data, err, load } = useDmThread(store, pk, snap.dms ? snap.dms.rev : 0)
-  const scroller = useRef(null)
-  const stick = useRef(true)
   const seen = useRef(null)
   const [asking, setAsking] = useState(false)
   const [removing, setRemoving] = useState(false)
-  const msgs = (data && data.messages) || []
+  const [loadingMore, setLoadingMore] = useState(false)
+  const key = 'dm-' + pk
+  const fetchPage = useCallback(id => P.rest('/dm?pk=' + encodeURIComponent(pk) + '&read=0&before=' + encodeURIComponent(id)).then(d => ({ messages: d.messages, more: d.earlier })), [pk])
+  const er = useEarlier(key, (data && data.messages) || NO_MSGS, data && data.earlier, fetchPage)
+  // what you just sent shows at once, faint, until the conversation has it
+  const sent = useOutbox(key)
+  const have = useMemo(() => new Set(er.msgs.map(m => m.id)), [er.msgs])
+  useEffect(() => { outboxSweep(key, have) }, [have, sent])
+  const mine = sent.filter(e => !(e.state === 'posted' && e.id && have.has(e.id)))
+  const msgs = mine.length ? er.msgs.concat(mine.map(e => outboxItem(e, snap.me))) : er.msgs
+  const loadEarlier = useCallback(async () => { setLoadingMore(true); try { return await er.load() } finally { setLoadingMore(false) } }, [er.load])
+  const keeper = useScrollKeeper(key, !!data, msgs, er.more, loadEarlier)
+  const { scroller, stick } = keeper
   if (data && seen.current === null) seen.current = new Set(msgs.map(m => m.id))
   const fresh = id => {
-    if (!seen.current || seen.current.has(id)) return false
+    if (!seen.current) return false
+    if (seen.current.has(id)) return false
     seen.current.add(id)
-    return true
+    return !er.olderIds.has(id)
   }
-  const onScroll = () => {
-    const el = scroller.current
-    if (el) stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80
-  }
-  const lastId = msgs.length ? msgs[msgs.length - 1].id : ''
-  useLayoutEffect(() => {
-    const el = scroller.current
-    if (el && stick.current) el.scrollTop = el.scrollHeight
-  }, [msgs.length, lastId])
+  if (seen.current) for (const e of sent) if (e.id) seen.current.add(e.id)
   const name = (data && data.name) || 'Someone'
-  const send = async text => {
-    await store.post('/dm/send', { pk, text })
+  // Sending: the message appears at once; a send the engine refuses becomes Retry / Discard in place
+  const send = text => {
     stick.current = true
-    await load()
+    return outboxSend(key, text, null, t => store.post('/dm/send', { pk, text: t }).then(out => load().then(() => out)))
+  }
+  const retry = m => {
+    if (m.local) {
+      const e = (OUTBOX.get(key) || []).find(x => x.tmp === m.id)
+      if (!e) return
+      outboxSet(key, l => l.filter(x => x.tmp !== m.id))
+      send(e.text)
+    } else store.post('/dm/retry', { pk, id: m.id }).then(load, () => {})   // the very same sealed message
+  }
+  const discard = m => {
+    if (m.local) outboxSet(key, l => l.filter(x => x.tmp !== m.id))
+    else store.post('/dm/discard', { pk, id: m.id }).then(load, () => {})
   }
   const friendPost = async (path, okMsg) => { try { await store.post(path, { pk }, okMsg); await load() } catch (_) { /* toasted */ } }
   const addFriend = () => friendPost('/friend/request', 'Friend request sent to ' + name + '.')
@@ -5448,15 +5910,16 @@ function DmView(props) {
         jsx(K.Button, { variant: 'ghost', size: 'sm', onClick: hide, children: 'Hide ' + name }, 'h')
       ] })
     ] }) }) }),
-    jsx('div', { className: 'h-scroll', ref: scroller, onScroll, children: jsxs('div', { className: 'h-timeline', role: 'log', 'aria-live': 'polite', 'aria-label': 'Private messages with ' + name, children: [
+    jsx('div', { className: 'h-scroll', ref: scroller, onScroll: keeper.onScroll, children: jsxs('div', { className: 'h-timeline', role: 'log', 'aria-live': 'polite', 'aria-label': 'Private messages with ' + name, children: [
+      er.more && jsx(EarlierButton, { onClick: keeper.loadMore, busy: loadingMore }),
       err && jsx(Notice, { icon: 'warning', role: 'alert', children: err }),
       !data && !err && jsx('div', { className: 'h-empty', children: 'Opening the conversation…' }),
-      data && data.friend && msgs.length === 0 && jsxs('div', { className: 'h-empty', children: [
+      data && data.friend && msgs.length === 0 && mine.length === 0 && jsxs('div', { className: 'h-empty', children: [
         jsx(K.Icon, { name: 'lock', size: 22 }),
         jsx('b', { children: 'Say hello to ' + name }),
         jsx('div', { style: { maxWidth: 420 }, children: 'Only the two of you can read what you write here. It is encrypted on its way, and your agent never sees it.' })
       ] }),
-      items.map(it => it.kind === 'msg' && jsx(DmItem, { it, animate: fresh(it.key) }, it.key))
+      items.map(it => (it.kind === 'day' ? jsx(DmItem, { it, animate: false }, it.key) : it.kind === 'msg' && jsx(DmItem, { it, animate: fresh(it.key), onRetry: retry, onDiscard: discard }, it.key)))
     ] }) }),
     data && data.friend && jsx('div', { className: 'h-composer', children: jsx(Composer, { store, room: composeRoom, snap, dm: dmSend }) }),
     jsx(Modal, { open: removing, onClose: () => setRemoving(false), title: 'Remove ' + name + ' from your friends?',
@@ -5476,7 +5939,8 @@ function DmView(props) {
 
 function DmItem(props) {
   const ref = useEnter(props.animate)
-  return jsx('div', { ref, children: jsx(Message, { m: props.it.m, first: props.it.first, book: {} }) })
+  if (props.it.kind === 'day') return jsx(DayLine, { ts: props.it.ts })
+  return jsx('div', { ref, children: jsx(Message, { m: props.it.m, first: props.it.first, book: {}, onRetry: props.onRetry, onDiscard: props.onDiscard }) })
 }
 
 // Friend requests. There is nothing to read: a request has no message, only who is asking (by the name your rooms
@@ -6321,7 +6785,7 @@ function App(props) {
     if (view === 'hermes') center = jsx(LineView, { store, snap })
     else if (view === 'dm') center = dmPk === DM_REQUESTS ? jsx(DmRequests, { store, snap }) : dmPk ? jsx(DmView, { store, snap, pk: dmPk, onPeople: togglePeople }, dmPk) : jsx(DmEmpty, {})
     else if (view === 'settings') center = jsx('div', { className: 'h-scroll', children: jsxs('div', { className: 'h-pane', children: [jsx('h1', { children: 'Settings' }, 'h'), jsx(SettingsForm, { store, snap, inset: true }, 's')] }) })
-    else if (showRoom && room) center = jsx(RoomView, { store, snap, room, onPeople: togglePeople })
+    else if (showRoom && room) center = jsx(RoomView, { store, snap, room, onPeople: togglePeople }, room.id)
     else if (showRoom) center = jsx('div', { className: 'h-empty', children: 'Opening the room…' })
     else if (view === 'lobby' || !(snap.rooms || []).length) center = jsx(Lobby, { store, snap })
     else center = jsx(Welcome, { store, snap, onLobby: () => go('lobby') })
@@ -6480,7 +6944,7 @@ function Rail(props) {
           (drafts[r.id] || waiting[r.id]) && jsx(K.Tip, { label: waiting[r.id] ? 'Your agent is waiting on you' : 'Draft waiting to send', children: jsx(K.Icon, { name: waiting[r.id] ? 'clock' : 'edit', size: 12 }) }),
           r.mentions > 0 ? jsx('span', { className: 'h-mentions', 'aria-label': r.mentions + (r.mentions === 1 ? ' mention' : ' mentions') + ' of you', children: '@' + (r.mentions > 9 ? '9+' : r.mentions) })
             : r.unread > 0 && jsx('span', { className: 'h-dot', 'aria-label': r.unread + ' unread' }),
-          jsxs('span', { className: 'h-count', title: r.online + ' online', children: [r.online || '', r.online > 0 && jsx('span', { className: 'h-sr', children: ' online' }, 's')] })
+          jsxs('span', { className: 'h-count', title: r.online + ' online', children: [r.online || '', r.online > 0 && jsx('span', { className: 'h-vh', children: ' online' }, 's')] })
         ] }, r.id))
     ] }),
     jsx(DmRail, { store, snap, view, go }),
