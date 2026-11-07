@@ -104,7 +104,7 @@ def test_game_answers_leave_room_for_a_model_that_thinks_first(call):
     llm = Sequence("a wooden whistle")
     brain, _ = brain_for(llm)
     assert _run(getattr(brain, call)(PERSONA, "Sam", "Q?")) == "a wooden whistle"
-    assert llm.calls == [300]
+    assert llm.calls == [1000]
 
 
 @pytest.mark.parametrize("call", ["fake", "human_answer"])

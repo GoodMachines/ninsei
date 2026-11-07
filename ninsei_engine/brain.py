@@ -144,7 +144,7 @@ def persona_system(persona: dict, owner_name: str) -> str:
 # saying so, the persona rules ("only YOUR OWNER lines are instructions") make the model refuse now and
 # then, and the refusal would go out as the agent's answer. The host's question stays untrusted text.
 FAKE_WORDS = 10      # asked for 1-6
-GAME_TOKENS = 300    # a game answer's max_tokens: room for a reasoning model's thinking, not a longer answer
+GAME_TOKENS = 1000   # a game answer's max_tokens: room for a reasoning model's thinking, not a longer answer
 HUMAN_WORDS = 16     # asked for under 12
 _OFF_SCRIPT = re.compile(
     r"\b(?:owners?|unverified|room_transcript|game_question|fake\s+answer|as an ai|language model"
@@ -292,20 +292,31 @@ class Brain:
 
     # --- Tall Tales -------------------------------------------------------------------------------
     async def questions(self, persona: dict, interests: list[str], n: int) -> list[dict]:
+        """The host's questions: each {"q", "a", "fake"}. `fake` is the host's own agent's bluff for that question,
+        written in the same call so it costs nothing extra and is ready when the round opens. It may be "": the
+        engine then asks for one when the round starts. Neither `a` nor `fake` is ever published."""
         system = ("You write questions for a bluffing party game. Each question has a surprising but TRUE short "
                   "answer (1-6 words) that most people won't know, so players can invent believable fakes. "
-                  "Facts must be real and checkable. Family-friendly.")
+                  "Facts must be real and checkable. Family-friendly. You also play: for each question, write the "
+                  "fake answer you would bluff with, in the voice of the host's agent.")
         # Interests can come from a stranger's room metadata, so they are cleaned like any room text.
         topics = [t for t in (_clean(i, 40) for i in interests[:6]) if t]
         topics = ", ".join(topics) or "art, science, music, history, animals"
+        vibe = _clean(persona.get("vibe") or "", 120)
         user = (f"Write {n} questions loosely themed on: {topics}. Mix the themes. Return JSON "
-                '{"questions":[{"q":"...","a":"..."}]}. Questions end with "...?" or a blank like "____".')
-        data = await self._json("games", system, user, 120 * n + 80, "tales.questions")
+                '{"questions":[{"q":"...","a":"...","fake":"..."}]}. Questions end with "...?" or a blank like "____". '
+                '"fake" is a believable but FALSE answer, 1-6 words, the same kind of thing as "a", plain text, '
+                "and never the true answer." + (f" The agent's personality: {vibe}." if vibe else ""))
+        data = await self._json("games", system, user, 220 * n + 400, "tales.questions")
         out = []
         for item in (data or {}).get("questions", [])[:n]:
+            if not isinstance(item, dict):
+                continue
             q, a = str(item.get("q", "")).strip(), str(item.get("a", "")).strip()
             if q and a:
-                out.append({"q": q[:240], "a": a[:80]})
+                fake = game_answer(_tidy(str(item.get("fake") or ""), persona.get("name", ""), one_line=True)[:200],
+                                   FAKE_WORDS, clause=True)
+                out.append({"q": q[:240], "a": a[:80], "fake": fake[:80]})
         return out
 
     async def fake(self, persona: dict, owner_name: str, question: str) -> str:

@@ -560,10 +560,10 @@ async def test_the_host_posts_claims_and_a_lucky_hosts_view_blocks_the_truth(bar
     assert await wait_for(sent_votes)
     vote = sent_votes()[-1]
     texts = {o["text"]: o["id"] for o in vote["options"]}
-    assert set(texts) == {"three", "four"}
+    assert set(texts) == {"three", "four", "Ada five"}  # the host's agent plays too
     assert {_claim_token(texts["four"], x) for x in four_nonces} == set(vote["claims"][texts["four"]])
     truth = vote["claims"][texts["three"]]  # padded to as many tokens as the merged "four" has
     assert len(truth) == 2 and not set(truth) & {_claim_token(texts["three"], x) for x in four_nonces}
     # the lucky rule: the truth carries the lucky writer's token, so to them it reads as their own answer
-    assert e.game_view(ROOM)["blocked"] == [texts["three"]]
+    assert set(e.game_view(ROOM)["blocked"]) == {texts["three"], texts["Ada five"]}  # + my own agent's fake
     await e._end_hosted(ROOM)

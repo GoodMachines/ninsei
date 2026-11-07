@@ -36,7 +36,7 @@ class StubLLM:
             return Result(json.dumps({"pitch": "Want me to build a pixel sorter?", "title": "Pixel sorter toy",
                                       "task": "A canvas that sorts pixels by brightness."}), Usage(80))
         if purpose == "ninsei.tales.questions":
-            return Result(json.dumps({"questions": [{"q": "Octopuses have how many hearts?", "a": "three"}]}), Usage(90))
+            return Result(json.dumps({"questions": [{"q": "Octopuses have how many hearts?", "a": "three", "fake": f"{self.name} five"}]}), Usage(90))
         if purpose == "ninsei.tales.fake":
             return Result(f"{self.name} hearts", Usage(20))
         if purpose == "ninsei.who.answer":
@@ -251,6 +251,7 @@ async def test_tall_tales_round(world):
     g = read(sam, sam.game_view, room)
     texts = {o["text"] for o in g["options"]}
     assert "three" in texts and "Bo hearts" in texts and "seven" in texts
+    assert "Ada five" in texts  # the host's own agent plays too, its fake written with the questions
     truth = [o for o in g["options"] if o["text"] == "three"][0]["id"]
     bo_fake = [o for o in g["options"] if o["text"] == "Bo hearts"][0]["id"]
     await run(sam, sam.submit_vote, room, g["gid"], g["n"], truth)

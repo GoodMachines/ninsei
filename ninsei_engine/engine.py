@@ -60,6 +60,7 @@ STRANGER_REPLIES = 4       # replies one other team can trigger from my agent pe
 STRANGER_WINDOW = 300
 ROOM_STRANGER_CALLS = 12   # model calls ALL other teams together can trigger per room per STRANGER_WINDOW
                            # (keys are free, so a per-team limit alone is beaten by making new keys)
+FAKE_JITTER = 0.5          # seconds of random wait before my agent writes a fake (a tiny, deliberate stagger)
 FAKES_PER_HOST = 5         # tall-tale fakes my agent writes for one host per FAKES_WINDOW
 FAKES_WINDOW = 600
 MAX_PRESENCE = 64          # agents tracked per room
@@ -271,6 +272,16 @@ def _build_claim(b: Any) -> Optional[dict]:
     if not isinstance(step, int) or isinstance(step, bool):
         step = 0
     return {"offer": b["offer"], "step": max(0, min(step, MAX_BUILD_STEPS)), "wait": b.get("wait") is True}
+
+
+def _gave_up_claim(b: Any) -> Optional[tuple]:
+    """A peer's "I have no answer for this round", as a presence field: (game id, round number) or nothing."""
+    if not isinstance(b, dict) or not isinstance(b.get("gid"), str) or len(b["gid"]) > 32:
+        return None
+    n = b.get("n")
+    if not isinstance(n, int) or isinstance(n, bool) or not 1 <= n <= game.MAX_ROUNDS:
+        return None
+    return (b["gid"], n)
 
 
 def _fold(s: str) -> str:
@@ -513,6 +524,7 @@ class Engine:
         self.lobby: dict = {"rooms": [], "people": [], "at": 0}
         self.agent_state = "activity: idle"
         self.agent_note = ""
+        self._gave_up: Optional[tuple] = None   # (gid, n) of the last game round my agent had no answer for
         self._last_spoke: dict[str, float] = {}
         self._recent_posts: list[float] = []
         self._rested_notice: dict[str, str] = {}
@@ -1137,7 +1149,7 @@ class Engine:
             pres[ev["pubkey"]] = {
                 "state": str(c.get("state", "activity: idle"))[:32], "budget": _budget_share(c.get("budget")),
                 "at": time.time(), "owner": owner, "name": name, "face": _face_or(c.get("face"), None),
-                "build": _build_claim(c.get("build")),
+                "build": _build_claim(c.get("build")), "gave_up": _gave_up_claim(c.get("gave_up")),
                 "vibe": str(c.get("vibe"))[:200] if isinstance(c.get("vibe"), str) else "",
                 "model": _model_ok(c.get("model"))}
             self._seen_active(room, ev["pubkey"], time.time())
@@ -2342,11 +2354,13 @@ class Engine:
                 ends = time.time() + game.FAKE_SECONDS * self.ts
                 await self._host_post(g, {"t": "tales_round", "gid": gid, "n": n, "of": len(g["qs"]),
                                           "q": q["q"], "ends_at": ends, "secs": game.FAKE_SECONDS * self.ts})
-                await self._wait_until(g, ends, lambda: self._round_sealed(room, gid, n) >= (people | agents))
+                mine = self._spawn(self._answer_as_host(g, n, q))  # my own agent plays too (sealed like any answer)
+                await self._wait_until(g, ends, lambda: mine.done()
+                                       and self._round_sealed(room, gid, n) >= (people | agents))
                 seed = f"{g['seed']}:{n}"
                 now_people, now_agents = self._present_players(room, me)
                 team = self._team_of(room)
-                allowed = (people | agents | now_people | now_agents) - {me}
+                allowed = people | agents | now_people | now_agents | {me}
                 sealed = self._round_fakes(room, gid, n, allowed)  # only I can open them
                 fakes = self._round_answers({pk: f["text"] for pk, f in sealed.items()}, allowed, team, seed,
                                             g.get("regulars", frozenset()))
@@ -2404,7 +2418,7 @@ class Engine:
         ends = time.time() + game.FAKE_SECONDS * self.ts
         await self._host_post(g, {"t": "tales_round", "gid": gid, "n": n, "of": len(g["qs"]),
                                   "q": prompt, "ends_at": ends, "secs": game.FAKE_SECONDS * self.ts})
-        self._spawn(self._answer_as_host(g, n, prompt))
+        self._spawn(self._answer_as_host(g, n, {"q": prompt, "a": ""}))
         await self._wait_until(g, ends, lambda: self._round_sealed(room, gid, n) >= (people | agents))
         seed = f"{g['seed']}:{n}"
         now_people, now_agents = self._present_players(room, me)
@@ -2437,24 +2451,57 @@ class Engine:
             "picks": flagged, "voters": sorted(flags), "points": points, "scores": scores,
             "names": self._names_in(room, set(author_of.values()) | set(flags) | set(points))}))
 
-    async def _answer_as_host(self, g: dict, n: int, prompt: str) -> None:
-        """My agent's own answer in a Who's the Agent? round I host. My owner's budget, like any move."""
-        if self._inflight >= MAX_INFLIGHT:
-            return
-        self._inflight += 1
-        try:
-            await asyncio.sleep(random.uniform(3, 9) * self.ts)  # don't always answer first: that's a tell
-            text = await self.brain.human_answer(self.persona(), self.settings()["display_name"] or "my owner", prompt)
-        except BudgetExhausted:
-            self._set_state("system: waiting", "out of budget for today")
-            return
-        except Exception as e:
-            log.debug("ninsei: host answer failed: %s", e)
-            return
-        finally:
-            self._inflight -= 1
+    async def _answer_as_host(self, g: dict, n: int, q: dict) -> None:
+        """My agent's own answer in a round I host, sealed to myself like any answer and counted for my team
+        under the same rules (one agent a team, my team can't vote for it, the lucky rule). Tall Tales: the fake
+        came with the questions, so there is no model call and no delay; one that matches the truth is dropped
+        (my agent knows the truth, so a match is no bluff) and one more is asked for, which cannot see the truth.
+        Who's the Agent?: one call, a few seconds in, so it isn't always first (that's a tell). My owner's budget."""
+        tales = g.get("mode") != "agent"
+        text = str(q.get("fake") or "") if tales else ""
+        if tales and game.norm(text) == game.norm(q.get("a", "")):
+            text = ""   # never keep a fake that is the truth: the host's own agent would score a free point
+        if not text:
+            if self._inflight >= MAX_INFLIGHT:
+                self._gave_up_round(g["gid"], n)
+                return
+            self._inflight += 1
+            try:
+                if not tales:
+                    await asyncio.sleep(random.uniform(3, 9) * self.ts)
+                owner_name = self.settings()["display_name"] or "my owner"
+                self._set_state("activity: working", "writing a tall tale" if tales else "trying to sound human")
+                if tales:
+                    text = await self.brain.fake(self.persona(), owner_name, str(q.get("q", "")))
+                    if game.norm(text) == game.norm(q.get("a", "")):
+                        text = ""
+                else:
+                    text = await self.brain.human_answer(self.persona(), owner_name, str(q.get("q", "")))
+            except BudgetExhausted:
+                self._set_state("system: waiting", "out of budget for today")
+                self._gave_up_round(g["gid"], n, note=False)
+                return
+            except Exception as e:
+                log.debug("ninsei: host answer failed: %s", e)
+                text = ""
+            finally:
+                self._inflight -= 1
         if text and self._host_games.get(g["gid"]) is g:
             await self._publish_fake(g["room"], True, g["gid"], n, text, self._identity()["agent_pk"])
+            self._set_state("activity: idle")
+        elif not text:
+            self._gave_up_round(g["gid"], n)
+
+    def _gave_up_round(self, gid: Any, n: Any, note: bool = True) -> None:
+        """My agent has no answer for this round (no model, no budget, an empty or refused reply). The room's game
+        panel shows "couldn't answer" for it, from the presence beat; it says nothing about any option."""
+        if self._gave_up == (str(gid)[:32], n):
+            return   # said once; a host repeating its round can't make a beat each time
+        self._gave_up = (str(gid)[:32], n)
+        if note:
+            self._set_state("activity: idle", "couldn't come up with one", force=True)
+        else:
+            self._beat_soon()
 
     async def _wait_until(self, g: dict, deadline: float, done: Callable[[], bool]) -> None:
         while time.time() < deadline:
@@ -2488,14 +2535,21 @@ class Engine:
         if key in self._played:
             return
         if not self._rate_ok(f"fake:{room}:{_team_key(ev['pubkey'], self.owner_of(ev))}", FAKES_PER_HOST, FAKES_WINDOW):
+            self._gave_up_round(c.get("gid"), c.get("n"))
             return
         if not self._stranger_call_ok(room, None, 0):
+            self._gave_up_round(c.get("gid"), c.get("n"))
             return
         self._played[key] = time.time()
         while len(self._played) > MAX_PLAYED:
             self._played.pop(next(iter(self._played)))
-        await asyncio.sleep(random.uniform(2, 7) * self.ts)
-        if not self._round_playable(room, ev, c) or self._inflight >= MAX_INFLIGHT:
+        # Only a hair of jitter: the floor is the round's 45 s, and the old 2-7 s wait cost a slow model a
+        # sixth of it. (Thinking models are slow already; waiting first only made them late.)
+        await asyncio.sleep(random.uniform(0, FAKE_JITTER) * self.ts)
+        if not self._round_playable(room, ev, c):
+            return
+        if self._inflight >= MAX_INFLIGHT:
+            self._gave_up_round(c.get("gid"), c.get("n"))
             return
         self._inflight += 1
         try:
@@ -2508,15 +2562,19 @@ class Engine:
                 fake = await self.brain.fake(self.persona(), owner_name, str(c.get("q", "")))
         except BudgetExhausted:
             self._set_state("system: waiting", "out of budget for today")
+            self._gave_up_round(c.get("gid"), c.get("n"), note=False)
             return
         except Exception as e:
             self._set_state("system: error", str(e)[:120])
+            self._gave_up_round(c.get("gid"), c.get("n"), note=False)
             return
         finally:
             self._inflight -= 1
         if fake:
             await self._publish_fake(room, True, c.get("gid"), c.get("n"), fake, ev["pubkey"])  # ev: the host's round
-        self._set_state("activity: idle")
+            self._set_state("activity: idle")
+        else:
+            self._gave_up_round(c.get("gid"), c.get("n"))
 
     async def submit_fake(self, room: str, gid: str, n: int, text: str) -> None:
         text = re.sub(r"\s+", " ", text or "").strip()[:80]
@@ -2620,6 +2678,37 @@ class Engine:
                 view.update(phase="end", aborted=True, stale=True)
         return view
 
+    def _game_agents(self, room: str, view: dict, fakers: set, evs: list) -> list:
+        """Each agent playing this round and where it is: "answered" (its sealed answer is in: public, the room
+        sees the event), "gave_up" (it said it has none, via presence), "writing", or "none" once the answers
+        are closed. Never says what an answer is or which option is whose. People I hid are left out."""
+        ident = self._identity()
+        gid, n = view["gid"], view["n"]
+        now = time.time()
+        pres = dict(self.presence.get(room, {}))
+        who = self._who(room, evs)
+        out = []
+        for pk, p in pres.items():
+            if pk == ident["agent_pk"] or now - p["at"] >= ABSENT_AFTER or pk in self._hidden_agents \
+                    or p["owner"] in self._hidden:
+                continue
+            out.append((pk, p["name"], p.get("gave_up")))
+        out.append((ident["agent_pk"], self.persona().get("name") or "Agent", self._gave_up))
+        rows = []
+        for pk, name, gave in out[:24]:
+            if self._holder(who, name, agent=True) not in (None, pk):
+                name = _short(pk)   # a lookalike never wears the real name here either
+            if pk in fakers:
+                status = "answered"
+            elif gave == (gid, n):
+                status = "gave_up"
+            elif view["phase"] == "fakes":
+                status = "writing"
+            else:
+                status = "none"
+            rows.append({"pk": pk, "name": name, "status": status, "yours": pk == ident["agent_pk"]})
+        return rows
+
     def _scrub_hidden(self, view: dict) -> None:
         """Leave people I hid (and their agents, as far as I know their keys) out of another host's game:
         their scores, points, picks, names and credited answers. During the vote options are anonymous,
@@ -2709,8 +2798,8 @@ class Engine:
             c = self._content(e)
             if c.get("gid") != gid or c.get("n") != view["n"]:
                 continue
-            if e["pubkey"] == host and not (view["mode"] == "agent" and c.get("t") == "tales_fake"):
-                continue  # in Who's the Agent? the host's own agent answers too, as a player
+            if e["pubkey"] == host and c.get("t") != "tales_fake":
+                continue  # the host's own agent answers too, as a player, in both games
             if c.get("t") == "tales_fake":
                 if is_sealed(c.get("enc")):  # a plaintext answer (an old client) is never read or shown
                     fakers.add(e["pubkey"])
@@ -2740,6 +2829,10 @@ class Engine:
                     else:
                         view["my_vote"] = got["option"]
         view["fakes_in"], view["votes_in"] = len(fakers), len(voters)
+        view["agents"] = self._game_agents(room, view, fakers, evs)
+        # what the "How to play" panel says, from the same constants that run the clock (never typed twice)
+        view["rules"] = {"fake": game.FAKE_SECONDS, "vote": game.VOTE_SECONDS, "reveal": game.REVEAL_SECONDS,
+                         "rounds": view["rounds"]}
         if self._hidden:
             self._scrub_hidden(view)
         who = self._who(room, evs)
@@ -3135,6 +3228,8 @@ class Engine:
         for room in list(self.store.rooms()):
             content = {"t": "presence", "state": self.agent_state,
                        "budget": round(bv["pct"], 2) if s["share_budget"] else None}
+            if self._gave_up:   # "couldn't answer" in the game panel, for this one round (checked on receipt)
+                content["gave_up"] = {"gid": self._gave_up[0], "n": self._gave_up[1]}
             if s["card_details"]:  # the owner chose to show these on the agent's card
                 content["vibe"] = s["vibe"][:200]
                 content["model"] = self.store.get("model_last") or ""

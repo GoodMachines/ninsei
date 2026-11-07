@@ -1271,8 +1271,20 @@ const CSS = TOKENS + `
 .h-compose-box textarea{flex:1;border:0;outline:0;resize:none;background:transparent;color:var(--h-fg);font:inherit;padding:5px 0;max-height:160px;min-height:22px;line-height:1.45}
 .h-compose-box textarea::placeholder{color:var(--h-fg3)}
 .h-menu{position:absolute;bottom:calc(100% + 6px);left:0;min-width:220px;border:1px solid var(--h-line2);border-radius:10px;background:var(--h-card);box-shadow:0 12px 32px -12px var(--h-shadow);padding:4px;z-index:10}
-.h-menu button{display:flex;align-items:flex-start;gap:8px;width:100%;text-align:left;padding:7px 9px;border-radius:7px;border:0;background:transparent;color:var(--h-fg);cursor:pointer}
-.h-menu button:hover{background:var(--h-hover)}
+.h-menu>button{display:flex;align-items:flex-start;gap:8px;width:100%;text-align:left;padding:7px 9px;border-radius:7px;border:0;background:transparent;color:var(--h-fg);cursor:pointer}
+.h-menu>button:hover{background:var(--h-hover)}
+.h-gm-menu{min-width:320px}
+.h-gm{display:flex;align-items:flex-start;gap:8px;padding:7px 9px;border-radius:7px}
+.h-gm .h-grow{display:flex;flex-direction:column;gap:1px;min-width:0}
+.h-gm .h-gm-line{display:block}
+.h-gm button{flex:none;width:auto}
+.h-howto{border:1px solid var(--h-line2);border-radius:10px;padding:10px 12px;background:var(--h-raise);display:flex;flex-direction:column;gap:6px}
+.h-howto-list{display:grid;grid-template-columns:auto 1fr;gap:4px 12px;margin:0;font-size:13px;line-height:1.4}
+.h-howto-list dt{font-weight:600;color:var(--h-fg2)}
+.h-howto-list dd{margin:0;color:var(--h-fg)}
+.h-agents-in{list-style:none;margin:0;padding:0;display:flex;flex-wrap:wrap;gap:6px 14px;font-size:12px}
+.h-agents-in li{display:flex;gap:6px;min-width:0}
+.h-agents-in li[data-status=gave_up] .h-faint{color:var(--h-warn)}
 .h-tray{display:flex;flex-direction:column;gap:6px;margin-bottom:8px}
 .h-draft{border:1px dashed var(--h-line2);border-radius:10px;padding:8px 10px;display:flex;gap:10px;align-items:flex-start}
 
@@ -5022,16 +5034,20 @@ function GamesMenu(props) {
     const off2 = P.listen(document, 'keydown', esc)
     return () => { off1(); off2() }
   }, [])
-  const item = (mode, icon, blurb) => jsxs('button', { type: 'button', role: 'menuitem', disabled: props.gameOn, onClick: () => props.onStart(mode), children: [
+  // Each game says what it is in two lines and starts only from its own Start button.
+  const item = (mode, icon, lines) => jsxs('div', { className: 'h-gm', role: 'group', 'aria-label': gameName(mode), children: [
     jsx(K.Icon, { name: icon, size: 15 }),
-    jsxs('span', { children: [
-      jsx('b', { children: gameName(mode) }), jsx('br', {}),
-      jsx('span', { className: 'h-faint h-small', children: props.gameOn ? 'A game is already running' : blurb })
-    ] })
+    jsxs('span', { className: 'h-grow', children: [
+      jsx('b', { children: gameName(mode) }),
+      jsx('span', { className: 'h-faint h-small h-gm-line', children: props.gameOn ? 'A game is already running' : lines[0] }),
+      !props.gameOn && jsx('span', { className: 'h-faint h-small h-gm-line', children: lines[1] })
+    ] }),
+    jsx(K.Button, { variant: 'primary', size: 'sm', disabled: props.gameOn, 'aria-label': 'Start ' + gameName(mode),
+      onClick: () => props.onStart(mode), children: 'Start' })
   ] }, mode)
-  return jsxs('div', { className: 'h-menu', ref, role: 'menu', style: { left: 'auto', right: 0 }, children: [
-    item('tales', 'game', 'Your agent hosts. Everyone writes a fake answer; spot the truth.'),
-    item('agent', 'organization', 'Everyone answers, agents too, and the agents sound human on purpose. Spot them.')
+  return jsxs('div', { className: 'h-menu h-gm-menu', ref, role: 'menu', style: { left: 'auto', right: 0 }, children: [
+    item('tales', 'game', ['Your agent hosts and asks a question with a real answer.', 'Everyone writes a fake. Vote for the true one.']),
+    item('agent', 'organization', ['Everyone answers a prompt, agents too, trying to sound human.', 'Spot the agents.'])
   ] })
 }
 
@@ -5542,9 +5558,62 @@ const LETTERS = 'ABCDEFGHIJKL'
 const GAME_NAME = { tales: 'Tall Tales', agent: 'Who’s the Agent?' }
 function gameName(mode) { return GAME_NAME[mode] || GAME_NAME.tales }
 
+// "How to play": what each phase does, its length, the points. The numbers come from the engine's own
+// constants (game.rules), so the copy can't drift from the clock. Plain sentences, one thought each.
+function howToLines(mode, rules) {
+  const r = rules || {}
+  const rounds = r.rounds || 3
+  const secs = n => (n || 0) + ' seconds'
+  const rows = []
+  if (mode === 'agent') {
+    rows.push(['Answer', 'Each round has a prompt about everyday life. You have ' + secs(r.fake) + ' to answer. Agents answer too, and they try to sound like people.'])
+    rows.push(['Guess', 'Then you have ' + secs(r.vote) + ' to tap the answers you think an agent wrote. Anything you skip counts as a person.'])
+    rows.push(['Reveal', 'Everyone sees who wrote what for ' + secs(r.reveal) + ', then the next round starts. ' + rounds + ' rounds in all.'])
+    rows.push(['Points', 'For each answer from another team: a right call is 1 point for you. A wrong call is 1 point for the answer’s team, so an agent that passes as a person scores.'])
+    rows.push(['Teams', 'You and your agent are one team. You can’t call your own team’s answers, and only people guess. The host’s agent plays too.'])
+  } else {
+    rows.push(['Write', 'Each round, the host’s agent asks a question that has a real answer. You have ' + secs(r.fake) + ' to write a fake answer that sounds true. Agents write fakes too, the host’s agent included.'])
+    rows.push(['Vote', 'Then the real answer is mixed in with the fakes and you have ' + secs(r.vote) + ' to pick the one you think is true. Only people vote.'])
+    rows.push(['Reveal', 'The truth and who wrote each fake show for ' + secs(r.reveal) + ', then the next round starts. ' + rounds + ' rounds in all.'])
+    rows.push(['Points', 'Finding the truth is 2 points. Each person your fake fools is 1 point for you. If your fake happens to match the real answer, that is 1 lucky point.'])
+    rows.push(['Teams', 'You and your agent are one team. You can’t vote for your team’s answers.'])
+  }
+  rows.push(['Sealed', 'Answers and votes are sealed until the reveal. Only the host can read them. A phase ends early once everyone is in.'])
+  return rows
+}
+
+function HowToPlay(props) {
+  const { game, onClose } = props
+  return jsxs('section', { className: 'h-howto', 'aria-label': 'How to play ' + gameName(game.mode), children: [
+    jsxs('div', { className: 'h-row', children: [
+      jsx('div', { className: 'h-grow h-kicker h-sec', children: 'How to play' }),
+      jsx(K.Button, { variant: 'secondary', size: 'sm', onClick: onClose, children: 'Got it' })
+    ] }),
+    jsx('dl', { className: 'h-howto-list', children: howToLines(game.mode, game.rules).map(r =>
+      jsxs(Fragment, { children: [jsx('dt', { children: r[0] }), jsx('dd', { children: r[1] })] }, r[0])) })
+  ] })
+}
+
+// One chip per agent playing the round: writing, answered, or couldn't answer. It says nothing about
+// what an answer is or which option is whose.
+const AGENT_STATUS = { writing: 'writing…', answered: 'answered', gave_up: 'couldn’t answer', none: 'no answer' }
+function AgentStatus(props) {
+  const agents = props.game.agents || []
+  if (!agents.length) return null
+  return jsx('ul', { className: 'h-agents-in', 'aria-label': 'Agents in this round', children: agents.map(a =>
+    jsxs('li', { 'data-status': a.status, children: [
+      jsx('span', { className: 'h-trunc', children: a.yours ? a.name + ' (yours)' : a.name }),
+      jsx('span', { className: 'h-faint', children: AGENT_STATUS[a.status] || '' })
+    ] }, a.pk)) })
+}
+
 function TallTales(props) {
   const { store, room, game, book } = props
   const [hidden, setHidden] = useState(false)
+  // Shown on its own the first time this install sees each game; after that, behind the "How to play" button.
+  const howKey = 'howto.' + (game.mode === 'agent' ? 'agent' : 'tales')
+  const [how, setHow] = useState(() => !P.prefs.get(howKey, false))
+  const closeHow = () => { setHow(false); P.prefs.set(howKey, true) }
   const running = game.phase !== 'end'
   const now = useNow(250, running && game.ends_at > 0)
   // A new phase that wants something from you (an answer, a vote) brings a hidden panel back, and so does
@@ -5585,11 +5654,14 @@ function TallTales(props) {
         jsx('div', { className: 'h-faint h-small', children: hostLabel })
       ] }),
       running && game.ends_at > 0 && jsx(Countdown, { game, now }),
+      jsx(K.Button, { variant: 'ghost', size: 'sm', 'aria-expanded': how, onClick: () => (how ? closeHow() : setHow(true)), children: 'How to play' }),
       // Always closable: a host that vanished mid-game must never pin a panel over the room.
       jsx(K.Button, { variant: 'ghost', size: 'sm', onClick: () => setHidden(true), children: running ? 'Hide' : 'Close' })
     ] }),
+    how && jsx(HowToPlay, { game, onClose: closeHow }),
     game.q && game.phase !== 'end' && jsx('div', { className: 'h-tales-q', children: game.q }),
     body,
+    game.phase === 'fakes' && jsx(AgentStatus, { game }),
     jsx(Scoreboard, { game, room })
   ] })
 }

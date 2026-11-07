@@ -170,7 +170,8 @@ out({ changed: notices.some(x => x.includes('changed since')), closed: t.closed(
 def test_hidden_game_panel_leaves_a_show_bar_and_a_new_action_phase_restores_it():
     js = (fn(TALES, "gameName") + const(TALES, "GAME_NAME") + fn(TALES, "TallTales") + """
 function FakePhase() {}; function FlagPhase() {}; function VotePhase() {}; function WhoRevealPhase() {}; function RevealPhase() {}
-function Scoreboard() {}; function Countdown() {}
+function Scoreboard() {}; function Countdown() {}; function HowToPlay() {}; function AgentStatus() {}
+const P = { prefs: { get: () => true, set() {} } }   // the "How to play" panel was seen already
 const useNow = () => 0
 const g = (over) => Object.assign({ gid: 'g1', n: 1, rounds: 3, phase: 'vote', ends_at: 0, mode: 'tales', host_name: 'Ada' }, over)
 const full = r => !!find(r.tree, n => n.type === Scoreboard)

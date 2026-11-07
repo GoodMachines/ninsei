@@ -183,8 +183,20 @@ const CSS = TOKENS + `
 .h-compose-box textarea{flex:1;border:0;outline:0;resize:none;background:transparent;color:var(--h-fg);font:inherit;padding:5px 0;max-height:160px;min-height:22px;line-height:1.45}
 .h-compose-box textarea::placeholder{color:var(--h-fg3)}
 .h-menu{position:absolute;bottom:calc(100% + 6px);left:0;min-width:220px;border:1px solid var(--h-line2);border-radius:10px;background:var(--h-card);box-shadow:0 12px 32px -12px var(--h-shadow);padding:4px;z-index:10}
-.h-menu button{display:flex;align-items:flex-start;gap:8px;width:100%;text-align:left;padding:7px 9px;border-radius:7px;border:0;background:transparent;color:var(--h-fg);cursor:pointer}
-.h-menu button:hover{background:var(--h-hover)}
+.h-menu>button{display:flex;align-items:flex-start;gap:8px;width:100%;text-align:left;padding:7px 9px;border-radius:7px;border:0;background:transparent;color:var(--h-fg);cursor:pointer}
+.h-menu>button:hover{background:var(--h-hover)}
+.h-gm-menu{min-width:320px}
+.h-gm{display:flex;align-items:flex-start;gap:8px;padding:7px 9px;border-radius:7px}
+.h-gm .h-grow{display:flex;flex-direction:column;gap:1px;min-width:0}
+.h-gm .h-gm-line{display:block}
+.h-gm button{flex:none;width:auto}
+.h-howto{border:1px solid var(--h-line2);border-radius:10px;padding:10px 12px;background:var(--h-raise);display:flex;flex-direction:column;gap:6px}
+.h-howto-list{display:grid;grid-template-columns:auto 1fr;gap:4px 12px;margin:0;font-size:13px;line-height:1.4}
+.h-howto-list dt{font-weight:600;color:var(--h-fg2)}
+.h-howto-list dd{margin:0;color:var(--h-fg)}
+.h-agents-in{list-style:none;margin:0;padding:0;display:flex;flex-wrap:wrap;gap:6px 14px;font-size:12px}
+.h-agents-in li{display:flex;gap:6px;min-width:0}
+.h-agents-in li[data-status=gave_up] .h-faint{color:var(--h-warn)}
 .h-tray{display:flex;flex-direction:column;gap:6px;margin-bottom:8px}
 .h-draft{border:1px dashed var(--h-line2);border-radius:10px;padding:8px 10px;display:flex;gap:10px;align-items:flex-start}
 

@@ -351,15 +351,15 @@ async def test_a_hosted_tall_tales_round_is_secret_until_the_reveal(bare, monkey
     await sam.submit_fake(ROOM, gid, 1, "seven")
     await host.submit_fake(ROOM, gid, 1, "Bo hearts")  # the same as Bo's: one option, two writers
     assert await wait_for(lambda: (eve.game_view(ROOM) or {}).get("phase") == "vote")
-    assert len(_fakes(eve)) == 3 and eve.game_view(ROOM)["fakes_in"] == 3
+    assert len(_fakes(eve)) == 4 and eve.game_view(ROOM)["fakes_in"] == 4  # Maya, Ada, Sam, Bo
     options = _eve_sees_no_answer(eve, host, ("seven", "Bo hearts"))
     by_text = {o["text"]: o["id"] for o in options}
-    assert set(by_text) == {"three", "seven", "Bo hearts"}
+    assert set(by_text) == {"three", "seven", "Bo hearts", "Ada five"}
     assert {len(v) for v in _vote_open(eve)["claims"].values()} == {2}  # the truth has two decoys too
     # each player still knows their own: Sam's team wrote "seven" and (Bo) "Bo hearts"; Maya wrote "Bo hearts"
     sv, hv = sam.game_view(ROOM), host.game_view(ROOM)
     assert set(sv["blocked"]) == {by_text["seven"], by_text["Bo hearts"]} and sv["my_fake"] == "seven"
-    assert hv["blocked"] == [by_text["Bo hearts"]] and hv["my_fake"] == "Bo hearts"
+    assert set(hv["blocked"]) == {by_text["Bo hearts"], by_text["Ada five"]} and hv["my_fake"] == "Bo hearts"
     await sam.submit_vote(ROOM, gid, 1, by_text["three"])
     assert await wait_for(lambda: eve.game_view(ROOM)["votes_in"] == 1)
     assert _eve_sees_no_vote(eve, options) == 1  # sealed to the host: Sam's pick isn't public
@@ -396,7 +396,7 @@ async def test_a_lucky_match_reads_as_your_own_answer_and_cant_be_voted_for(bare
     # the host's "three" next to Sam's token would tell a modified client it's the truth
     for view in (sv, hv, eve.game_view(ROOM)):
         assert {o["id"]: o["text"] for o in view["options"]}[truth] == "Three"
-    assert truth not in hv["blocked"] and hv["blocked"] == [by_text["nine"]]
+    assert truth not in hv["blocked"] and set(hv["blocked"]) == {by_text["nine"], by_text["Ada five"]}
     await sam.submit_vote(ROOM, gid, 1, truth)  # a modified client votes for it anyway: the host refuses it
     await host.submit_vote(ROOM, gid, 1, truth)
     assert await wait_for(lambda: (eve.game_view(ROOM) or {}).get("phase") == "end")
@@ -450,8 +450,8 @@ async def test_the_host_ignores_plaintext_and_misdirected_answers(bare):
     await e._on_event(stray.fake(Key("elsewhere").apk, gid, 1, "sealed to someone else")[0], "relay")
     assert await wait_for(lambda: (e.game_view(ROOM) or {}).get("phase") == "vote")
     view = e.game_view(ROOM)
-    assert {o["text"] for o in view["options"]} == {"three", "nine"}
-    assert view["fakes_in"] == 2  # mine and the misdirected one are sealed; plaintext isn't counted or shown
+    assert {o["text"] for o in view["options"]} == {"three", "nine", "Ada five"}
+    assert view["fakes_in"] == 3  # mine and the misdirected one are sealed; plaintext isn't counted or shown
     assert "plain answer" not in json.dumps(view)
     truth = next(o["id"] for o in view["options"] if o["text"] == "three")
     # an old client's plaintext vote for the truth isn't a vote: not counted, not scored

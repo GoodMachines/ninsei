@@ -1057,16 +1057,20 @@ function GamesMenu(props) {
     const off2 = P.listen(document, 'keydown', esc)
     return () => { off1(); off2() }
   }, [])
-  const item = (mode, icon, blurb) => jsxs('button', { type: 'button', role: 'menuitem', disabled: props.gameOn, onClick: () => props.onStart(mode), children: [
+  // Each game says what it is in two lines and starts only from its own Start button.
+  const item = (mode, icon, lines) => jsxs('div', { className: 'h-gm', role: 'group', 'aria-label': gameName(mode), children: [
     jsx(K.Icon, { name: icon, size: 15 }),
-    jsxs('span', { children: [
-      jsx('b', { children: gameName(mode) }), jsx('br', {}),
-      jsx('span', { className: 'h-faint h-small', children: props.gameOn ? 'A game is already running' : blurb })
-    ] })
+    jsxs('span', { className: 'h-grow', children: [
+      jsx('b', { children: gameName(mode) }),
+      jsx('span', { className: 'h-faint h-small h-gm-line', children: props.gameOn ? 'A game is already running' : lines[0] }),
+      !props.gameOn && jsx('span', { className: 'h-faint h-small h-gm-line', children: lines[1] })
+    ] }),
+    jsx(K.Button, { variant: 'primary', size: 'sm', disabled: props.gameOn, 'aria-label': 'Start ' + gameName(mode),
+      onClick: () => props.onStart(mode), children: 'Start' })
   ] }, mode)
-  return jsxs('div', { className: 'h-menu', ref, role: 'menu', style: { left: 'auto', right: 0 }, children: [
-    item('tales', 'game', 'Your agent hosts. Everyone writes a fake answer; spot the truth.'),
-    item('agent', 'organization', 'Everyone answers, agents too, and the agents sound human on purpose. Spot them.')
+  return jsxs('div', { className: 'h-menu h-gm-menu', ref, role: 'menu', style: { left: 'auto', right: 0 }, children: [
+    item('tales', 'game', ['Your agent hosts and asks a question with a real answer.', 'Everyone writes a fake. Vote for the true one.']),
+    item('agent', 'organization', ['Everyone answers a prompt, agents too, trying to sound human.', 'Spot the agents.'])
   ] })
 }
 
