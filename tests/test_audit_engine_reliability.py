@@ -18,7 +18,7 @@ import pytest
 from ninsei_engine import game, nostr
 from ninsei_engine import engine as eng_mod
 from ninsei_engine.engine import (CONTESTED, HISTORY_FILTERS_PER_SUB, KIND_LIVE, KIND_ROOM, ROOM_HISTORY_LIMIT,
-                                  Engine, EngineLocked, RoomLeft, _claim_token)
+                                  Engine, EngineLocked, RoomLeft, _claim_token, open_fake)
 from ninsei_engine.relays import RelayPool
 from ninsei_engine.store import Store
 from test_engine import StubLLM, wait_for
@@ -448,42 +448,48 @@ def _vote_events(host, gid, mode, options, claims):
     return out, host.agent(vote)
 
 
-async def _my_fake(e, gid, text, as_agent=False):
-    return await e._publish_room(ROOM, as_agent, {"t": "tales_fake", "gid": gid, "n": 1, "text": text})
+async def _my_fake(e, host, gid, text, as_agent=False):
+    """Publish my answer sealed to `host`'s agent key; returns (event, nonce). The nonce comes back only by
+    opening my own event, as game_view does."""
+    ev = await e._publish_fake(ROOM, as_agent, gid, 1, text, host.apk)
+    ident = e._identity()
+    opened = open_fake(ident["agent_sk"] if as_agent else ident["person_sk"], host.apk, json.loads(ev["content"])["enc"])
+    return ev, opened["nonce"]
 
 
 async def test_a_lucky_match_does_not_block_the_true_answer(bare):
     e, _ = bare(ts=1.0)
-    host, other = Key("host"), Key("other")
+    host = Key("host")
     pre, vote = _vote_events(host, "g1", "tales", [], None)
     for ev in pre:
         await e._on_event(ev, "relay")
-    mine = await _my_fake(e, "g1", "Paris")  # lucky: the true answer is "paris", so no option is mine
+    _ev, nonce = await _my_fake(e, host, "g1", "Paris")  # lucky: the true answer is "paris", so no option is mine
     options = [{"id": "opt1", "text": "paris"}, {"id": "opt2", "text": "Lyon"}]
-    claims = {"opt1": [_claim_token("opt1", "decoy")], "opt2": [_claim_token("opt2", "f" * 64)]}
+    claims = {"opt1": [_claim_token("opt1", "decoy")], "opt2": [_claim_token("opt2", "f" * 32)]}
     _, vote = _vote_events(host, "g1", "tales", options, claims)
     await e._on_event(vote, "relay")
     g = e.game_view(ROOM)
     assert g["phase"] == "vote" and g["blocked"] == [] and "claims" not in g
+    assert g["my_fake"] == "Paris"  # shown from my own sealed answer, opened locally
     # and a fake that did land in an option blocks exactly that option
-    claims["opt2"].append(_claim_token("opt2", mine["id"]))
+    claims["opt2"].append(_claim_token("opt2", nonce))
     _, vote2 = _vote_events(host, "g1", "tales", options, claims)
     vote2 = host.agent({**json.loads(vote2["content"]), "seq": 4})
     await e._on_event(vote2, "relay")
     assert e.game_view(ROOM)["blocked"] == ["opt2"]
-    assert other  # (unused key kept so the helper signature mirrors the other tests)
 
 
 async def test_who_is_the_agent_blocks_by_author_not_by_similar_text(bare):
     e, _ = bare(ts=1.0)
-    host = Key("host")
+    host, bob = Key("host"), Key("bob")
     pre, _ = _vote_events(host, "g2", "agent", [], None)
     for ev in pre:
         await e._on_event(ev, "relay")
-    mine = await _my_fake(e, "g2", "oat latte")
-    bobs_id = "9" * 64  # Bob's agent answered "Oat latte." and its event is somewhere in the room
+    _ev, nonce = await _my_fake(e, host, "g2", "oat latte")
+    bobs, bobs_nonce = bob.fake(host.apk, "g2", 1, "Oat latte.", agent=True)  # Bob's agent, nearly the same text
+    await e._on_event(bobs, "relay")
     options = [{"id": "mine1", "text": "oat latte"}, {"id": "bobs1", "text": "Oat latte."}]
-    claims = {"mine1": [_claim_token("mine1", mine["id"])], "bobs1": [_claim_token("bobs1", bobs_id)]}
+    claims = {"mine1": [_claim_token("mine1", nonce)], "bobs1": [_claim_token("bobs1", bobs_nonce)]}
     _, vote = _vote_events(host, "g2", "agent", options, claims)
     await e._on_event(vote, "relay")
     assert e.game_view(ROOM)["blocked"] == ["mine1"]  # Bob's can be flagged
@@ -495,7 +501,7 @@ async def test_a_host_without_claims_gets_exact_text_in_agent_mode_and_normalise
     pre, _ = _vote_events(host, "g3", "agent", [], None)
     for ev in pre:
         await e._on_event(ev, "relay")
-    await _my_fake(e, "g3", "oat latte")
+    await _my_fake(e, host, "g3", "oat latte")
     options = [{"id": "a1", "text": "oat latte"}, {"id": "a2", "text": "Oat latte."}]
     _, vote = _vote_events(host, "g3", "agent", options, None)
     await e._on_event(vote, "relay")
@@ -506,23 +512,28 @@ async def test_a_host_without_claims_gets_exact_text_in_agent_mode_and_normalise
     e2, _ = bare("Maya2", "Ada2", ts=1.0)
     for ev in pre:
         await e2._on_event(ev, "relay")
-    await _my_fake(e2, "g4", "Oat Latte.")
+    await _my_fake(e2, host2, "g4", "Oat Latte.")
     _, vote = _vote_events(host2, "g4", "tales", [{"id": "t1", "text": "oat latte"}, {"id": "t2", "text": "tea"}], None)
     await e2._on_event(vote, "relay")
     assert e2.game_view(ROOM)["blocked"] == ["t1"]
 
 
-def test_option_claims_are_per_fake_and_the_truth_has_a_decoy():
+def test_option_claims_are_per_fake_padded_and_in_option_order():
+    options = [{"id": "t", "text": "truth"}, {"id": "o2", "text": "c"}, {"id": "o1", "text": "a or b"}]
     author_of = {"o1": "a,b", "o2": "c"}
-    ids = {"a": "ea", "b": "eb", "c": "ec"}
-    claims = Engine._option_claims(author_of, ids, truth_id="t", seed="s")
-    assert claims["o1"] == [_claim_token("o1", "ea"), _claim_token("o1", "eb")]
-    assert claims["o2"] == [_claim_token("o2", "ec")]
-    assert len(claims["t"]) == 1 and claims["t"][0] not in {_claim_token("t", i) for i in ids.values()}
-    assert "t" not in Engine._option_claims(author_of, ids)  # agent mode has no truth
+    nonces = {"a": "aa" * 16, "b": "bb" * 16, "c": "cc" * 16}
+    claims = Engine._option_claims(options, author_of, nonces)
+    assert list(claims) == ["t", "o2", "o1"]  # the options' order: the truth is not the odd one at the end
+    assert claims["o1"] == sorted([_claim_token("o1", nonces["a"]), _claim_token("o1", nonces["b"])])
+    assert _claim_token("o2", nonces["c"]) in claims["o2"]
+    assert {len(v) for v in claims.values()} == {2}  # every option carries as many tokens as the fullest
+    real = {_claim_token(o["id"], x) for o in options for x in nonces.values()}
+    assert not set(claims["t"]) & real and all(v == sorted(v) for v in claims.values())
+    agent = Engine._option_claims(options[1:], author_of, nonces)  # agent mode: no truth
+    assert set(agent) == {"o1", "o2"}
 
 
-async def test_the_host_posts_claims_and_a_lucky_hosts_view_leaves_the_truth_votable(bare, monkeypatch):
+async def test_the_host_posts_claims_and_a_lucky_hosts_view_blocks_the_truth(bare, monkeypatch):
     monkeypatch.setattr(game, "FAKE_SECONDS", 2400)
     monkeypatch.setattr(game, "VOTE_SECONDS", 2400)
     e, _ = bare(ts=0.02)
@@ -532,8 +543,12 @@ async def test_the_host_posts_claims_and_a_lucky_hosts_view_leaves_the_truth_vot
     assert await wait_for(lambda: (e.game_view(ROOM) or {}).get("phase") == "fakes")
     n = e.game_view(ROOM)["n"]
     await e.submit_fake(ROOM, gid, n, "three")  # the host's own owner guesses the real answer: lucky
-    for k, text in ((mal.person, "four"), (mal.agent, "four")):
-        await e._on_event(k({"t": "tales_fake", "name": "Mal", "gid": gid, "n": n, "text": text}), "relay")
+    host_pk = e._identity()["agent_pk"]
+    four_nonces = []
+    for agent in (False, True):
+        ev, nonce = mal.fake(host_pk, gid, n, "four", agent=agent)
+        four_nonces.append(nonce)
+        await e._on_event(ev, "relay")
     assert await wait_for(lambda: (e.game_view(ROOM) or {}).get("phase") == "vote")
 
     def sent_votes():
@@ -544,9 +559,9 @@ async def test_the_host_posts_claims_and_a_lucky_hosts_view_leaves_the_truth_vot
     vote = sent_votes()[-1]
     texts = {o["text"]: o["id"] for o in vote["options"]}
     assert set(texts) == {"three", "four"}
-    four_ids = [ev["id"] for ev in e.events[ROOM].values()
-                if json.loads(ev["content"]).get("text") == "four"]
-    assert set(vote["claims"][texts["four"]]) == {_claim_token(texts["four"], i) for i in four_ids}
-    assert len(vote["claims"][texts["three"]]) == 1  # the truth carries a decoy, not an author
-    assert e.game_view(ROOM)["blocked"] == []  # the lucky "three" no longer blocks the true answer
+    assert {_claim_token(texts["four"], x) for x in four_nonces} == set(vote["claims"][texts["four"]])
+    truth = vote["claims"][texts["three"]]  # padded to as many tokens as the merged "four" has
+    assert len(truth) == 2 and not set(truth) & {_claim_token(texts["three"], x) for x in four_nonces}
+    # the lucky rule: the truth carries the lucky writer's token, so to them it reads as their own answer
+    assert e.game_view(ROOM)["blocked"] == [texts["three"]]
     await e._end_hosted(ROOM)

@@ -22,9 +22,9 @@ import threading
 import time
 import unicodedata
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Iterable, Optional
 
-from . import game, nostr
+from . import game, nip44, nostr
 from .brain import Brain, BudgetExhausted, Line
 from .relays import RelayPool
 from .store import EVENT_ROOM_CAP, Store, today
@@ -311,11 +311,88 @@ def _team_key(pk: str, owner: Optional[str]) -> str:
     return owner or pk
 
 
-def _claim_token(oid: str, event_id: str) -> str:
-    """A short tag the host posts with the vote options: `oid` was written by the player whose fake event has
-    this id. A player recomputes it from their own fake events, so their own options are blocked by who wrote
-    them, not by how the text compares. The fake events and their texts are public in the room already."""
-    return hashlib.sha256(f"claim:{oid}:{event_id}".encode()).hexdigest()[:12]
+def _claim_token(oid: str, nonce: str) -> str:
+    """A short tag the host posts with the vote options: `oid` holds the fake sealed with this nonce. The nonce
+    travels only inside the fake's encrypted payload, so only its writer (and the host) can recompute the tag:
+    a player blocks their own options by who wrote them, and nobody else learns who wrote what."""
+    return hashlib.sha256(f"claim:{oid}:{nonce}".encode()).hexdigest()[:12]
+
+
+SEALED_BYTES = 600   # every sealed answer and vote is padded to this, so its size says nothing about what's in it
+FAKE_SEALED_BYTES = SEALED_BYTES
+# ...which makes every sealed payload exactly this many base64 characters (version byte, 32-byte nonce, the
+# NIP-44 padded plaintext with its 2-byte length, 32-byte MAC). Anything else is refused before any crypto:
+# a player holds the conversation key, so a big payload of theirs would pass the MAC and cost real time.
+SEALED_CHARS = 4 * -(-(1 + 32 + nip44.calc_padded_len(SEALED_BYTES) + 2 + 32) // 3)
+_VOTE_ID = re.compile(r"[A-Za-z0-9_.:-]{1,16}")  # option ids (the host's are 8 hex): one byte a character
+
+
+def _utf8_safe(text: Any) -> str:
+    """`text` with unpaired surrogates replaced, so it always encodes (a model reply can carry one)."""
+    return str(text).encode("utf-8", "replace").decode("utf-8")
+
+
+def _seal(sk: str, peer_pk: str, body: dict) -> str:
+    """`body` plus a `pad` field bringing its JSON to SEALED_BYTES, NIP-44 encrypted from my key to `peer_pk`."""
+    body = dict(body, pad="")
+    raw = json.dumps(body, ensure_ascii=False, separators=(",", ":"))
+    body["pad"] = "0" * max(0, SEALED_BYTES - len(raw.encode("utf-8")))
+    raw = json.dumps(body, ensure_ascii=False, separators=(",", ":"))
+    return nip44.encrypt(raw, nip44.conversation_key(sk, peer_pk))
+
+
+def _unseal(sk: str, peer_pk: str, payload: Any) -> Optional[dict]:
+    """The JSON object in a sealed payload, or None. The length is checked first: only SEALED_CHARS-long
+    payloads reach the key exchange and the decrypt."""
+    if not isinstance(payload, str) or len(payload) != SEALED_CHARS:
+        return None
+    try:
+        body = json.loads(nip44.decrypt(payload, nip44.conversation_key(sk, peer_pk)))
+    except (nip44.Nip44Error, ValueError, TypeError):
+        return None
+    return body if isinstance(body, dict) else None
+
+
+def is_sealed(payload: Any) -> bool:
+    """Could this be a sealed answer or vote? (Its size only: no crypto.)"""
+    return isinstance(payload, str) and len(payload) == SEALED_CHARS
+
+
+def seal_fake(sk: str, host_pk: str, text: str) -> tuple[str, str]:
+    """A game answer, NIP-44 encrypted from my key to the host's agent key: (payload, nonce). The JSON is padded
+    to one fixed length (an 80-char answer is at most ~550 bytes even with every character escaped), so all
+    sealed answers are the same size. Either side of the conversation key can open it: the host, and me."""
+    nonce = secrets.token_hex(16)
+    return _seal(sk, host_pk, {"text": _utf8_safe(text)[:80], "nonce": nonce}), nonce
+
+
+def open_fake(sk: str, peer_pk: str, payload: Any) -> Optional[dict]:
+    """{"text", "nonce"} from a sealed answer, or None for anything that isn't one (wrong size, wrong key,
+    tampered, not NIP-44 v2, wrong shape). The sender is a stranger: every failure is just "no answer"."""
+    body = _unseal(sk, peer_pk, payload)
+    if body is None or not isinstance(body.get("text"), str) or not nostr.is_hex(body.get("nonce"), 16):
+        return None
+    return {"text": body["text"][:80], "nonce": body["nonce"]}
+
+
+def _vote_ids(xs: Any) -> list[str]:
+    return [x for x in (_utf8_safe(v)[:16] for v in _as_list(xs)[:game.MAX_OPTIONS]) if _VOTE_ID.fullmatch(x)]
+
+
+def seal_vote(sk: str, host_pk: str, option: str = "", agents: Optional[list] = None) -> str:
+    """A vote, sealed to the host's agent key like an answer: Tall Tales sends `option`, Who's the Agent? the
+    `agents` it flags. Padded to the same fixed size, so neither the pick nor the number of flags shows."""
+    opt = _vote_ids([option])
+    return _seal(sk, host_pk, {"option": opt[0] if opt else "", "agents": _vote_ids(agents)})
+
+
+def open_vote(sk: str, peer_pk: str, payload: Any) -> Optional[dict]:
+    """{"option", "agents"} from a sealed vote, or None. Ids that aren't option-shaped are dropped."""
+    body = _unseal(sk, peer_pk, payload)
+    if body is None or not isinstance(body.get("option", ""), str) or not isinstance(body.get("agents", []), list):
+        return None
+    opt = _vote_ids([body.get("option", "")])
+    return {"option": opt[0] if opt else "", "agents": _vote_ids(body.get("agents", []))}
 
 
 class Engine:
@@ -367,6 +444,7 @@ class Engine:
         self._build_live: Optional[dict] = None             # the owner's build in progress, from ninsei_hooks
         self._build_mark: Optional[tuple] = None            # the (state, note) we set for it, to undo only ours
         self._cc: dict[str, dict] = {}
+        self._opened: dict[tuple, Optional[dict]] = {}     # (fake event id, peer pk) -> open_fake result (bounded)
         self._hidden: set[str] = set(self.store.get("hidden") or {})  # person pks the owner chose to hide
         # their agents' keys as far as we know them, so another host's game can't show them either
         self._hidden_agents: set[str] = {str(a) for v in (self.store.get("hidden") or {}).values()
@@ -1976,32 +2054,79 @@ class Engine:
                 out[key] = [] if isinstance(out[key], list) else {}
         return out
 
-    def _round_event_ids(self, room: str, gid: str, n: int, t: str) -> dict[str, str]:
+    def _open_ev(self, ev: dict, sk: str, peer_pk: str, opener: Callable = open_fake) -> Optional[dict]:
+        """`opener` (open_fake or open_vote) for one sealed event, remembered per (event, peer): views ask on
+        every refresh. A payload of the wrong size is refused before any crypto (see SEALED_CHARS)."""
+        key = (ev["id"], peer_pk)
+        if key not in self._opened:
+            enc = self._content(ev).get("enc")
+            if len(self._opened) > 4000:
+                self._opened.clear()
+            self._opened[key] = opener(sk, peer_pk, enc) if is_sealed(enc) else None
+        return self._opened[key]
+
+    def _round_latest(self, room: str, gid: str, n: int, t: str) -> dict[str, dict]:
+        """Each author's latest `t` event in a round: author pk -> event. Only these are ever opened, so posting
+        many answers or votes costs the host one decrypt per author, however many there are."""
         out = {}
         for e in self._sorted(room):
             c = self._content(e)
             if c.get("t") == t and c.get("gid") == gid and c.get("n") == n:
-                out[e["pubkey"]] = e["id"]  # last one per author wins, as in _round_events
+                out[e["pubkey"]] = e
+        return out
+
+    def _round_sealed(self, room: str, gid: str, n: int, t: str = "tales_fake") -> set:
+        """Who has a sealed answer (or vote) in this round (no decrypting: the host's wait loop asks this often)."""
+        return {pk for pk, e in self._round_latest(room, gid, n, t).items() if is_sealed(self._content(e).get("enc"))}
+
+    def _round_fakes(self, room: str, gid: str, n: int, allowed: set) -> dict[str, dict]:
+        """The answers in a round I host, opened with my agent key: author pk -> {"text", "nonce"}, from each
+        author's latest answer only. Only authors in `allowed` (players present) are opened, so a flood of new keys
+        costs no key exchanges. A plaintext answer (an old client) or one sealed to someone else counts as none."""
+        sk = self._identity()["agent_sk"]
+        out = {}
+        for pk, e in self._round_latest(room, gid, n, "tales_fake").items():
+            if pk in allowed:
+                got = self._open_ev(e, sk, pk, open_fake)
+                if got is not None:
+                    out[pk] = got
+        return out
+
+    def _round_votes(self, room: str, gid: str, n: int, people: set, team: dict, seed: str,
+                     regulars: frozenset) -> dict[str, dict]:
+        """The votes a round I host counts, opened with my agent key: voter pk -> {"option", "agents"}. The caps
+        come first (`_round_voters`: present people, at most MAX_PLAYERS), then each one's latest vote is opened,
+        so at most MAX_PLAYERS decrypts. A plaintext vote (an old client) counts as none."""
+        sk = self._identity()["agent_sk"]
+        latest = {pk: e for pk, e in self._round_latest(room, gid, n, "tales_vote").items()
+                  if is_sealed(self._content(e).get("enc"))}
+        out = {}
+        for pk, e in self._round_voters(latest, people, team, seed, regulars).items():
+            got = self._open_ev(e, sk, pk, open_vote)
+            if got is not None:
+                out[pk] = got
         return out
 
     @staticmethod
-    def _option_claims(author_of: dict[str, str], ids: dict[str, str], truth_id: str = "", seed: str = "") -> dict:
-        """Per option, a token for each fake that went into it (see `_claim_token`). A fake that matched the
-        truth is in no option, so a lucky player's own text doesn't block the true answer; the truth gets a
-        token nobody can claim, so an option with none doesn't give it away."""
-        claims = {oid: [_claim_token(oid, ids[a]) for a in authors.split(",") if a in ids][:MAX_PLAYERS]
-                  for oid, authors in author_of.items()}
-        if truth_id:
-            claims[truth_id] = [_claim_token(truth_id, f"decoy:{seed}")]
+    def _option_claims(options: list[dict], author_of: dict[str, str], nonces: dict[str, str],
+                       truth_id: str = "", lucky: Iterable[str] = ()) -> dict:
+        """Per option, a token for each fake that went into it (see `_claim_token`), in the options' own order.
+        The truth carries the tokens of the lucky writers (their fake matched it), so to them it reads as their
+        own answer and is blocked like one: otherwise an unmarked option holding their own text would tell them
+        it's the truth. Their team can't vote for it either (the host refuses it); the lucky point is theirs.
+        Every option is padded with random decoys to the same count and sorted, so neither the number nor the
+        order of tokens marks the truth or a merged fake."""
+        lucky = set(lucky)
+        claims = {}
+        for o in options:
+            written = author_of.get(o["id"], "").split(",") if o["id"] != truth_id else sorted(lucky)
+            authors = [a for a in written if a in nonces]
+            claims[o["id"]] = [_claim_token(o["id"], nonces[a]) for a in authors][:MAX_PLAYERS]
+        width = max([1] + [len(v) for v in claims.values()])
+        for oid, tokens in claims.items():
+            tokens.extend(_claim_token(oid, secrets.token_hex(16)) for _ in range(width - len(tokens)))
+            tokens.sort()
         return claims
-
-    def _round_events(self, room: str, gid: str, n: int, t: str) -> dict[str, dict]:
-        out = {}
-        for e in self._sorted(room):
-            c = self._content(e)
-            if c.get("t") == t and c.get("gid") == gid and c.get("n") == n:
-                out[e["pubkey"]] = c  # last one per author wins
-        return out
 
     async def _host_loop(self, gid: str) -> None:
         g = self._host_games[gid]
@@ -2017,33 +2142,33 @@ class Engine:
                 ends = time.time() + game.FAKE_SECONDS * self.ts
                 await self._host_post(g, {"t": "tales_round", "gid": gid, "n": n, "of": len(g["qs"]),
                                           "q": q["q"], "ends_at": ends, "secs": game.FAKE_SECONDS * self.ts})
-                await self._wait_until(g, ends, lambda: set(self._round_events(room, gid, n, "tales_fake"))
-                                       >= (people | agents))
+                await self._wait_until(g, ends, lambda: self._round_sealed(room, gid, n) >= (people | agents))
                 seed = f"{g['seed']}:{n}"
                 now_people, now_agents = self._present_players(room, me)
                 team = self._team_of(room)
-                # fakes are strangers' content: any type can arrive, build_options takes strings only
-                fakes = self._round_answers(
-                    {pk: str(c.get("text", ""))[:80] for pk, c in self._round_events(room, gid, n, "tales_fake").items()
-                     if pk != me}, people | agents | now_people | now_agents, team, seed, g.get("regulars", frozenset()))
+                allowed = (people | agents | now_people | now_agents) - {me}
+                sealed = self._round_fakes(room, gid, n, allowed)  # only I can open them
+                fakes = self._round_answers({pk: f["text"] for pk, f in sealed.items()}, allowed, team, seed,
+                                            g.get("regulars", frozenset()))
                 options, truth_id, author_of, lucky = game.build_options(q["a"], fakes, seed,
                                                                          preferred=people | agents)
-                claims = self._option_claims(author_of, self._round_event_ids(room, gid, n, "tales_fake"),
-                                             truth_id, seed)
+                claims = self._option_claims(options, author_of, {pk: f["nonce"] for pk, f in sealed.items()},
+                                             truth_id, lucky)
                 ends = time.time() + game.VOTE_SECONDS * self.ts
                 await self._host_post(g, {"t": "tales_vote_open", "gid": gid, "n": n, "options": options,
                                           "claims": claims, "ends_at": ends, "secs": game.VOTE_SECONDS * self.ts})
                 voters_open = self._present_players(room, me)[0]  # who may vote: people present now...
-                await self._wait_until(g, ends, lambda: set(self._round_events(room, gid, n, "tales_vote"))
-                                       >= people)
+                await self._wait_until(g, ends, lambda: self._round_sealed(room, gid, n, "tales_vote") >= people)
                 team = self._team_of(room)
                 votes = {}
-                ballots = self._round_voters(self._round_events(room, gid, n, "tales_vote"),  # ...or at close
-                                             voters_open | self._present_players(room, me)[0], team, seed,
-                                             g.get("regulars", frozenset()))
+                ballots = self._round_votes(room, gid, n,  # ...or at close; sealed to me, like answers
+                                            voters_open | self._present_players(room, me)[0], team, seed,
+                                            g.get("regulars", frozenset()))
+                lucky_teams = {team.get(a, a) for a in lucky}  # they found the truth already: it counts as theirs
                 for pk, c in ballots.items():
-                    oid = str(c.get("option", ""))
-                    if any(o["id"] == oid for o in options) and game.vote_allowed(team.get(pk, pk), oid, author_of, team):
+                    oid = c["option"]
+                    if any(o["id"] == oid for o in options) and game.vote_allowed(team.get(pk, pk), oid, author_of, team) \
+                            and not (oid == truth_id and team.get(pk, pk) in lucky_teams):
                         votes[pk] = oid
                 lucky = self._one_per_team(lucky, team)  # one lucky point a team, however many of it guessed right
                 points, picks = game.score_round(truth_id, author_of, votes, team, lucky)
@@ -2080,29 +2205,29 @@ class Engine:
         await self._host_post(g, {"t": "tales_round", "gid": gid, "n": n, "of": len(g["qs"]),
                                   "q": prompt, "ends_at": ends, "secs": game.FAKE_SECONDS * self.ts})
         self._spawn(self._answer_as_host(g, n, prompt))
-        await self._wait_until(g, ends, lambda: set(self._round_events(room, gid, n, "tales_fake")) >= (people | agents))
+        await self._wait_until(g, ends, lambda: self._round_sealed(room, gid, n) >= (people | agents))
         seed = f"{g['seed']}:{n}"
         now_people, now_agents = self._present_players(room, me)
         now_agents.add(me)
         team = self._team_of(room)
-        answers = self._round_answers(
-            {pk: str(c.get("text", ""))[:80] for pk, c in self._round_events(room, gid, n, "tales_fake").items()},
-            people | agents | now_people | now_agents, team, seed, g.get("regulars", frozenset()))
+        allowed = people | agents | now_people | now_agents
+        sealed = self._round_fakes(room, gid, n, allowed)  # only I can open them (my agent's own one too)
+        answers = self._round_answers({pk: f["text"] for pk, f in sealed.items()}, allowed, team, seed,
+                                      g.get("regulars", frozenset()))
         options, author_of = game.agent_options(answers, seed, preferred=people | agents)
-        claims = self._option_claims(author_of, self._round_event_ids(room, gid, n, "tales_fake"))
+        claims = self._option_claims(options, author_of, {pk: f["nonce"] for pk, f in sealed.items()})
         ends = time.time() + game.VOTE_SECONDS * self.ts
         await self._host_post(g, {"t": "tales_vote_open", "gid": gid, "n": n, "options": options,
                                   "claims": claims, "ends_at": ends, "secs": game.VOTE_SECONDS * self.ts})
         voters_open = self._present_players(room, me)[0]
-        await self._wait_until(g, ends, lambda: set(self._round_events(room, gid, n, "tales_vote")) >= people)
+        await self._wait_until(g, ends, lambda: self._round_sealed(room, gid, n, "tales_vote") >= people)
         team = self._team_of(room)
         is_agent = {oid: team.get(pk, pk) != pk for oid, pk in author_of.items()}
         flags = {}
-        ballots = self._round_voters(self._round_events(room, gid, n, "tales_vote"),
-                                     voters_open | self._present_players(room, me)[0], team, seed,
-                                     g.get("regulars", frozenset()))
+        ballots = self._round_votes(room, gid, n, voters_open | self._present_players(room, me)[0], team, seed,
+                                    g.get("regulars", frozenset()))
         for pk, c in ballots.items():  # people only, present ones, a bounded number
-            flags[pk] = {str(x)[:16] for x in _as_list(c.get("agents"))[:game.MAX_OPTIONS]} & set(author_of)
+            flags[pk] = set(c["agents"]) & set(author_of)
         points, flagged = game.score_agent_round(author_of, is_agent, flags, team)
         for k, v in points.items():
             scores[k] = scores.get(k, 0) + v
@@ -2129,7 +2254,7 @@ class Engine:
         finally:
             self._inflight -= 1
         if text and self._host_games.get(g["gid"]) is g:
-            await self._publish_room(g["room"], True, {"t": "tales_fake", "gid": g["gid"], "n": n, "text": text})
+            await self._publish_fake(g["room"], True, g["gid"], n, text, self._identity()["agent_pk"])
 
     async def _wait_until(self, g: dict, deadline: float, done: Callable[[], bool]) -> None:
         while time.time() < deadline:
@@ -2190,22 +2315,35 @@ class Engine:
         finally:
             self._inflight -= 1
         if fake:
-            await self._publish_room(room, True, {"t": "tales_fake", "gid": c.get("gid"), "n": c.get("n"), "text": fake})
+            await self._publish_fake(room, True, c.get("gid"), c.get("n"), fake, ev["pubkey"])  # ev: the host's round
         self._set_state("activity: idle")
 
     async def submit_fake(self, room: str, gid: str, n: int, text: str) -> None:
         text = re.sub(r"\s+", " ", text or "").strip()[:80]
         if not text:
             raise ValueError("write something first")
-        await self._publish_room(room, False, {"t": "tales_fake", "gid": gid, "n": n, "text": text})
+        g = self.game_view(room)
+        if not g or g["gid"] != gid or g["phase"] == "end":
+            raise ValueError("that game is over")
+        await self._publish_fake(room, False, gid, n, text, g["host"])
+
+    async def _publish_fake(self, room: str, as_agent: bool, gid: Any, n: Any, text: str, host_pk: str) -> dict:
+        """A game answer, sealed to the game host's agent key (see seal_fake): the room sees only that I answered.
+        Its nonce is not kept anywhere: I get it back by opening my own event, which survives a restart."""
+        ident = self._identity()
+        enc, _nonce = seal_fake(ident["agent_sk"] if as_agent else ident["person_sk"], host_pk, text)
+        return await self._publish_room(room, as_agent, {"t": "tales_fake", "gid": gid, "n": n, "enc": enc})
 
     async def submit_vote(self, room: str, gid: str, n: int, option: str = "", agents: Optional[list] = None) -> None:
-        """Tall Tales: one option. Who's the Agent?: `agents`, the options I think an agent wrote (may be empty)."""
-        if agents is not None:
-            ids = [str(x)[:16] for x in _as_list(agents)[:game.MAX_OPTIONS]]
-            await self._publish_room(room, False, {"t": "tales_vote", "gid": gid, "n": n, "agents": ids})
-            return
-        await self._publish_room(room, False, {"t": "tales_vote", "gid": gid, "n": n, "option": (option or "")[:16]})
+        """Tall Tales: one option. Who's the Agent?: `agents`, the options I think an agent wrote (may be empty).
+        Sealed to the game host's agent key (see seal_vote): the room sees only that I voted. I get my pick back
+        by opening my own event, as with answers."""
+        g = self.game_view(room)
+        if not g or g["gid"] != gid or g["phase"] == "end":
+            raise ValueError("that game is over")
+        sk = self._identity()["person_sk"]
+        enc = seal_vote(sk, g["host"], option or "") if agents is None else seal_vote(sk, g["host"], "", agents)
+        await self._publish_room(room, False, {"t": "tales_vote", "gid": gid, "n": n, "enc": enc})
 
     @staticmethod
     def _apply_host_event(view: dict, c: dict) -> None:
@@ -2366,7 +2504,7 @@ class Engine:
         my = {ident["person_pk"]}
         fakers, voters = set(), set()
         agent_fake = ""
-        my_fake_ids = []
+        my_nonces = []  # (nonce, text) of each answer of my team's: the person's first
         for e in evs:  # player moves for the current round, in any order
             c = self._content(e)
             if c.get("gid") != gid or c.get("n") != view["n"]:
@@ -2374,21 +2512,33 @@ class Engine:
             if e["pubkey"] == host and not (view["mode"] == "agent" and c.get("t") == "tales_fake"):
                 continue  # in Who's the Agent? the host's own agent answers too, as a player
             if c.get("t") == "tales_fake":
-                fakers.add(e["pubkey"])
+                if is_sealed(c.get("enc")):  # a plaintext answer (an old client) is never read or shown
+                    fakers.add(e["pubkey"])
                 if e["pubkey"] in my or e["pubkey"] == ident["agent_pk"]:
-                    my_fake_ids.append(e["id"])
-                if e["pubkey"] in my:
-                    view["my_fake"] = str(c.get("text", ""))[:80]
-                elif e["pubkey"] == ident["agent_pk"]:
-                    agent_fake = str(c.get("text", ""))[:80]
+                    # my own answers are sealed to the host, and I can open them too: the text to show,
+                    # and the nonce behind the host's claim tokens
+                    got = self._open_ev(e, ident["person_sk"] if e["pubkey"] in my else ident["agent_sk"], host)
+                    if got is None:
+                        continue
+                    if e["pubkey"] in my:
+                        my_nonces.insert(0, (got["nonce"], got["text"]))
+                        view["my_fake"] = got["text"]
+                    else:
+                        my_nonces.append((got["nonce"], got["text"]))
+                        agent_fake = got["text"]
             elif c.get("t") == "tales_vote":
+                if not is_sealed(c.get("enc")):  # who voted is public, what they voted isn't; plaintext isn't a vote
+                    continue
                 voters.add(e["pubkey"])
-                if e["pubkey"] in my:
+                if e["pubkey"] in my:  # my own vote is sealed to the host too: I open it for my pick
+                    got = self._open_ev(e, ident["person_sk"], host, open_vote)
+                    if got is None:
+                        continue
                     if view["mode"] == "agent":
-                        view["my_picks"] = [str(x)[:16] for x in _as_list(c.get("agents"))[:game.MAX_OPTIONS]]
+                        view["my_picks"] = got["agents"]
                         view["my_vote"] = "in"
                     else:
-                        view["my_vote"] = str(c.get("option", ""))[:16]
+                        view["my_vote"] = got["option"]
         view["fakes_in"], view["votes_in"] = len(fakers), len(voters)
         if self._hidden:
             self._scrub_hidden(view)
@@ -2396,13 +2546,22 @@ class Engine:
         view["team_names"] = {pk: self._person_name(room, pk, who)
                               for pk in list(view["scores"])[:24] + [ident["person_pk"]] if pk not in self._hidden}
         # Your own team's fakes can't be voted for (the host enforces it too). Blocked by who wrote them, from
-        # the host's tokens, so an answer that only looks like yours stays votable and a lucky match doesn't
-        # block the truth. A host that sends no tokens gets a text match: exact in Who's the Agent? (answers
-        # are never merged there), normalised in Tall Tales (the host merges equal fakes into one option).
+        # the host's tokens and the nonces sealed in your own answers, so an answer that only looks like yours
+        # stays votable. If your answer matched the truth, the truth carries your token and is blocked: you
+        # already have the lucky point, and the host refuses that vote too. A host that sends no tokens gets a text
+        # match: exact in Who's the Agent? (answers are never merged there), normalised in Tall Tales (the host
+        # merges equal fakes into one option).
         claims = view.pop("claims", None)
         if claims is not None:
-            mine = {_claim_token(o["id"], eid) for o in view["options"] for eid in my_fake_ids}
-            view["blocked"] = [o["id"] for o in view["options"] if mine & set(claims.get(o["id"], []))]
+            view["blocked"] = []
+            for o in view["options"]:
+                tokens = set(claims.get(o["id"], []))
+                text = next((t for nonce, t in my_nonces if _claim_token(o["id"], nonce) in tokens), None)
+                if text is not None:
+                    view["blocked"].append(o["id"])
+                    # Show it as I wrote it: the option holds the host's spelling (the truth, when mine matched
+                    # it) or the first writer's (a merged fake), and that difference would tell me which it is.
+                    o["text"] = text
         elif view["mode"] == "agent":
             mine = {re.sub(r"\s+", " ", t).strip()[:80] for t in (view["my_fake"], agent_fake)} - {""}
             view["blocked"] = [o["id"] for o in view["options"] if o.get("text", "") in mine]

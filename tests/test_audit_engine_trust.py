@@ -78,16 +78,14 @@ async def test_unbound_votes_change_nothing(bare, monkeypatch):
     gid = (await e.start_tales(ROOM, 1))["gid"]
     assert await wait_for(lambda: (e.game_view(ROOM) or {}).get("phase") == "fakes")
     await e.submit_fake(ROOM, gid, 1, "nine")
-    await e._on_event(mal.person({"t": "tales_fake", "gid": gid, "n": 1, "text": "seven", "name": "Mal"}), "relay")
-    await e._on_event(mal.agent({"t": "tales_fake", "gid": gid, "n": 1, "text": "mallory fake", "name": "Malbot"}),
-                      "relay")
+    host_pk = e._identity()["agent_pk"]
+    await e._on_event(mal.fake(host_pk, gid, 1, "seven")[0], "relay")
+    await e._on_event(mal.fake(host_pk, gid, 1, "mallory fake", agent=True, name="Malbot")[0], "relay")
     assert await wait_for(lambda: (e.game_view(ROOM) or {}).get("phase") == "vote")
     opts = {o["text"]: o["id"] for o in e.game_view(ROOM)["options"]}
     for i in range(30):  # fresh keys, no presence: each would be a point for Mallory's fake
-        await e._on_event(Key(f"throw{i}").person({"t": "tales_vote", "gid": gid, "n": 1, "option": opts["mallory fake"],
-                                                   "name": f"T{i}"}), "relay")
-    await e._on_event(mal.person({"t": "tales_vote", "gid": gid, "n": 1, "option": opts["three"], "name": "Mal"}),
-                      "relay")
+        await e._on_event(Key(f"throw{i}").vote(host_pk, gid, 1, opts["mallory fake"], name=f"T{i}"), "relay")
+    await e._on_event(mal.vote(host_pk, gid, 1, opts["three"]), "relay")
     await e.submit_vote(ROOM, gid, 1, opts["three"])
     assert await wait_for(lambda: (e.game_view(ROOM) or {}).get("phase") == "end")
     reveal = [json.loads(ev["content"]) for ev in sent(e, "tales_reveal")][-1]

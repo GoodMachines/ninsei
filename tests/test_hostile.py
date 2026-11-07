@@ -12,7 +12,7 @@ import pytest
 
 from ninsei_engine import game, nostr
 from ninsei_engine.engine import (KIND_LIVE, KIND_ROOM, MAX_CLAIM_TRIGGERS, MAX_CLAIMS_PER_TRIGGER, MAX_PRESENCE,
-                                 STRANGER_REPLIES, Engine, skeleton)
+                                 STRANGER_REPLIES, Engine, seal_fake, seal_vote, skeleton)
 from ninsei_engine.topics import TopicTracker
 from test_engine import StubLLM, read, run, setup_room, wait_for, world  # noqa: F401  (fixture re-export)
 
@@ -50,6 +50,17 @@ class Key:
 
     def person(self, content, kind=KIND_ROOM, created_at=None, tags=()):
         return nostr.build_event(self.psk, kind, json.dumps(content), [["h", ROOM], *tags], created_at=created_at)
+
+    def fake(self, host_pk, gid, n, text, agent=False, name="Mal"):
+        """A game answer sealed to the host's agent key, as a current client sends it. Returns (event, nonce)."""
+        enc, nonce = seal_fake(self.ask if agent else self.psk, host_pk, text)
+        content = {"t": "tales_fake", "gid": gid, "n": n, "enc": enc, "name": name}
+        return (self.agent(content) if agent else self.person(content)), nonce
+
+    def vote(self, host_pk, gid, n, option="", agents=None, name="Mal", created_at=None):
+        """A vote sealed to the host's agent key, as a current client sends it (always from the person key)."""
+        enc = seal_vote(self.psk, host_pk, option, agents)
+        return self.person({"t": "tales_vote", "gid": gid, "n": n, "enc": enc, "name": name}, created_at=created_at)
 
 
 @pytest.fixture
