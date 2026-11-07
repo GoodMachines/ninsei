@@ -97,7 +97,7 @@ FRIEND_IGNORE_DAYS = 30
 DM_WRAP_MEMORY = 20000    # gift wrap ids remembered
 
 # people's pictures and faces kept on disk (most recently received first; mine are never dropped)
-ART_AVATARS = 300         # picture rows that hold bytes (at most 48 KB each)
+ART_AVATARS = 300         # picture rows that hold bytes (at most 44 KB each)
 ART_ROWS = 1200           # all rows: faces, and the empty ones that mark a removed picture
 
 
@@ -275,6 +275,9 @@ class Store:
         return {r[0]: {**json.loads(r[1]), "last_read": r[2]} for r in rows}
 
     def mark_read(self, room_id: str, ts: int) -> None:
+        # never past now: a message dated ahead of the clock (the relays' slack allows a minute) must not
+        # push the mark forward and silence what arrives next
+        ts = min(int(ts), int(time.time()))
         with self._lock:
             self._db.execute("UPDATE rooms SET last_read=MAX(last_read, ?) WHERE id=?", (ts, room_id))
             self._db.commit()

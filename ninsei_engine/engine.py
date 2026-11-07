@@ -98,6 +98,7 @@ SEARCH_Q_MAX = 100         # longest search text (the API clips the same way)
 SEARCH_LIMIT_MAX = 100
 MESSAGES_SHOWN = 120       # timeline items a room snapshot carries; older ones load a page at a time
 EARLIER_PAGE = 100         # items per "Load earlier messages"
+EARLIER_RANGE = 1500       # items one refresh of everything already loaded may return (the page's own cap)
 SENDING_SECONDS = 6        # a fresh own event still waiting for its first relay answer reads "sending", not "not delivered"
 SEARCH_CONTEXT = 3         # messages shown on each side of a search result that isn't loaded
 QUOTE_CHARS = 120          # how much of the replied-to message a quote carries
@@ -126,6 +127,8 @@ ART_POW = 12               # bits of proof of work, like cards
 ART_FACE_BYTES = 1024      # content of a face event (a real one is about 120 bytes)
 ART_AUTHORS = 200          # people whose pictures and faces are asked for, newest activity first
 ART_AUTHORS_PER_FILTER = 50
+ART_OK_MAX = 20000         # people kept as "seen in a room I'm in" (a bounded LRU)
+ART_QUERY_FILTERS = 4      # filters in one one-shot picture query (well under a relay's 8)
 ART_SETTLE = 3             # seconds to gather new people before asking the relays again
 ART_REQ_GAP = 30           # at least this long between two such requests
 ART_PUBLISH_PER_10MIN = 5  # picture or face changes I publish in ten minutes
@@ -316,7 +319,8 @@ def parse_room_link(text: str) -> tuple[str, str]:
     t = str(text or "").strip()[:200]
     t = re.sub(r"^ninsei:", "", t, flags=re.I)
     room, _, ev = t.partition("#")
-    room = re.sub(r"[^a-f0-9]", "", room.lower())[:24]
+    m = re.match(r"[0-9a-f]+", room.strip().lower())
+    room = m.group(0)[:24] if m else ""
     ev = ev.strip().lower()
     return room, ev if nostr.is_hex(ev, 32) else ""
 
@@ -556,7 +560,7 @@ class Engine:
         self.lobby: dict = {"rooms": [], "people": [], "at": 0}
         self.agent_state = "activity: idle"
         self.agent_note = ""
-        self._gave_up: Optional[tuple] = None   # (gid, n) of the last game round my agent had no answer for
+        self._gave_up: Optional[tuple] = None   # (gid, n, room) of the last game round my agent had no answer for
         self._last_spoke: dict[str, float] = {}
         self._recent_posts: list[float] = []
         self._rested_notice: dict[str, str] = {}
@@ -598,10 +602,12 @@ class Engine:
         # people's pictures and faces: {pk: {"avatar": meta, "face": meta}} (meta: id, created_at, and mime/size or
         # the face dict; an empty one is a removal). The picture bytes stay in the store until asked for.
         self._art: dict[str, dict[str, dict]] = {}
-        self._art_ok: set[str] = set()           # person keys seen in a room I'm in: the only ones whose art is taken
+        self._art_ok: dict[str, None] = {}       # person keys seen in a room I'm in (least recently seen first, at most
+                                                 # ART_OK_MAX): the only ones whose art is taken
         self._art_waiting = False
         self._art_last = 0.0
         self._art_sent: Optional[tuple] = None   # the author list the last request went out with
+        self._art_pool = None                    # the pool that list went to
         self.typing: dict[str, dict[str, float]] = {}   # room -> person pk -> when their last signal arrived
         self._typing_at: dict[str, float] = {}          # room -> when I last signaled typing
 
@@ -963,7 +969,9 @@ class Engine:
         for sid in self._room_subs - wanted:
             await self.pool.unsubscribe(sid)
         self._room_subs = wanted
-        self._art_sent = None   # a new pool or room list: ask for pictures and faces again
+        if self._art_pool is not self.pool:   # a new pool: ask for everyone's pictures and faces once. A join or a
+            self._art_pool = self.pool        # leave keeps what was asked: only the people who are new get a query
+            self._art_sent = None
         await self._art_subscribe()
 
     async def reconnect(self) -> None:
@@ -1515,6 +1523,16 @@ class Engine:
         return bool(name) and (re.search(rf"(?<![\w@])@?{re.escape(name)}\b", text or "", re.I) is not None
                                or at_mentions(text or "", name))
 
+    def _at_names_other(self, room: str, text: str) -> bool:
+        """Does `text` `@`-name anyone known in this room (its name book or presence, here or not) other than
+        me and my agent?"""
+        if "@" not in text:
+            return False
+        who = self._who(room)
+        mine = {skeleton(self.persona()["name"]), who["me_p"]}
+        names = set(who["person"].values()) | set(who["agent"].values())
+        return any(_nameable(n) and skeleton(n) not in mine and at_mentions(text, n) for n in names)
+
     def _mentions_me(self, text: str) -> bool:
         """An `@` aimed at me or my agent: what highlights a message and counts toward a room's badge."""
         s = self.settings()
@@ -1565,8 +1583,9 @@ class Engine:
         return None
 
     def _addressed(self, room: str, ev: dict, c: dict) -> bool:
-        me = self._identity()["agent_pk"]
-        if me in _as_list(c.get("mentions")) or self._replied_agent(room, ev) == me:  # a string would make `in` a substring test
+        # `content.mentions` is only a hint from the sender's client and is never trusted: a key counts as
+        # named only when the text really names the name it holds (below), or the event replies to it.
+        if self._replied_agent(room, ev) == self._identity()["agent_pk"]:
             return True
         return self._mentions(str(c.get("text", "")), self.persona()["name"])
 
@@ -1597,6 +1616,13 @@ class Engine:
         if not self._rate_ok(f"strangers:{room}", ROOM_STRANGER_CALLS, STRANGER_WINDOW):
             return False
         return team_key is None or self._rate_ok(team_key, team_limit, STRANGER_WINDOW)
+
+    def _stranger_retry_ok(self, room: str) -> bool:
+        """The retry after an empty game reply is a second call a stranger's game costs: it counts against the
+        room's cap like the first, and is skipped once only a couple of calls are left."""
+        now = time.time()
+        used = len([t for t in self._rate.get(f"strangers:{room}", ()) if t > now - STRANGER_WINDOW])
+        return used < ROOM_STRANGER_CALLS - 2 and self._rate_ok(f"strangers:{room}", ROOM_STRANGER_CALLS, STRANGER_WINDOW)
 
     def _stranger_room_left(self, room: str, team_key: Optional[str], team_limit: int) -> bool:
         """_stranger_call_ok without counting: would a call triggered by this team still be allowed? Checked
@@ -1636,8 +1662,8 @@ class Engine:
             return 20
         tc = self._content(tev)
         if claimed == 100:
-            if pk in _as_list(tc.get("mentions")) or self._replied_agent(room, tev) == pk:
-                return 100  # named, or a person replied to this agent's own message
+            if self._replied_agent(room, tev) == pk:
+                return 100  # a person replied to this agent's own message (a `mentions` list in the content is not trusted)
             # The name must have been this agent's before the trigger reached us: an agent can't rename
             # itself after the fact to a word in the message and so count as addressed.
             name = self._agent_name(room, pk, who)
@@ -1684,6 +1710,8 @@ class Engine:
             return  # talking to someone else's agent
         elif from_owner and re.search(r"\b(anyone|agents|y'all|you all|everyone|@all)\b", text, re.I):
             prio = 60
+        elif from_owner and self._at_names_other(room, text):
+            return  # "@Ada ..." is for Ada, present or not: "alone in the room" doesn't make it mine
         elif from_owner and chatty and (re.search(r"\?\s*$", text) or not self._others_here(room)):
             prio = 40  # my owner's question, or anything they say while nobody else is around
         elif not from_agent and random.random() < CHATTINESS[level]:
@@ -1715,8 +1743,8 @@ class Engine:
             return
         if self._inflight >= MAX_INFLIGHT:
             return
-        if (self._msg_fx(room).get(ev["id"]) or {}).get("deleted"):
-            return  # its author took it back while the floor was being decided: nothing to answer
+        if (self._msg_fx(room).get(ev["id"]) or {}).get("deleted") or ev["id"] not in self.events.get(room, {}):
+            return  # its author took it back (or discarded it) while the floor was being decided: nothing to answer
         self._inflight += 1
         try:
             self._set_state("activity: working")
@@ -2531,8 +2559,7 @@ class Engine:
             text = ""   # never keep a fake that is the truth: the host's own agent would score a free point
         if not text:
             if self._inflight >= MAX_INFLIGHT:
-                self._gave_up_round(g["gid"], n)
-                return
+                return   # my own limit, not "no answer": nothing is announced for it
             self._inflight += 1
             try:
                 if not tales:
@@ -2546,8 +2573,7 @@ class Engine:
                 else:
                     text = await self.brain.human_answer(self.persona(), owner_name, str(q.get("q", "")))
             except BudgetExhausted:
-                self._set_state("system: waiting", "out of budget for today")
-                self._gave_up_round(g["gid"], n, note=False)
+                self._set_state("system: waiting", "out of budget for today")   # the state says it; no gave_up
                 return
             except Exception as e:
                 log.debug("ninsei: host answer failed: %s", e)
@@ -2558,18 +2584,21 @@ class Engine:
             await self._publish_fake(g["room"], True, g["gid"], n, text, self._identity()["agent_pk"])
             self._set_state("activity: idle")
         elif not text:
-            self._gave_up_round(g["gid"], n)
+            self._gave_up_round(g["room"], g["gid"], n)
 
-    def _gave_up_round(self, gid: Any, n: Any, note: bool = True) -> None:
-        """My agent has no answer for this round (no model, no budget, an empty or refused reply). The room's game
-        panel shows "couldn't answer" for it, from the presence beat; it says nothing about any option."""
-        if self._gave_up == (str(gid)[:32], n):
+    def _gave_up_round(self, room: str, gid: Any, n: Any, note: bool = True) -> None:
+        """My agent asked its model for this round and got nothing usable (an empty reply, a refusal, an error).
+        The room's game panel shows "couldn't answer" for it, from the presence beat, which carries it in that
+        room only; it says nothing about any option. Never called for my own limits (a cap, the budget, calls
+        already running): a hostile host could otherwise make every round a beat."""
+        if self._gave_up and self._gave_up[:2] == (str(gid)[:32], n):
             return   # said once; a host repeating its round can't make a beat each time
-        self._gave_up = (str(gid)[:32], n)
+        self._gave_up = (str(gid)[:32], n, room)
+        before = (self.agent_state, self.agent_note)
         if note:
-            self._set_state("activity: idle", "couldn't come up with one", force=True)
-        else:
-            self._beat_soon()
+            self._set_state("activity: idle", "couldn't come up with one")   # beats every room only if the state changed
+        if not note or before == (self.agent_state, self.agent_note):
+            self._spawn(self._presence_once(only=room))
 
     async def _wait_until(self, g: dict, deadline: float, done: Callable[[], bool]) -> None:
         while time.time() < deadline:
@@ -2603,10 +2632,8 @@ class Engine:
         if key in self._played:
             return
         if not self._rate_ok(f"fake:{room}:{_team_key(ev['pubkey'], self.owner_of(ev))}", FAKES_PER_HOST, FAKES_WINDOW):
-            self._gave_up_round(c.get("gid"), c.get("n"))
-            return
+            return   # my own cap: no model call and nothing announced
         if not self._stranger_call_ok(room, None, 0):
-            self._gave_up_round(c.get("gid"), c.get("n"))
             return
         self._played[key] = time.time()
         while len(self._played) > MAX_PLAYED:
@@ -2617,24 +2644,24 @@ class Engine:
         if not self._round_playable(room, ev, c):
             return
         if self._inflight >= MAX_INFLIGHT:
-            self._gave_up_round(c.get("gid"), c.get("n"))
             return
         self._inflight += 1
         try:
             owner_name = self.settings()["display_name"] or "my owner"
             if (self.game_view(room) or {}).get("mode") == "agent":
                 self._set_state("activity: working", "trying to sound human")
-                fake = await self.brain.human_answer(self.persona(), owner_name, str(c.get("q", "")))
+                fake = await self.brain.human_answer(self.persona(), owner_name, str(c.get("q", "")),
+                                                     retry_ok=lambda: self._stranger_retry_ok(room))
             else:
                 self._set_state("activity: working", "writing a tall tale")
-                fake = await self.brain.fake(self.persona(), owner_name, str(c.get("q", "")))
+                fake = await self.brain.fake(self.persona(), owner_name, str(c.get("q", "")),
+                                             retry_ok=lambda: self._stranger_retry_ok(room))
         except BudgetExhausted:
             self._set_state("system: waiting", "out of budget for today")
-            self._gave_up_round(c.get("gid"), c.get("n"), note=False)
             return
         except Exception as e:
             self._set_state("system: error", str(e)[:120])
-            self._gave_up_round(c.get("gid"), c.get("n"), note=False)
+            self._gave_up_round(room, c.get("gid"), c.get("n"), note=False)
             return
         finally:
             self._inflight -= 1
@@ -2642,7 +2669,7 @@ class Engine:
             await self._publish_fake(room, True, c.get("gid"), c.get("n"), fake, ev["pubkey"])  # ev: the host's round
             self._set_state("activity: idle")
         else:
-            self._gave_up_round(c.get("gid"), c.get("n"))
+            self._gave_up_round(room, c.get("gid"), c.get("n"))
 
     async def submit_fake(self, room: str, gid: str, n: int, text: str) -> None:
         text = re.sub(r"\s+", " ", text or "").strip()[:80]
@@ -2761,7 +2788,8 @@ class Engine:
                     or p["owner"] in self._hidden:
                 continue
             out.append((pk, p["name"], p.get("gave_up")))
-        out.append((ident["agent_pk"], self.persona().get("name") or "Agent", self._gave_up))
+        out.append((ident["agent_pk"], self.persona().get("name") or "Agent",
+                    self._gave_up[:2] if self._gave_up and self._gave_up[2] == room else None))
         rows = []
         for pk, name, gave in out[:24]:
             if self._holder(who, name, agent=True) not in (None, pk):
@@ -3321,7 +3349,8 @@ class Engine:
             await self._presence_once()
         self._spawn(later())
 
-    async def _presence_once(self) -> None:
+    async def _presence_once(self, only: Optional[str] = None) -> None:
+        """One presence beat to every joined room, or to `only` that room."""
         if not self.pool:
             return
         self._last_beat = time.time()
@@ -3332,10 +3361,10 @@ class Engine:
             self.agent_state, self.agent_note = "system: waiting", why
         s = self.settings()
         bv = self.budget_view()
-        for room in list(self.store.rooms()):
+        for room in ([only] if only else list(self.store.rooms())):
             content = {"t": "presence", "state": self.agent_state,
                        "budget": round(bv["pct"], 2) if s["share_budget"] else None}
-            if self._gave_up:   # "couldn't answer" in the game panel, for this one round (checked on receipt)
+            if self._gave_up and self._gave_up[2] == room:   # "couldn't answer" in the game panel, for this one round and room (checked on receipt)
                 content["gave_up"] = {"gid": self._gave_up[0], "n": self._gave_up[1]}
             if s["card_details"]:  # the owner chose to show these on the agent's card
                 content["vibe"] = s["vibe"][:200]
@@ -3381,9 +3410,16 @@ class Engine:
                 raise ValueError("that message isn't here any more")
             content["reply"] = reply
             tags = [["e", reply, "", "reply"]]
-        content["mentions"] = [pk for pk, p in self.presence.get(room, {}).items() if self._mentions(text, p["name"])]
+        # Only an explicit `@name` (a nameable name this key holds in the room) or a reply addresses an agent.
+        who = self._who(room)
+        mentions = [pk for pk, p in self.presence.get(room, {}).items()
+                    if _nameable(p["name"]) and at_mentions(text, p["name"])
+                    and self._holder(who, p["name"], agent=True) == pk]
+        if reply and target is not None and self.owner_of(target) and target["pubkey"] not in mentions:
+            mentions.append(target["pubkey"])
+        content["mentions"] = mentions
         ev = await self._publish_room(room, False, content, tags)
-        self.store.mark_read(room, ev["created_at"])
+        self.store.mark_read(room, min(ev["created_at"], int(time.time())))
         return {"id": ev["id"]}
 
     def _delivery_of(self, eid: str, created_at: int) -> str:
@@ -3418,20 +3454,46 @@ class Engine:
         return {"id": target, "delivery": "sending"}
 
     async def discard_post(self, room: str, target: str) -> dict:
-        """Take back an undelivered message of mine: it leaves the timeline and is never sent."""
+        """Take back an undelivered message of mine: it leaves the timeline and is never sent, and neither is
+        anything my agent queued in answer to it."""
         self._own_undelivered(room, target)
-        if not self.pool.discard(target):
-            raise ValueError("that message was delivered")
-        self.events[room].pop(target, None)
-        self.store.drop_events([target])
-        self._bump()
+        self._discard_undelivered(room, target)
         return {"ok": True}
 
-    def _pace_click(self) -> None:
+    def _discard_undelivered(self, room: str, target: str) -> None:
+        """Drop one undelivered message of mine and my own agent's undelivered replies to it. The ids are kept in
+        the room's `_trimmed` set, so a copy that comes back from a relay can't put the message on screen again."""
+        if not self.pool.discard(target):
+            raise ValueError("that message was delivered")
+        gone = [target]
+        agent = self._identity()["agent_pk"]
+        for e in list(self.events[room].values()):
+            if e["pubkey"] == agent and target in nostr.tag_values(e, "e") and self.pool.delivery(e["id"]) != "sent" \
+                    and not self.pool.sending(e["id"]) and self.pool.discard(e["id"]):
+                gone.append(e["id"])
+        trimmed = self._trimmed.setdefault(room, {})
+        for i in gone:
+            self.events[room].pop(i, None)
+            self._cc.pop(i, None)
+            trimmed[i] = None
+        while len(trimmed) > MAX_ROOM_EVENTS * 2:
+            trimmed.pop(next(iter(trimmed)))
+        self.store.drop_events(gone)
+        self._bump()
+
+    def _is_undelivered(self, target: str) -> bool:
+        return self.pool is not None and self.pool.delivery(target) != "sent" and not self.pool.sending(target)
+
+    def _pace_click(self, slots: int = 1) -> None:
         """Anything one click can publish (a reaction, an edit, a delete) shares one local pace, so a held key or a
-        script can't spend the relays' per-IP allowance. Raises a message the UI shows as a toast."""
-        if not self._rate_ok("clicks", CLICKS_PER_MIN, 60):
+        script can't spend the relays' per-IP allowance. A click that sends two events (a delete) takes two slots.
+        Raises a message the UI shows as a toast."""
+        now = time.time()
+        used = len([t for t in self._rate.get("clicks", ()) if t > now - 60])
+        if used + slots > CLICKS_PER_MIN:
             raise ValueError(f"Slow down: Ninsei sends at most {CLICKS_PER_MIN} reactions, edits and deletes a minute.")
+        for _ in range(slots):
+            self._rate_ok("clicks", CLICKS_PER_MIN, 60)
 
     async def react(self, room: str, target: str, emoji: str, on: bool = True) -> dict:
         """Add or take back one of my reactions to a message here. Nothing is sent when it already is as asked."""
@@ -3473,6 +3535,14 @@ class Engine:
         now_text = (self._msg_fx(room).get(target) or {}).get("text") or str(self._content(te).get("text", ""))[:1200]
         if text == now_text:
             return {"ok": True, "unchanged": True}
+        if self._is_undelivered(target):
+            # Nobody has the original: take it back and send the edited words as a new message (same reply).
+            reply = self._content(te).get("reply")
+            self._discard_undelivered(room, target)
+            if not (isinstance(reply, str) and reply in self.events.get(room, {})):
+                reply = None
+            out = await self.post(room, text, reply)
+            return {"id": out["id"], "reposted": True}
         self._pace_click()
         ev = await self._publish_room(room, False, {"t": "edit", "target": target, "text": text})
         return {"id": ev["id"]}
@@ -3482,7 +3552,10 @@ class Engine:
         kind 5 request, signed by the same key, so relays and other apps that honour it can drop the original.
         Neither can unpublish what a relay or another app already copied."""
         te = self._own_msg(room, target)
-        self._pace_click()
+        if self._is_undelivered(target):
+            self._discard_undelivered(room, target)   # never reached a relay: nothing to take back, so nothing goes out
+            return {"ok": True, "discarded": True}
+        self._pace_click(2)   # the delete event and the kind 5 request
         ev = await self._publish_room(room, False, {"t": "delete", "target": target})
         req = nostr.build_event(self._identity()["person_sk"], 5, "", [["e", te["id"]], ["k", str(KIND_ROOM)]])
         self._queue_event(req)
@@ -3529,18 +3602,28 @@ class Engine:
 
     def _art_see(self, pk: str) -> None:
         """A person seen in a room I'm in: their picture and face are now worth asking for."""
-        if not isinstance(pk, str) or pk in self._art_ok or len(self._art_ok) >= 20000 or pk in self._hidden:
-            return
-        self._art_ok.add(pk)
-        if pk not in self._art:
+        if self._art_note(pk) and pk not in self._art:
             self._art_soon()
+
+    def _art_note(self, pk: str) -> bool:
+        """Remember `pk` as seen in a room I'm in. True when it is new (or had been pushed out)."""
+        if not isinstance(pk, str) or pk in self._hidden:
+            return False
+        if pk in self._art_ok:
+            self._art_ok.pop(pk)   # seen again: to the back, so a flood of throwaway keys pushes out the idle ones
+            self._art_ok[pk] = None
+            return False
+        while len(self._art_ok) >= ART_OK_MAX:
+            self._art_ok.pop(next(iter(self._art_ok)))
+        self._art_ok[pk] = None
+        return True
 
     def _art_load(self) -> None:
         """At boot: who has been seen in my rooms, and what the store holds of their pictures and faces."""
         for evs in self.events.values():
             for e in evs.values():
                 if e["kind"] == KIND_ROOM and not self.owner_of(e) and self._content(e).get("t") not in SILENT_TYPES:
-                    self._art_ok.add(e["pubkey"])
+                    self._art_note(e["pubkey"])
         for row in self.store.art_index():
             if row["pk"] in self._hidden:
                 self.store.art_forget(row["pk"])
@@ -3662,7 +3745,9 @@ class Engine:
 
     def _art_forget(self, pk: str) -> None:
         self._art.pop(pk, None)
-        self._art_ok.discard(pk)
+        self._art_ok.pop(pk, None)
+        if self._art_sent:   # so that seeing them again later counts as new, and gets its one query
+            self._art_sent = tuple(a for a in self._art_sent if a != pk)
         self.typing = {r: {k: v for k, v in tp.items() if k != pk} for r, tp in self.typing.items()}
         self.store.art_forget(pk)
 
@@ -3696,21 +3781,40 @@ class Engine:
         ranked = sorted(last, key=lambda k: (-last[k], k))[:ART_AUTHORS - 1]
         return [me, *ranked]
 
+    def _art_filters(self, authors: list[str], since: Optional[int] = None) -> list[dict]:
+        n = ART_AUTHORS_PER_FILTER
+        out = []
+        for i in range(0, len(authors), n):
+            f = {"kinds": [KIND_META], "authors": authors[i:i + n], "#d": [ART_AVATAR_D, ART_FACE_D],
+                 "limit": 2 * len(authors[i:i + n])}
+            if since is not None:
+                f["since"] = since
+            out.append(f)
+        return out
+
     async def _art_subscribe(self) -> None:
-        """One REQ, `art`: the picture and face events of the people of my rooms (several filters of
-        ART_AUTHORS_PER_FILTER authors each, well under the 8 a request may hold). Sent again only when the list
-        of people changed, and no oftener than ART_REQ_GAP."""
+        """Pictures and faces of the people of my rooms (several filters of ART_AUTHORS_PER_FILTER authors each,
+        well under the 8 a request may hold), asked for no oftener than ART_REQ_GAP and only when the list of
+        people changed. The live `art` subscription starts at now, so a relay never resends what it sent before
+        (a reconnect, a join or a leave replays nothing); the people who are new in the list get one one-shot query
+        for just them. It takes every copy of an event (`dedupe=False`): the pool's own seen-set would swallow a
+        re-asked picture that was dropped the first time (pictures were off, the person was hidden)."""
         self._art_last = time.time()
         if not self.pool or not self.settings()["onboarded"] or not self.store.rooms():
             return
         authors = self._art_authors()
         if self._art_sent == tuple(authors):
             return
+        known = set(self._art_sent or ())
         self._art_sent = tuple(authors)
-        n = ART_AUTHORS_PER_FILTER
-        filters = [{"kinds": [KIND_META], "authors": authors[i:i + n], "#d": [ART_AVATAR_D, ART_FACE_D],
-                    "limit": 2 * len(authors[i:i + n])} for i in range(0, len(authors), n)]
-        await self.pool.subscribe("art", filters, self._on_art)
+        fresh = [a for a in authors if a not in known]
+        await self.pool.subscribe("art", self._art_filters(authors, int(_now())), self._on_art, dedupe=False)
+        for i in range(0, len(fresh), ART_AUTHORS_PER_FILTER * ART_QUERY_FILTERS):
+            try:
+                for ev in await self.pool.query(self._art_filters(fresh[i:i + ART_AUTHORS_PER_FILTER * ART_QUERY_FILTERS]), timeout=6.0):
+                    self._take_art(ev)
+            except Exception:
+                log.exception("ninsei: the picture query failed")
 
     async def _on_art(self, ev: dict, _src: str) -> None:
         self._take_art(ev)
@@ -3745,7 +3849,7 @@ class Engine:
         if img:
             got = avatar.check_avatar(img)
             if got is None:
-                raise ValueError("That picture can't be sent: Ninsei takes a PNG, JPEG or WebP of at most 48 KB and 512 pixels.")
+                raise ValueError("That picture can't be sent: Ninsei takes a PNG, JPEG or WebP of at most 44 KB and 512 pixels.")
             meta = avatar.find_metadata(got[1], got[0])
             if meta:
                 raise ValueError(f"That picture still carries {meta}. Choose it again in Ninsei's picker, which re-encodes it and keeps only the pixels.")
@@ -3754,8 +3858,9 @@ class Engine:
                 return {"ok": True, "unchanged": True}
         elif not cur.get("mime"):
             return {"ok": True, "unchanged": True}
-        if not self._rate_ok("art", ART_PUBLISH_PER_10MIN, 600):
-            raise ValueError("Slow down: you can change your picture or face a few times every ten minutes.")
+        wait = self._rate_wait("art", ART_PUBLISH_PER_10MIN, 600)
+        if wait > 0 or not self._rate_ok("art", ART_PUBLISH_PER_10MIN, 600):
+            raise self._art_slow_down(wait or 60)
         # a second after my last one at least: two changes in one second would tie, and the lower id would win
         ev = nostr.build_event(self._identity()["person_sk"], KIND_META, json.dumps({"img": img or ""}),
                                [["d", ART_AVATAR_D]], pow_bits=ART_POW,   # no `t` tag: the lobby's query must not pull pictures
@@ -3765,6 +3870,29 @@ class Engine:
         self._spawn(self.pool.publish(ev))
         self._bump()
         return {"id": ev["id"]}
+
+    def _rate_wait(self, key: str, limit: int, window: float) -> float:
+        """Seconds until `key` has a free slot under `limit` hits per `window` (0 when it has one now). Counts nothing."""
+        now = time.time()
+        hits = sorted(t for t in self._rate.get(key, ()) if t > now - window)
+        return 0.0 if len(hits) < limit else hits[len(hits) - limit] + window - now
+
+    def _art_slow_down(self, wait: float) -> ValueError:
+        return ValueError(f"Slow down: you can change your picture or face a few times every ten minutes. "
+                          f"Try again in {max(1, int(wait / 60 + 0.999))} min.")
+
+    async def check_face_pace(self, face: Any) -> None:
+        """Called before a settings save that carries a face: when that face would be published and the pace says
+        not yet, refuse the whole save with a clear message, so nothing is kept that never reaches anyone."""
+        if not self.settings()["onboarded"] or not self.pool:
+            return
+        f = clean_face(face) if isinstance(face, dict) and face else None
+        want = json.dumps(f, sort_keys=True) if f else ""
+        if (self.store.get("face_sent") or "") == want:
+            return
+        wait = self._rate_wait("art", ART_PUBLISH_PER_10MIN, 600)
+        if wait > 0:
+            raise self._art_slow_down(wait)
 
     async def publish_face(self) -> dict:
         """Publish my built face ({"face": ...}, or {"face": null} to take it away) when it differs from what I last
@@ -3776,8 +3904,9 @@ class Engine:
         want = json.dumps(s["person_face"], sort_keys=True) if s["person_face"] else ""
         if (self.store.get("face_sent") or "") == want:
             return {"sent": False, "unchanged": True}
-        if not self._rate_ok("art", ART_PUBLISH_PER_10MIN, 600):
-            raise ValueError("Slow down: you can change your picture or face a few times every ten minutes.")
+        wait = self._rate_wait("art", ART_PUBLISH_PER_10MIN, 600)
+        if wait > 0 or not self._rate_ok("art", ART_PUBLISH_PER_10MIN, 600):
+            raise self._art_slow_down(wait or 60)
         pk = self._identity()["person_pk"]
         cur = (self._art.get(pk) or {}).get("face") or {}
         ev = nostr.build_event(self._identity()["person_sk"], KIND_META, json.dumps({"face": s["person_face"]}),
@@ -4308,6 +4437,11 @@ class Engine:
         holder = self._holder(who, name, agent=bool(owner))
         if holder not in (None, pk):
             return {"claimed": name, "real": None if holder == CONTESTED else holder}
+        if owner:  # an agent wearing a person's name (held in the room, or mine) is a lookalike too
+            sk = skeleton(name)
+            person = who["ident"]["person_pk"] if sk and sk == who["me_p"] else who["reg"].get("p:" + sk) if sk else None
+            if sk not in COMMON_WORDS and person not in (None, owner):
+                return {"claimed": name, "real": None if person == CONTESTED else person}
         if owner and not owner_ok:
             real = self._holder(who, owner_name)
             return {"claimed": owner_name, "real": None if real == CONTESTED else real, "owner": True}
@@ -4371,18 +4505,28 @@ class Engine:
         allm = self._timeline(room)
         return allm[-MESSAGES_SHOWN:], len(allm) > MESSAGES_SHOWN
 
-    def messages_before(self, room: str, before: str, limit: int = EARLIER_PAGE) -> dict:
+    def messages_before(self, room: str, before: str, limit: int = EARLIER_PAGE, since_ts: int = 0) -> dict:
         """The page of timeline items just older than item `before` (oldest first) and whether still older ones
-        exist, for "Load earlier messages". Same view as `messages` (hidden people, folded replies, flags), taken
-        from what this computer keeps for the room. An id that is no longer here gives an empty page."""
+        exist, for "Load earlier messages". Same view as `messages` (hidden people, folded replies, flags, edits,
+        deletes, reactions), built fresh from what this computer keeps for the room. An id that is no longer here
+        gives an empty page.
+
+        `since_ts` (> 0) is how the page keeps what it already loaded true: it asks for everything from that
+        date up to `before` in one go (at most EARLIER_RANGE items), so an edit, a delete or a hide that came
+        after the pages were loaded reaches them."""
         try:
             limit = max(1, min(int(limit), EARLIER_PAGE))
+            since_ts = max(0, int(since_ts))
         except (TypeError, ValueError):
-            limit = EARLIER_PAGE
+            limit, since_ts = EARLIER_PAGE, 0
         allm = self._timeline(room)
         i = next((n for n, m in enumerate(allm) if m["id"] == before), None)
         if i is None:
             return {"messages": [], "more": False}
+        if since_ts:
+            lo = next((n for n, m in enumerate(allm[:i]) if m["ts"] >= since_ts), i)
+            lo = max(lo, i - EARLIER_RANGE)
+            return {"messages": allm[lo:i], "more": lo > 0}
         lo = max(0, i - limit)
         return {"messages": allm[lo:i], "more": lo > 0}
 
@@ -4590,6 +4734,8 @@ class Engine:
                 # the same flag the room shows, so an alert never names a lookalike as the real person
                 flag = self._flag(who, he["pubkey"], name, owner, owner_name, owner_ok)
                 rooms[-1]["last_mention"] = {"id": he["id"], "name": name, "impostor": bool(flag),
+                                             "role": "agent" if owner else "person",
+                                             "owner_name": _name_ok(owner_name, "") if owner else "",
                                              "text": str((fx.get(he["id"]) or {}).get("text") or hc.get("text", ""))[:MENTION_SNIPPET],
                                              "ts": he["created_at"]}
         offers = self.store.get("offers") or {}

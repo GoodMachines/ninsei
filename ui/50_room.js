@@ -238,8 +238,11 @@ function RoomHeader(props) {
 
 // The messages a conversation shows: the snapshot's newest window, with whatever "Load earlier messages" has
 // fetched in front of it (kept in EARLIER, so it is still there when you come back). `fetchPage(id)` resolves to
-// { messages, more } for the page just older than message `id`.
-function useEarlier(key, snapMsgs, snapMore, fetchPage) {
+// { messages, more } for the page just older than message `id`. The loaded pages are copies, so `refetch(sinceTs, id)`
+// (rooms only) asks again for everything from that date up to message `id` whenever `rev` moves (an edit, a delete,
+// a reaction, a hide, a new flag), at most every EARLIER_REFRESH_MS, and the answer replaces the copies.
+const EARLIER_REFRESH_MS = 1500
+function useEarlier(key, snapMsgs, snapMore, fetchPage, refetch, rev) {
   const [, bump] = useState(0)
   const st = earlierState(key)
   if (st.prev !== snapMsgs) { st.older = mergeOlder(st.older, st.prev, snapMsgs); st.prev = snapMsgs }
@@ -261,6 +264,32 @@ function useEarlier(key, snapMsgs, snapMore, fetchPage) {
     bump(n => n + 1)
     return true
   }, [key, fetchPage])
+  const timer = useRef(null)
+  const latest = useRef(null)
+  latest.current = { snapMsgs, refetch, rev }
+  // a throttle, not a debounce: a busy room keeps changing, and the copies must still catch up every so often
+  const refresh = () => {
+    if (!latest.current.refetch || timer.current || !earlierState(key).older.length || !latest.current.snapMsgs.length) return
+    timer.current = setTimeout(async () => {
+      timer.current = null
+      const { snapMsgs: sm, refetch: rf, rev: r0 } = latest.current
+      const first = earlierState(key).older[0]
+      if (!first || !sm.length) return
+      const before = sm[0].id
+      let page
+      try { page = await rf(first.ts, before) } catch (_) { return }
+      const now = earlierState(key)
+      const ok = page && page.messages && now.prev && now.prev.length && now.prev[0].id === before && now.older.length
+      if (ok && JSON.stringify(page.messages) !== JSON.stringify(now.older)) {
+        now.older = page.messages
+        now.more = !!page.more
+        bump(n => n + 1)
+      }
+      if (latest.current.rev !== r0 || !ok) refresh()   // something changed while asking, or the window moved: ask again
+    }, EARLIER_REFRESH_MS)
+  }
+  useEffect(refresh, [key, rev])
+  useEffect(() => () => { if (timer.current) { clearTimeout(timer.current); timer.current = null } }, [key])
   return { msgs, more, olderIds, load }
 }
 
@@ -325,7 +354,8 @@ function Timeline(props) {
   const seen = useRef(null)
   const [loadingMore, setLoadingMore] = useState(false)
   const fetchPage = useCallback(id => P.rest('/messages/earlier?room=' + encodeURIComponent(room.id) + '&before=' + encodeURIComponent(id)), [room.id])
-  const er = useEarlier(room.id, room.messages || [], room.earlier, fetchPage)
+  const refetch = useCallback((sinceTs, id) => P.rest('/messages/earlier?room=' + encodeURIComponent(room.id) + '&before=' + encodeURIComponent(id) + '&since_ts=' + encodeURIComponent(sinceTs)), [room.id])
+  const er = useEarlier(room.id, room.messages || [], room.earlier, fetchPage, refetch, snap.version)
   // what you just sent shows at once, faint, until the room's own list has it
   const sent = useOutbox(room.id)
   const have = useMemo(() => new Set(er.msgs.map(m => m.id)), [er.msgs])
@@ -643,7 +673,7 @@ function Message(props) {
   const mineSet = (m.reactions || []).filter(r => r.mine).map(r => r.emoji)
   return jsxs('div', { className: cx('h-msg', agent && 'h-agent'), ref: node, 'data-role': m.role, 'data-first': props.first, 'data-mid': m.id, onPointerDown, onPointerMove, onPointerUp: stopPress, onPointerCancel: stopPress,
     onContextMenu: e => { if (touchBar || press.current) e.preventDefault() }, 'data-bar': picking || touchBar,
-    'data-faint': faint || undefined, 'aria-busy': m.delivery === 'sending' || undefined, 'data-impostor': !!imp, 'data-mentioned': !!m.mentions_me, style: agent ? { '--hue': f.hue } : undefined, children: [
+    'data-faint': faint || undefined, 'data-quoted': !!m.quote || undefined, 'aria-busy': m.delivery === 'sending' || undefined, 'data-impostor': !!imp, 'data-mentioned': !!m.mentions_me, style: agent ? { '--hue': f.hue } : undefined, children: [
       jsx('div', { className: 'h-gutter', children: props.first ? jsx(ProfileButton, { who, label: 'Show ' + m.name + '’s card',
         children: agent ? jsx(Face, { face: m.face, pk: m.pk, state: 'activity: idle', size: 28, name: m.name }) : jsx(PersonMark, { pk: m.pk, name: m.name, flagged: !!imp }) })
         : jsx('span', { className: 'h-gtime', 'aria-hidden': true, title: fmtFull(m.ts), children: fmtTime(m.ts) }) }),
@@ -663,7 +693,7 @@ function Message(props) {
           jsx('span', { children: m.delivery === 'pending' ? 'Not delivered yet. Ninsei will resend it when a relay is back.'
             : m.local ? 'Not sent.' : 'Not delivered. The relays turned it down or it waited too long.' }),
           m.delivery === 'failed' && props.onRetry && jsx(K.Button, { variant: 'ghost', size: 'sm', onClick: () => props.onRetry(m), children: 'Retry' }),
-          m.delivery === 'failed' && props.onDiscard && jsx(K.Button, { variant: 'ghost', size: 'sm', onClick: () => props.onDiscard(m), children: 'Discard' })
+          props.onDiscard && jsx(K.Button, { variant: 'ghost', size: 'sm', onClick: () => props.onDiscard(m), children: 'Discard' })
         ] })
       ] }),
       props.store && !m.deleted && !m.optimistic && jsx(MessageBar, { m, picking, setPicking, mine: mineSet, onReply: props.onReply, extra, onCopyText: copyText, onCopyLink: props.roomId ? copyLink : null,
@@ -728,9 +758,17 @@ function DeleteConfirm(props) {
 
 // What you can do to a message, shown on hover and whenever focus is inside the message. Buttons are real
 // buttons, so the keyboard reaches them. Edit and Delete (your own messages) are added to `extra`.
+// Only one reaction picker is open at a time: opening one closes the one that was open.
+const PICKER = { close: null }
 function MessageBar(props) {
-  const { m, picking, setPicking } = props
+  const { m, picking } = props
   const trigger = useRef(null)
+  const setPicking = v => {
+    const mine = props.setPicking
+    if (v) { if (PICKER.close && PICKER.close !== mine) PICKER.close(false); PICKER.close = mine } else if (PICKER.close === mine) PICKER.close = null
+    mine(v)
+  }
+  useEffect(() => () => { if (PICKER.close === props.setPicking) PICKER.close = null }, [])
   const close = () => { setPicking(false); trigger.current && trigger.current.focus && trigger.current.focus() }
   return jsxs('div', { className: 'h-bar', role: 'toolbar', 'aria-label': 'Message actions', children: [
     jsx(K.Tip, { label: 'Add a reaction', children: jsx('button', { type: 'button', className: 'h-bar-btn', ref: trigger, 'aria-label': 'Add a reaction',
@@ -742,7 +780,7 @@ function MessageBar(props) {
     props.onCopyLink && jsx(K.Tip, { label: 'Copy link to message', children: jsx('button', { type: 'button', className: 'h-bar-btn', 'aria-label': 'Copy link to this message',
       onClick: props.onCopyLink, children: jsx(K.Icon, { name: 'link', size: 14 }) }) }),
     props.extra,
-    picking && jsx(ReactionPicker, { mine: props.mine, onClose: close, onPick: emoji => { props.onPick(emoji); close() } })
+    picking && jsx(ReactionPicker, { mine: props.mine, trigger, onClose: close, onPick: emoji => { props.onPick(emoji); close() } })
   ] })
 }
 
@@ -757,9 +795,15 @@ function ReactionPicker(props) {
     if (el && el.focus) el.focus()
   }, [idx])
   useEffect(() => {
-    const away = e => { if (ref.current && !ref.current.contains(e.target)) props.onClose() }
+    // an outside press closes it (the button that opened it toggles it itself); Escape closes it from anywhere
+    const away = e => {
+      const t = props.trigger && props.trigger.current
+      if (ref.current && !ref.current.contains(e.target) && !(t && t.contains && t.contains(e.target))) props.onClose()
+    }
+    const esc = e => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); props.onClose() } }
     const off = P.listen(document, 'pointerdown', away)
-    return () => off()
+    const offKey = P.listen(document, 'keydown', esc, { capture: true })
+    return () => { off(); offKey() }
   }, [])
   const onKeyDown = e => {
     const n = REACTION_LIST.length
@@ -807,7 +851,13 @@ function ReactionChip(props) {
 // The line above a reply: who and the start of what it answers. A click goes to the original when it is loaded.
 // A lookalike's message is quoted with the same flag the room shows on it, never under the real name.
 function QuoteLine(props) {
-  const q = props.quote
+  // A quote is one plain line: formatting marks (`**`, `__`, `~~`, backticks, a leading `>`) and link syntax go.
+  const plain = String(props.quote.text == null ? '' : props.quote.text)
+    .replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .replace(/\*\*|__|~~|`/g, '')
+    .replace(/^(\s*>+)+\s*/gm, '')
+    .replace(/\s+/g, ' ').trim()
+  const q = Object.assign({}, props.quote, { text: plain })
   if (q.deleted) return jsxs('div', { className: 'h-quote h-quote-gone', children: [jsx(K.Icon, { name: 'reply', size: 11 }), jsx('span', { children: 'Message deleted' })] })
   if (q.missing) return jsxs('div', { className: 'h-quote h-quote-gone', children: [jsx(K.Icon, { name: 'reply', size: 11 }), jsx('span', { children: 'Original message not available' })] })
   return jsxs('div', { className: 'h-quote-row', children: [
@@ -1275,10 +1325,12 @@ function Composer(props) {
       caretTo.current = before.length
       setCaret(before.length)
     } else {   // an emoji: the typed ":fi" becomes the character, and a space follows so you can keep typing
-      const before = text.slice(0, sq.at) + c.emoji + ' '
-      setText(before + text.slice(caret).replace(/^ /, ''))
-      caretTo.current = before.length
-      setCaret(before.length)
+      const rest = text.slice(caret)
+      const spaced = rest.charAt(0) === ' '   // a space is already there: keep that one, add none
+      const before = text.slice(0, sq.at) + c.emoji + (spaced ? '' : ' ')
+      setText(before + rest)
+      caretTo.current = before.length + (spaced ? 1 : 0)
+      setCaret(caretTo.current)
     }
     setPick(0)
   }

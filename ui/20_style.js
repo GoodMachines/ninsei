@@ -36,7 +36,7 @@ const CSS = TOKENS + `
 .h-grid[data-nav=open] .h-left{display:block;position:absolute;left:0;top:0;bottom:0;width:min(280px,86%);z-index:6;background:var(--h-bg);border-right:1px solid var(--h-line);box-shadow:12px 0 24px -16px var(--h-shadow)}
 .h-grid[data-nav=open] .h-scrim-nav{display:block;position:absolute;inset:0;z-index:5;background:color-mix(in srgb,var(--h-bg) 55%,transparent)}
 .h-navbar{display:flex;align-items:center;gap:6px;padding:6px 10px;border-bottom:1px solid var(--h-line);flex:none}
-.h-head{padding:10px 12px;flex-wrap:wrap}.h-timeline,.h-composer{padding-left:12px;padding-right:12px}
+.h-head{padding:10px 12px;flex-wrap:wrap;row-gap:4px}.h-head>.h-grow{flex:1 1 100%;min-width:min(100%,16ch)}.h-head>.h-grow h2{min-width:16ch}.h-head>.h-grow .h-row{flex-wrap:wrap}.h-timeline,.h-composer{padding-left:12px;padding-right:12px}
 .h-grid[data-people=open] .h-right{left:0;right:0;top:auto;width:auto;max-height:72%;border-left:0;border-top:1px solid var(--h-line2);border-radius:14px 14px 0 0;box-shadow:0 -12px 28px -16px var(--h-shadow)}
 .h-composer{padding-bottom:max(14px,env(safe-area-inset-bottom))}}
 .h-grid{position:relative}
@@ -73,6 +73,7 @@ const CSS = TOKENS + `
 .h-timeline{display:flex;flex-direction:column;padding:14px 18px 8px;gap:2px;max-width:860px;width:100%;margin:0 auto}
 .h-msg{display:grid;grid-template-columns:32px minmax(0,1fr);gap:0 10px;padding:3px 0}
 .h-msg[data-first=true]{margin-top:10px}
+.h-msg[data-quoted=true]:not([data-first=true]){padding-top:17px}
 .h-msg .h-gutter{display:flex;justify-content:center;padding-top:1px}
 .h-msg .h-meta{display:flex;align-items:baseline;gap:6px;margin-bottom:1px;min-width:0}
 .h-msg .h-meta b{font-weight:600}

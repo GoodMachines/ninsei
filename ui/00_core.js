@@ -303,11 +303,11 @@ function shortcodeClosed(text, caret) {
 }
 
 // ---- profile pictures ---------------------------------------------------------------------------------------
-// The picker draws the chosen photo onto a 256 pixel canvas and re-encodes it (WebP, else JPEG) under 48 KB. A canvas
+// The picker draws the chosen photo onto a 256 pixel canvas and re-encodes it (WebP, else JPEG) under 44 KB. A canvas
 // keeps pixels only, so EXIF (GPS position, camera) is gone; the original file is never uploaded. The engine checks
 // the same limits on what it sends and on everything it receives (ninsei_engine/avatar.py).
 const AVATAR_PX = 256
-const AVATAR_BYTES = 48 * 1024
+const AVATAR_BYTES = 44000
 const AVATAR_TYPES = ['image/webp', 'image/jpeg']
 const AVATAR_QUALITY = [0.92, 0.85, 0.78, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.1]
 
@@ -725,7 +725,8 @@ function mentionAlerts(store) {
       if (store.isShowing(r.id)) continue
       if (r.muted) continue   // a muted room makes no toast and no OS notification (its mentions still show inside it)
       told[r.id] = lm.id
-      const title = (lm.impostor ? 'Someone calling themselves ' : '') + cleanSnippet(lm.name, 32) + ' mentioned you in ' + cleanSnippet(r.name, 40)
+      const asAgent = lm.role === 'agent' ? ' (' + (cleanSnippet(lm.owner_name, 32) || 'someone') + "'s agent)" : ''
+      const title = (lm.impostor ? 'Someone calling themselves ' : '') + cleanSnippet(lm.name, 32) + asAgent + ' mentioned you in ' + cleanSnippet(r.name, 40)
       const snippet = cleanSnippet(lm.text, 60)
       P.toast('info', title + ': "' + snippet + '"')
       if (P.osNotify) P.osNotify({ title, body: snippet, onActivate: () => { store.setRoom(r.id); nav().set('room') } })
@@ -905,7 +906,13 @@ function linkAt(text, i) {
   let u
   try { u = new URL(url) } catch (_) { return null }
   if ((u.protocol !== 'http:' && u.protocol !== 'https:') || u.username || u.password || !u.hostname) return null
-  return { url, href: u.href }
+  // What is shown is where the link goes: a host with any non-ASCII character (a lookalike letter) is drawn in
+  // its punycode form, with the rest of the address as typed. `url` is what was matched in the text.
+  let shown = url
+  const after = url.slice(url.indexOf('//') + 2)
+  const cut = after.search(/[/?#]/)
+  if (/[^\x00-\x7f]/.test(cut < 0 ? after : after.slice(0, cut))) shown = u.protocol + '//' + u.host + (cut < 0 ? '' : after.slice(cut))
+  return { url, shown, href: u.href }
 }
 
 // A link to a room or to one message in it, `ninsei:<room>` or `ninsei:<room>#<message>`, at text[i] or null. Its text is
@@ -920,9 +927,10 @@ function roomLinkAt(text, i) {
 function parseRoomLink(s) {
   const t = String(s == null ? '' : s).trim().slice(0, 200).replace(/^ninsei:/i, '')
   const k = t.indexOf('#')
-  const room = (k < 0 ? t : t.slice(0, k)).toLowerCase().replace(/[^a-f0-9]/g, '').slice(0, 24)
+  const room = (k < 0 ? t : t.slice(0, k)).toLowerCase().trim()
+  const hex = /^[0-9a-f]*/.exec(room)[0].slice(0, 24)
   const ev = k < 0 ? '' : t.slice(k + 1).trim().toLowerCase()
-  return { room, event: /^[0-9a-f]{64}$/.test(ev) ? ev : '' }
+  return { room: hex, event: /^[0-9a-f]{64}$/.test(ev) ? ev : '' }
 }
 
 // A message to scroll to once its room is open (from a pasted or clicked message link).
@@ -1016,7 +1024,7 @@ function richInline(text, names) {
       if (j > i + 1 && text.slice(i + 1, j).indexOf('\n') < 0) { push({ t: 'code', text: text.slice(i + 1, j) }); i = j + 1; continue }
     } else if ((ch === 'h' || ch === 'H') && links < RICH_MAX_LINKS) {
       const l = linkAt(text, i)
-      if (l) { links++; push({ t: 'link', text: l.url, href: l.href }); i += l.url.length; continue }
+      if (l) { links++; push({ t: 'link', text: l.shown, href: l.href }); i += l.url.length; continue }
     } else if ((ch === 'n' || ch === 'N') && links < RICH_MAX_LINKS) {
       const rl = roomLinkAt(text, i)
       if (rl) { links++; push({ t: 'room', text: rl.text, room: rl.room, event: rl.event }); i += rl.text.length; continue }

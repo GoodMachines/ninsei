@@ -205,6 +205,8 @@ async def state(room: str = "", read: bool = True):
 async def settings(body: Settings):
     eng = await _engine()
     patch = {k: v for k, v in body.model_dump().items() if v is not None}
+    if "person_face" in patch:
+        await _run(eng.check_face_pace, patch["person_face"])  # too soon to publish it: refuse before saving anything
     relays_before = eng.relays()
     out = await _sync(eng.save_settings, patch)
     if "relays" in patch and eng.relays() != relays_before:
@@ -311,9 +313,9 @@ async def post_discard(body: MsgRef):
 
 @router.get("/messages/earlier")
 async def messages_earlier(room: str = Query(..., max_length=64), before: str = Query(..., max_length=64),
-                           limit: int = Query(100, ge=1, le=100)):
+                           limit: int = Query(100, ge=1, le=100), since_ts: int = Query(0, ge=0)):
     eng = await _engine()
-    return await _sync(eng.messages_before, room, before, limit)
+    return await _sync(eng.messages_before, room, before, limit, since_ts)
 
 
 @router.post("/edit")
