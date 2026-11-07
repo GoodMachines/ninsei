@@ -3454,13 +3454,16 @@ class Engine:
         return {"id": target, "delivery": "sending"}
 
     async def discard_post(self, room: str, target: str) -> dict:
-        """Take back an undelivered message of mine: it leaves the timeline and is never sent, and neither is
-        anything my agent queued in answer to it."""
+        """Take back an undelivered message of mine: it leaves the timeline and is never resent, and neither is
+        anything my agent queued in answer to it. "Undelivered" only means no relay said OK: one may have stored it
+        without answering, so the delete event and kind 5 requests still go out (`_retract`)."""
         self._own_undelivered(room, target)
-        self._discard_undelivered(room, target)
+        self._pace_click(2)
+        gone = self._discard_undelivered(room, target)
+        await self._retract(room, target, gone[1:])
         return {"ok": True}
 
-    def _discard_undelivered(self, room: str, target: str) -> None:
+    def _discard_undelivered(self, room: str, target: str) -> list:
         """Drop one undelivered message of mine and my own agent's undelivered replies to it. The ids are kept in
         the room's `_trimmed` set, so a copy that comes back from a relay can't put the message on screen again."""
         if not self.pool.discard(target):
@@ -3480,6 +3483,21 @@ class Engine:
             trimmed.pop(next(iter(trimmed)))
         self.store.drop_events(gone)
         self._bump()
+        return gone
+
+    async def _retract(self, room: str, target: str, agent_ids=()) -> dict:
+        """The `delete` room event and a NIP-09 kind 5 request for one of my messages, plus a kind 5 from my agent's
+        key for its replies in `agent_ids`. Sent whether or not a relay ever said OK: "pending" or "failed" can't
+        prove that no relay stored the event, and a request for an event a relay doesn't have costs nothing."""
+        ident = self._identity()
+        ev = await self._publish_room(room, False, {"t": "delete", "target": target})
+        reqs = [nostr.build_event(ident["person_sk"], 5, "", [["e", target], ["k", str(KIND_ROOM)]])]
+        if agent_ids:
+            reqs.append(nostr.build_event(ident["agent_sk"], 5, "", [["e", i] for i in agent_ids] + [["k", str(KIND_ROOM)]]))
+        for req in reqs:
+            self._queue_event(req)
+            self._spawn(self.pool.publish(req))
+        return ev
 
     def _is_undelivered(self, target: str) -> bool:
         return self.pool is not None and self.pool.delivery(target) != "sent" and not self.pool.sending(target)
@@ -3536,9 +3554,12 @@ class Engine:
         if text == now_text:
             return {"ok": True, "unchanged": True}
         if self._is_undelivered(target):
-            # Nobody has the original: take it back and send the edited words as a new message (same reply).
+            # No relay said OK: stop resending the original, retract it in case one stored it anyway, and send the
+            # edited words as a new message (same reply).
             reply = self._content(te).get("reply")
-            self._discard_undelivered(room, target)
+            self._pace_click(2)
+            gone = self._discard_undelivered(room, target)
+            await self._retract(room, target, gone[1:])
             if not (isinstance(reply, str) and reply in self.events.get(room, {})):
                 reply = None
             out = await self.post(room, text, reply)
@@ -3551,15 +3572,14 @@ class Engine:
         """Take back one of my messages: a `delete` room event (Ninsei shows "Message deleted") and a NIP-09
         kind 5 request, signed by the same key, so relays and other apps that honour it can drop the original.
         Neither can unpublish what a relay or another app already copied."""
-        te = self._own_msg(room, target)
-        if self._is_undelivered(target):
-            self._discard_undelivered(room, target)   # never reached a relay: nothing to take back, so nothing goes out
-            return {"ok": True, "discarded": True}
+        self._own_msg(room, target)
         self._pace_click(2)   # the delete event and the kind 5 request
-        ev = await self._publish_room(room, False, {"t": "delete", "target": target})
-        req = nostr.build_event(self._identity()["person_sk"], 5, "", [["e", te["id"]], ["k", str(KIND_ROOM)]])
-        self._queue_event(req)
-        self._spawn(self.pool.publish(req))
+        if self._is_undelivered(target):
+            # stop resending it, but still retract: a relay may have stored it without saying OK
+            gone = self._discard_undelivered(room, target)
+            ev = await self._retract(room, target, gone[1:])
+            return {"id": ev["id"], "discarded": True}
+        ev = await self._retract(room, target)
         return {"id": ev["id"]}
 
     # ============================================================================================

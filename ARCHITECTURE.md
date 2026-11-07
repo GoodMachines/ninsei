@@ -61,7 +61,7 @@ Both games share `tales_*` events and the host's seed and clock; one start per r
 
 ## Faces, reactions, edits, pictures, typing
 
-Reactions fold into their target; latest per key and emoji wins. **Edit and delete** count only from the target's own person key, on a person's `msg`; `_msg_fx` folds them (a delete is final, also NIP-09 kind 5). An edit never wakes an agent or raises a mention. Reactions, edits, deletes (two slots), retries and renames share 20 events a minute. On an undelivered message, Delete discards it, Edit re-posts.
+Reactions fold into their target; latest per key and emoji wins. **Edit and delete** count only from the target's own person key, on a person's `msg`; `_msg_fx` folds them (a delete is final, also NIP-09 kind 5). An edit never wakes an agent or raises a mention. Reactions, edits, deletes (two slots), retries and renames share 20 events a minute. On an undelivered message, Delete, Edit and Discard stop the resend and still retract (`_retract`): no OK can't prove no relay kept it.
 
 People only: pictures and typing. Typing: one ephemeral event per room per 5 s (12 a minute), only if `_others_here`. **Art** is two small replaceable events, `ninsei/avatar` `{img: data URI}` and `ninsei/face`, so changing one never resends the other. `_take_art` takes them only from keys seen in a room I'm in (a bounded LRU), never hidden or agent keys; newest wins. `avatar.check_avatar` runs first (type, structure, 44 KB, 512 square, still); `find_metadata`, an allow-list, vets mine; a lookalike gets none. The live `art` subscription starts at now (`dedupe=False`); new people get one query.
 

@@ -184,14 +184,28 @@ async def test_earlier_pages_pick_up_a_delete_and_a_hide_made_after_they_were_lo
 
 # ---- 5 and 6: delete, edit and discard on a message no relay has -----------------------------------------------
 
-async def test_delete_of_an_undelivered_message_discards_it_and_sends_nothing(bare):
+def retractions(sent, target):
+    """What went out to take `target` back: the room `delete` events and the kind 5 requests naming it."""
+    dels = [x for x in sent if x["kind"] == KIND_ROOM and json.loads(x["content"]).get("t") == "delete"
+            and json.loads(x["content"]).get("target") == target]
+    k5 = [x for x in sent if x["kind"] == 5 and target in nostr.tag_values(x, "e")]
+    return dels, k5
+
+
+async def test_delete_of_an_undelivered_message_stops_resending_it_and_still_retracts_it(bare):
+    # "pending" or "failed" can't prove no relay stored it (one may have kept it without answering), so the
+    # delete event and the kind 5 request go out anyway; the original is never sent again
     e, _ = bare()
     e.pool = PendPool()
     out = await e.post(ROOM, "my home address is 1 Main St")
     await settle(e)
-    assert (await e.delete(ROOM, out["id"])) == {"ok": True, "discarded": True}
+    res = await e.delete(ROOM, out["id"])
+    await settle(e)
+    assert res["discarded"] is True
     assert out["id"] in e.pool.discarded and out["id"] not in e.events[ROOM]
-    assert len(e.pool.sent) == 1                                          # only the original attempt: no delete, no kind 5
+    assert [x["id"] for x in e.pool.sent].count(out["id"]) == 1           # the one first attempt, never resent
+    dels, k5 = retractions(e.pool.sent, out["id"])
+    assert len(dels) == 1 and len(k5) == 1 and k5[0]["pubkey"] == e._identity()["person_pk"]
     await e._on_event(next(x for x in e.pool.sent if x["id"] == out["id"]), "relay")   # a relay copy
     assert out["id"] not in e.events[ROOM]
 
@@ -205,7 +219,10 @@ async def test_edit_of_an_undelivered_message_posts_the_edited_words_as_a_new_me
     assert new["reposted"] is True and new["id"] != out["id"]
     texts = [m["text"] for m in e.messages(ROOM)]
     assert texts == ["typo here"] and out["id"] in e.pool.discarded
-    assert not any(json.loads(x["content"]).get("t") in ("edit", "delete") for x in e.pool.sent)
+    await settle(e)
+    assert not any(x["kind"] == KIND_ROOM and json.loads(x["content"]).get("t") == "edit" for x in e.pool.sent)
+    dels, k5 = retractions(e.pool.sent, out["id"])                        # the typo is retracted in case a relay kept it
+    assert len(dels) == 1 and len(k5) == 1
 
 
 async def test_a_delivered_message_is_still_edited_and_deleted_the_normal_way(bare):
@@ -231,6 +248,11 @@ async def test_discarding_a_message_also_drops_my_agents_undelivered_reply_and_r
     e.pool.state[reply["id"]] = "pending"
     await e.discard_post(ROOM, out["id"])
     assert reply["id"] in e.pool.discarded and reply["id"] not in e.events[ROOM] and out["id"] not in e.events[ROOM]
+    await settle(e)
+    dels, k5 = retractions(e.pool.sent, out["id"])
+    assert len(dels) == 1 and len(k5) == 1
+    _, agent_k5 = retractions(e.pool.sent, reply["id"])                  # my agent's reply: a kind 5 from the agent key
+    assert len(agent_k5) == 1 and agent_k5[0]["pubkey"] == ident["agent_pk"]
     original = next(x for x in e.pool.sent if x["id"] == out["id"])
     await e._on_event(original, "relay")                                  # a relay hands the message back
     assert out["id"] not in e.events[ROOM]
