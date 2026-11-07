@@ -514,12 +514,12 @@ function personSheet(who, found, card, onOpen, flip, art) {
   const name = p.name || who.name || 'Someone'
   const agents = p.agents || []
   const interests = (card && card.interests) || []
-  const fields = [['Agents', agents.length ? agents.map(a => a.name).join(', ') : 'None here'], ['In the room', p.online ? 'Online' : 'Away']]
+  const fields = [['Agents', agents.length ? agents.map(a => a.name).join(', ') : 'None here'], ['Status', STATUS_LABEL[statusKey(p)]]]
   const serial = cardSerial(who.pk)
   const activity = activityText(p.first, p.posts)
   return {
     title: name + (p.you ? ', you' : ''),
-    card: jsx(IdCard, Object.assign({ kind: 'person', name, pk: who.pk, face: agents[0] && agents[0].face, fields, warn: !!p.impostor, online: !!p.online,
+    card: jsx(IdCard, Object.assign({ kind: 'person', name, pk: who.pk, face: agents[0] && agents[0].face, fields, warn: !!p.impostor, online: isHere(p),
       agents, about: card && card.line, first: p.first, posts: p.posts, art }, flip)),
     rows: [
       card && card.line ? jsx('div', { className: 'h-profile-vibe', children: card.line }, 'l') : null,

@@ -128,6 +128,12 @@ function Seg(props) {
       'data-on': props.value === o.id, onClick: () => props.onChange(o.id), children: o.label }, o.id)) })
 }
 
+// A person's status dot. The word is its label (and its tooltip): colour alone never says it.
+function StatusDot(props) {
+  const k = statusKey(props.p)
+  return jsx('span', { className: 'h-presence', 'data-s': k, 'data-on': k !== 'away', role: 'img', 'aria-label': STATUS_LABEL[k], title: STATUS_LABEL[k] })
+}
+
 function Chips(props) {
   const hits = new Set(props.hits || [])
   const list = props.items || []

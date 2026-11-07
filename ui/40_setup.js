@@ -101,6 +101,12 @@ function Settings(props) {
   return jsx(SettingsForm, { store, snap, key: snap.me && snap.me.pk })
 }
 
+const AWAY_CHOICES = [
+  { id: 'named', label: 'Answers only when named', hint: 'Replies to someone who names it or replies to it. It starts no chatter and drafts no offers.' },
+  { id: 'quiet', label: 'Stays quiet', hint: 'Answers only you. No offers, no games.' },
+  { id: 'chat', label: 'Chats as usual', hint: 'Behaves as it does when you are here.' }
+]
+
 function SettingsForm(props) {
   const store = props.store
   const snap = props.snap
@@ -174,6 +180,13 @@ function SettingsForm(props) {
       jsx(Field, { label: 'Chattiness', hint: 'How often your agent joins in unprompted. It always answers when someone addresses it by name.',
         children: jsx(Seg, { label: 'Chattiness', value: s.chattiness, onChange: v => now({ chattiness: v }),
           options: [{ id: 'quiet', label: 'Quiet' }, { id: 'normal', label: 'Normal' }, { id: 'lively', label: 'Lively' }] }) }),
+      jsx(Field, { label: 'When I’m away, my agent…', hint: 'Away means Ninsei has not been open on your screen for 15 minutes, whatever status you show. It always answers you.',
+        children: jsxs('div', { className: 'h-col', style: { gap: 8 }, children: [
+          jsx(Seg, { label: 'When I am away', value: s.away_mode || 'named', onChange: v => now({ away_mode: v }),
+            options: AWAY_CHOICES.map(c => ({ id: c.id, label: c.label })) }),
+          jsx('div', { className: 'h-col', style: { gap: 2 }, children: AWAY_CHOICES.map(c => jsxs('div', { className: 'h-small', 'data-on': (s.away_mode || 'named') === c.id,
+            style: { opacity: (s.away_mode || 'named') === c.id ? 1 : 0.6 }, children: [jsx('b', { children: c.label }), ' ' + c.hint] }, c.id)) })
+        ] }) }),
       jsx(K.Toggle, { checked: !!s.offers, onChange: v => now({ offers: v }), label: 'Offers to build things',
         description: 'Your agent may propose a small web toy when a room keeps circling an idea. Only you can accept, and your own Hermes builds it.' }),
       jsx(K.Toggle, { checked: !!s.share_budget, onChange: v => now({ share_budget: v }), label: "Show my agent's budget to the room",
@@ -188,9 +201,14 @@ function SettingsForm(props) {
         jsxs('div', { className: 'h-grow', children: [
           jsx('div', { children: fmtTokens(snap.budget.used) + ' of ' + fmtTokens(snap.budget.limit) + ' tokens used today' }),
           jsx('div', { className: 'h-faint h-small', children: Object.keys(snap.budget.by || {}).map(k => k + ' ' + fmtTokens(snap.budget.by[k])).join(' · ') || 'Nothing spent yet' }),
+          othersLine(snap.budget) && jsx('div', { className: 'h-faint h-small', children: othersLine(snap.budget) }),
           snap.budget.msgs && jsx('div', { className: 'h-faint h-small', children: snap.budget.msgs.used + ' of ' + snap.budget.msgs.limit + ' messages said today' })
         ] })
       ] }),
+      snap.budget.others && snap.budget.others.spent && jsx(Notice, { icon: 'clock', role: 'status', children: OTHERS_SPENT }),
+      jsx(Field, { label: 'Others can use', hint: 'The most of the daily budget, and of the message limit, that people other than you can use by talking to your agent. It halves while you are away, and you always keep the rest.',
+        children: jsx(Seg, { label: 'Others can use', value: s.stranger_share == null ? 0.5 : s.stranger_share, onChange: v => now({ stranger_share: v }),
+          options: [{ id: 0.25, label: 'A quarter' }, { id: 0.5, label: 'Half' }, { id: 0.75, label: 'Three quarters' }] }) }),
       jsx(Field, { label: 'Daily limit (tokens)', id: 'h-s-budget', error: budgetErr, children: jsxs('div', { className: 'h-row', children: [
         jsx(Seg, { label: 'Budget presets', value: Number(form.budget_daily), onChange: v => set({ budget_daily: v }),
           options: BUDGET_PRESETS.map(n => ({ id: n, label: fmtTokens(n) })) }),

@@ -212,6 +212,13 @@ function Ring(props) {
     ] })
 }
 
+// What other people's messages cost today, for the budget card, and the plain words when their share runs out.
+const OTHERS_SPENT = 'Others used their share today; your agent still answers you.'
+function othersLine(b) {
+  const o = b && b.others
+  return o && o.used > 0 ? fmtTokens(o.used) + ' of it by others' : ''
+}
+
 function BudgetRing(props) {
   const b = props.budget || { pct: 0, used: 0, limit: 0 }
   const pct = Number(b.pct) || 0

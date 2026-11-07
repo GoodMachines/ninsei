@@ -194,7 +194,7 @@ function RoomHeader(props) {
   const rm = (snap.rooms || []).find(r => r.id === room.id) || {}
   const closeMenu = back => { setMenu(false); if (back) P.setTimeout(() => menuBtn.current && menuBtn.current.focus && menuBtn.current.focus(), 0) }
   const mine = new Set((snap.settings && snap.settings.interests) || [])
-  const online = (room.members || []).filter(p => p.online).length
+  const online = (room.members || []).filter(isHere).length
   const copyCode = async () => {
     const ok = await P.copy('ninsei:' + room.id)
     P.toast(ok ? 'info' : 'error', ok ? 'Room code copied. Anyone with it can join; rooms are public.' : 'Could not reach the clipboard. The code is ninsei:' + room.id)
@@ -1276,9 +1276,9 @@ function TypingRow(props) {
 function mentionCandidates(room) {
   const out = []
   for (const p of (room && room.members) || []) {
-    if (!p.you && !p.impostor) out.push({ pk: p.pk, name: p.name, kind: 'person', sub: p.online ? 'here now' : 'person', online: !!p.online })
+    if (!p.you && !p.impostor) out.push({ pk: p.pk, name: p.name, kind: 'person', sub: isHere(p) ? 'here now' : 'person', online: isHere(p) })
     for (const a of p.agents || []) if (!a.impostor) out.push({ pk: a.pk, name: a.name, kind: 'agent', face: a.face, yours: !!a.yours,
-      sub: a.yours ? 'your agent' : p.name + '’s agent', online: !!(a.yours || p.online) })
+      sub: a.yours ? 'your agent' : p.name + '’s agent', online: !!(a.yours || isHere(p)) })
   }
   return out.sort((a, b) => (!!b.yours - !!a.yours) || (!!b.online - !!a.online) || a.name.localeCompare(b.name))
 }
@@ -1467,12 +1467,13 @@ function Person(props) {
   const ref = useEnter(false)
   return jsxs('div', { className: 'h-person', ref, children: [
     jsxs('div', { className: 'h-person-row', children: [
-      jsx('span', { className: 'h-presence', 'data-on': !!p.online, role: 'img', 'aria-label': p.online ? 'online' : 'away' }),
+      jsx(StatusDot, { p }),
       jsx(ProfileButton, { who: { kind: 'person', pk: p.pk, name: p.name }, label: 'Show ' + p.name + '’s card',
         children: jsx(PersonMark, { pk: p.pk, name: p.name, size: 22, flagged: !!p.impostor }) }),
       jsx(ProfileButton, { who: { kind: 'person', pk: p.pk, name: p.name }, className: 'h-trunc', label: 'Show ' + p.name + '’s card',
         children: jsx('span', { className: 'h-trunc h-namelink', style: { fontWeight: 600 }, children: p.name }) }),
       p.you && jsx('span', { className: 'h-faint h-tiny', children: 'you' }),
+      jsx('span', { className: 'h-faint h-tiny', children: STATUS_LABEL[statusKey(p)] }),
       p.impostor && jsx(NotVerified, { name: p.name }),
       !p.you && props.store && jsx('span', { className: 'h-hide', children: jsx(K.Tip, { label: 'Hide ' + p.name + ' and their agent', children:
         jsx(K.Button, { variant: 'ghost', size: 'icon', 'aria-label': 'Hide ' + p.name,
@@ -1518,8 +1519,10 @@ function MyAgentCard(props) {
       jsx(BudgetRing, { budget: snap.budget, size: 30, stroke: 3, children: Math.round((snap.budget.pct || 0) * 100) }),
       jsxs('div', { className: 'h-grow h-small', children: [
         jsx('div', { children: fmtTokens(snap.budget.used) + ' / ' + fmtTokens(snap.budget.limit) }),
-        jsx('div', { className: 'h-faint', children: snap.budget.pct >= 1 ? 'resting until tomorrow' : 'tokens today' })
+        jsx('div', { className: 'h-faint', children: snap.budget.pct >= 1 ? 'resting until tomorrow' : 'tokens today' }),
+        othersLine(snap.budget) && jsx('div', { className: 'h-faint', children: othersLine(snap.budget) })
       ] })
-    ] })
+    ] }),
+    snap.budget.others && snap.budget.others.spent && snap.budget.pct < 1 && jsx('div', { className: 'h-faint h-small', children: OTHERS_SPENT })
   ] })
 }

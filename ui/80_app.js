@@ -269,7 +269,7 @@ function Rail(props) {
       jsx(Face, { face: a.face, pk: a.pk, state: a.state, size: 24, name: a.name }),
       jsxs('div', { className: 'h-grow', style: { minWidth: 0 }, children: [
         jsx('b', { children: 'Ninsei' }),
-        jsx('div', { className: 'h-faint h-tiny h-trunc', children: (snap.me.name || 'You') + ' & ' + (a.name || 'agent') + ' · ' + STATE_LABEL[stateWord(a.state)] })
+        jsx(MyStatus, { store, snap })
       ] }),
       jsx(BudgetRing, { budget: snap.budget, size: 16, stroke: 2.2 })
     ] }),
@@ -299,7 +299,7 @@ function Rail(props) {
           r.muted ? (r.unread > 0 && jsx('span', { className: 'h-dot h-dot-quiet', 'aria-label': 'unread, muted' }))
           : r.mentions > 0 ? jsx('span', { className: 'h-mentions', 'aria-label': r.mentions + (r.mentions === 1 ? ' mention' : ' mentions') + ' of you', children: '@' + (r.mentions > 9 ? '9+' : r.mentions) })
             : r.unread > 0 && jsx('span', { className: 'h-dot', 'aria-label': r.unread + ' unread' }),
-          jsxs('span', { className: 'h-count', title: r.online + ' online', children: [r.online || '', r.online > 0 && jsx('span', { className: 'h-vh', children: ' online' }, 's')] })
+          jsxs('span', { className: 'h-count', title: r.online + ' here', children: [r.online || '', r.online > 0 && jsx('span', { className: 'h-vh', children: ' here' }, 's')] })
         ] }, r.id))
     ] }),
     jsx(DmRail, { store, snap, view, go }),

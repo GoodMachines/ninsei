@@ -104,7 +104,7 @@ out({ closedText, hasTa, setText, sets, changes })
 
 
 ONBOARD_JS = lambda: (PICKER_JS + fn(SETUP, "Onboarding") + """
-function Field() {}; function Seg() {}; function VibePresets() {}; function IdCard() {}; function FacePicker() {}; function Face() {}
+function Field() {}; function Seg() {}; function VibePresets() {}; function IdCard() {}; function FacePicker() {}; function Face() {}; const AWAY_CHOICES = []; const OTHERS_SPENT = ''; function othersLine() { return '' }
 function InterestInput() {}; function Notice() {}; function PersonLook() {}
 const faceFor = f => f || {}; const fmtTokens = n => String(n); const BUDGET_PRESETS = [40000]
 const nav = () => ({ set() {} })

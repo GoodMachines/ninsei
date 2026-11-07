@@ -24,6 +24,7 @@ function DmRail(props) {
           jsx(PersonMark, { pk: t.pk, name: t.name, size: 18, flagged: !!t.impostor }),
           jsx('span', { className: 'h-grow h-trunc', style: { fontWeight: t.unread ? 600 : 400, opacity: t.friend === false ? 0.6 : 1 }, children: t.name }),
           t.friend === false && jsx('span', { className: 'h-faint h-small', children: 'not friends' }),
+          t.friend !== false && jsx(StatusDot, { p: t }),
           t.unread > 0 && jsx('span', { className: 'h-dot', 'aria-label': t.unread + (t.unread === 1 ? ' unread private message' : ' unread private messages') })
         ] }, t.pk)),
       dms.requests > 0 && jsxs('button', { type: 'button', className: 'h-navrow', 'data-on': cur === DM_REQUESTS, onClick: () => open(DM_REQUESTS), children: [

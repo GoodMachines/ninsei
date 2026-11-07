@@ -37,6 +37,68 @@ function useSlide(ref, open, from) {
   }, [open])
 }
 
+// ---- my status ----------------------------------------------------------------------------------
+
+const STATUS_CHOICES = [
+  { id: 'auto', label: 'Automatic', hint: 'Present while you use Ninsei, then idle, then away when you stop.' },
+  { id: 'present', label: 'Present', hint: 'Show as present while you are here.' },
+  { id: 'idle', label: 'Idle', hint: 'Show as idle while you are here.' },
+  { id: 'dnd', label: 'Do not disturb', hint: 'People see it. This screen shows no pop-ups or notifications.' },
+  { id: 'invisible', label: 'Invisible', hint: 'You show as away. Your agent still works.' }
+]
+
+// The sidebar header's line, "Maya & Ada · idle", is a button: it shows your status as a dot (the word is its label)
+// and opens the picker. People in your rooms see this status; Invisible hides it.
+function MyStatus(props) {
+  const { store, snap } = props
+  const [open, setOpen] = useState(false)
+  const btn = useRef(null)
+  const a = snap.me.agent
+  const st = snap.status || { mode: 'auto', shown: 'away', auto: 'away' }
+  const shown = STATUS_LABEL[st.shown] || 'Away'
+  const text = (snap.me.name || 'You') + ' & ' + (a.name || 'agent') + ' · ' + STATE_LABEL[stateWord(a.state)]
+  const close = back => { setOpen(false); if (back) P.setTimeout(() => btn.current && btn.current.focus && btn.current.focus(), 0) }
+  return jsxs('div', { className: 'h-menuwrap h-mystatus', children: [
+    jsxs('button', { type: 'button', className: 'h-statusbtn h-faint h-tiny', ref: btn, 'aria-haspopup': 'menu', 'aria-expanded': open,
+      'aria-label': 'You show as ' + shown + '. ' + text + '. Change your status', title: 'You show as ' + shown, onClick: () => setOpen(!open), children: [
+        jsx('span', { className: 'h-presence', 'data-s': st.shown, 'data-on': st.shown !== 'away', 'aria-hidden': true }),
+        jsx('span', { className: 'h-trunc', children: text })
+      ] }),
+    open && jsx(StatusMenu, { store, st, anchor: btn, onClose: close })
+  ] })
+}
+
+function StatusMenu(props) {
+  const { store, st } = props
+  const ref = useEnter(true)
+  const items = useRef([])
+  const [idx, setIdx] = useState(Math.max(0, STATUS_CHOICES.findIndex(c => c.id === st.mode)))
+  useEffect(() => { const el = items.current[idx]; if (el && el.focus) el.focus() }, [idx])
+  useEffect(() => {
+    const away = e => { if (ref.current && !ref.current.contains(e.target) && !(props.anchor.current && props.anchor.current.contains(e.target))) props.onClose(false) }
+    return P.listen(document, 'pointerdown', away)
+  }, [])
+  const pick = id => { props.onClose(true); if (id !== st.mode) store.post('/settings', { status_mode: id }).catch(() => {}) }
+  const n = STATUS_CHOICES.length
+  const onKeyDown = e => {
+    if (e.key === 'ArrowDown') { e.preventDefault(); setIdx((idx + 1) % n) }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); setIdx((idx + n - 1) % n) }
+    else if (e.key === 'Home') { e.preventDefault(); setIdx(0) }
+    else if (e.key === 'End') { e.preventDefault(); setIdx(n - 1) }
+    else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); props.onClose(true) }
+    else if (e.key === 'Tab') props.onClose(false)
+  }
+  return jsxs('div', { className: 'h-menu h-menu-down', ref, role: 'menu', 'aria-label': 'Your status', onKeyDown, children: [
+    jsx('div', { className: 'h-menu-h h-sec', role: 'presentation', children: 'Your status' }),
+    jsx('div', { className: 'h-menu-h h-faint h-small', role: 'presentation', children: 'People in your rooms see it. You show as ' + (STATUS_LABEL[st.shown] || 'Away') + ' now.' }),
+    STATUS_CHOICES.map((c, i) => jsxs('button', { type: 'button', role: 'menuitemradio', 'aria-checked': c.id === st.mode, tabIndex: i === idx ? 0 : -1,
+      ref: el => { items.current[i] = el }, onClick: () => pick(c.id), onMouseEnter: () => setIdx(i), children: [
+        jsx('span', { className: 'h-menu-tick', 'aria-hidden': true, children: c.id === st.mode ? jsx(K.Icon, { name: 'check', size: 13 }) : null }),
+        jsxs('span', { className: 'h-grow', children: [jsx('b', { children: c.label }), jsx('span', { className: 'h-faint h-small h-gm-line', children: c.hint })] })
+      ] }, c.id))
+  ] })
+}
+
 // ---- room options -------------------------------------------------------------------------------
 
 const CHATTY_LABEL = { quiet: 'Quiet', normal: 'Normal', lively: 'Lively' }

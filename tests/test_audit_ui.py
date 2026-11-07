@@ -344,8 +344,9 @@ def test_reduced_motion_covers_thinking_and_spinner():
 
 def test_presence_is_announced():
     person = fn(ROOM, "Person")
-    assert "role: 'img', 'aria-label': p.online ? 'online' : 'away'" in person
-    assert "h-vh" in APP and "' online'" in APP, "the rail's count says what it counts"
+    assert "jsx(StatusDot, { p })" in person and "STATUS_LABEL[statusKey(p)]" in person   # the dot says its word
+    assert "role: 'img', 'aria-label': STATUS_LABEL[k]" in fn(src("30_parts.js"), "StatusDot")
+    assert "h-vh" in APP and "' here'" in APP, "the rail's count says what it counts"
     assert ".h-vh{position:absolute" in STYLE
 
 

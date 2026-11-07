@@ -45,6 +45,17 @@ const STATE_LABEL = {
   idle: 'idle', working: 'thinking', speaking: 'speaking', waiting: 'waiting', error: 'error', absent: 'away'
 }
 
+// A person's status as the engine sends it on members and private-message rows: present, idle, dnd or away; a client
+// that sends none arrives as "unknown", which shows as the agent-based online/away it always was. A dot is never
+// the only signal: every use carries the word as a label.
+const STATUS_LABEL = { present: 'Present', idle: 'Idle', dnd: 'Do not disturb', away: 'Away', online: 'Online' }
+function statusKey(p) {
+  const s = p && p.status
+  if (s === 'present' || s === 'idle' || s === 'dnd' || s === 'away') return s
+  return p && p.online ? 'online' : 'away'
+}
+const isHere = p => { const k = statusKey(p); return k === 'present' || k === 'idle' || k === 'online' }
+
 // A stable face for a pubkey when the agent never chose one.
 function faceFor(face, pk) {
   const seed = String(pk || '0000000000')
@@ -707,6 +718,58 @@ function cleanSnippet(s, n) {
   return out.replace(/ +/g, ' ').trim().slice(0, n)
 }
 
+// Tell the engine this page is open, so it can say Present, Idle or Away for you. While a Ninsei view is mounted and the
+// document is visible: one POST /here right away, again whenever focus or visibility changes or you type, click or
+// scroll, and every 30 s. At most one call per HERE_MIN_MS (a trailing one carries the rest). `focused` is true only
+// for a focused window you touched in the last HERE_ACTIVE_MS: a window left open and untouched reports open, not
+// focused, so it goes from Present to Idle instead of staying Present all day. Returns the function that stops it.
+const HERE_EVERY_MS = 30000
+const HERE_MIN_MS = 10000
+const HERE_ACTIVE_MS = 150000
+function hereSignals(store) {
+  const doc = typeof document === 'undefined' ? null : document
+  if (!doc) return () => {}
+  let lastSent = 0
+  let active = Date.now()
+  let stopped = false
+  let trailing = null
+  let beat = null
+  const visible = () => doc.visibilityState !== 'hidden'
+  const winFocused = () => typeof doc.hasFocus !== 'function' || doc.hasFocus()
+  const send = () => {
+    trailing = null
+    if (stopped || !visible()) return
+    lastSent = Date.now()
+    P.rest('/here', { method: 'POST', body: { focused: winFocused() && Date.now() - active < HERE_ACTIVE_MS } })
+      .then(() => {}, () => {})   // a missed call costs a few seconds of accuracy, never an error toast
+  }
+  const poke = () => {
+    if (stopped || trailing) return
+    const wait = lastSent + HERE_MIN_MS - Date.now()
+    if (wait <= 0) send()
+    else trailing = P.setTimeout(send, wait)
+  }
+  const touch = () => { active = Date.now(); poke() }
+  const change = () => { if (visible()) touch() }
+  const offs = [
+    P.listen(doc, 'visibilitychange', change),
+    typeof window !== 'undefined' && P.listen(window, 'focus', touch),
+    typeof window !== 'undefined' && P.listen(window, 'blur', poke),
+    P.listen(doc, 'keydown', touch),
+    P.listen(doc, 'pointerdown', touch),
+    P.listen(doc, 'scroll', touch, { capture: true, passive: true })
+  ]
+  const tick = () => { beat = P.setTimeout(() => { poke(); tick() }, HERE_EVERY_MS) }
+  poke()
+  tick()
+  return () => {
+    stopped = true
+    offs.forEach(off => off && off())
+    if (trailing) trailing()
+    if (beat) beat()
+  }
+}
+
 function mentionAlerts(store) {
   let seen = null
   let dmSeen = null
@@ -717,6 +780,9 @@ function mentionAlerts(store) {
   return store.subscribe(st => {
     const snap = st && st.snap
     if (!snap) return
+    // Do not disturb: no toast and no OS notification (the badges and counts stay). Everything is still marked as
+    // announced, so leaving the mode does not replay what came in.
+    const dnd = !!(snap.settings && snap.settings.status_mode === 'dnd')
     const next = {}
     for (const r of snap.rooms || []) {
       next[r.id] = r.mentions || 0
@@ -725,6 +791,7 @@ function mentionAlerts(store) {
       if (store.isShowing(r.id)) continue
       if (r.muted) continue   // a muted room makes no toast and no OS notification (its mentions still show inside it)
       told[r.id] = lm.id
+      if (dnd) continue
       const asAgent = lm.role === 'agent' ? ' (' + (cleanSnippet(lm.owner_name, 32) || 'someone') + "'s agent)" : ''
       const title = (lm.impostor ? 'Someone calling themselves ' : '') + cleanSnippet(lm.name, 32) + asAgent + ' mentioned you in ' + cleanSnippet(r.name, 40)
       const snippet = cleanSnippet(lm.text, 60)
@@ -743,6 +810,7 @@ function mentionAlerts(store) {
       if (!rose || !lu || dmTold[t.pk] === lu.id) continue
       if (store.isShowing('dm:' + t.pk)) continue
       dmTold[t.pk] = lu.id
+      if (dnd) continue
       const who = cleanSnippet(t.name, 32)
       const title = t.impostor ? 'Someone not verified (' + who + ') sent you a private message' : who + ' sent you a private message'
       const snippet = cleanSnippet(lu.text, 60)
@@ -762,7 +830,7 @@ function mentionAlerts(store) {
       reqTold[r.pk] = 1
       fresh.push(r)
     }
-    if (fresh.length) {
+    if (fresh.length && !dnd) {
       const r = fresh[0]
       const who = cleanSnippet(r.name, 32)
       const title = fresh.length > 1 ? fresh.length + ' friend requests'

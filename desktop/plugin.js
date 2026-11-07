@@ -81,6 +81,17 @@ const STATE_LABEL = {
   idle: 'idle', working: 'thinking', speaking: 'speaking', waiting: 'waiting', error: 'error', absent: 'away'
 }
 
+// A person's status as the engine sends it on members and private-message rows: present, idle, dnd or away; a client
+// that sends none arrives as "unknown", which shows as the agent-based online/away it always was. A dot is never
+// the only signal: every use carries the word as a label.
+const STATUS_LABEL = { present: 'Present', idle: 'Idle', dnd: 'Do not disturb', away: 'Away', online: 'Online' }
+function statusKey(p) {
+  const s = p && p.status
+  if (s === 'present' || s === 'idle' || s === 'dnd' || s === 'away') return s
+  return p && p.online ? 'online' : 'away'
+}
+const isHere = p => { const k = statusKey(p); return k === 'present' || k === 'idle' || k === 'online' }
+
 // A stable face for a pubkey when the agent never chose one.
 function faceFor(face, pk) {
   const seed = String(pk || '0000000000')
@@ -743,6 +754,58 @@ function cleanSnippet(s, n) {
   return out.replace(/ +/g, ' ').trim().slice(0, n)
 }
 
+// Tell the engine this page is open, so it can say Present, Idle or Away for you. While a Ninsei view is mounted and the
+// document is visible: one POST /here right away, again whenever focus or visibility changes or you type, click or
+// scroll, and every 30 s. At most one call per HERE_MIN_MS (a trailing one carries the rest). `focused` is true only
+// for a focused window you touched in the last HERE_ACTIVE_MS: a window left open and untouched reports open, not
+// focused, so it goes from Present to Idle instead of staying Present all day. Returns the function that stops it.
+const HERE_EVERY_MS = 30000
+const HERE_MIN_MS = 10000
+const HERE_ACTIVE_MS = 150000
+function hereSignals(store) {
+  const doc = typeof document === 'undefined' ? null : document
+  if (!doc) return () => {}
+  let lastSent = 0
+  let active = Date.now()
+  let stopped = false
+  let trailing = null
+  let beat = null
+  const visible = () => doc.visibilityState !== 'hidden'
+  const winFocused = () => typeof doc.hasFocus !== 'function' || doc.hasFocus()
+  const send = () => {
+    trailing = null
+    if (stopped || !visible()) return
+    lastSent = Date.now()
+    P.rest('/here', { method: 'POST', body: { focused: winFocused() && Date.now() - active < HERE_ACTIVE_MS } })
+      .then(() => {}, () => {})   // a missed call costs a few seconds of accuracy, never an error toast
+  }
+  const poke = () => {
+    if (stopped || trailing) return
+    const wait = lastSent + HERE_MIN_MS - Date.now()
+    if (wait <= 0) send()
+    else trailing = P.setTimeout(send, wait)
+  }
+  const touch = () => { active = Date.now(); poke() }
+  const change = () => { if (visible()) touch() }
+  const offs = [
+    P.listen(doc, 'visibilitychange', change),
+    typeof window !== 'undefined' && P.listen(window, 'focus', touch),
+    typeof window !== 'undefined' && P.listen(window, 'blur', poke),
+    P.listen(doc, 'keydown', touch),
+    P.listen(doc, 'pointerdown', touch),
+    P.listen(doc, 'scroll', touch, { capture: true, passive: true })
+  ]
+  const tick = () => { beat = P.setTimeout(() => { poke(); tick() }, HERE_EVERY_MS) }
+  poke()
+  tick()
+  return () => {
+    stopped = true
+    offs.forEach(off => off && off())
+    if (trailing) trailing()
+    if (beat) beat()
+  }
+}
+
 function mentionAlerts(store) {
   let seen = null
   let dmSeen = null
@@ -753,6 +816,9 @@ function mentionAlerts(store) {
   return store.subscribe(st => {
     const snap = st && st.snap
     if (!snap) return
+    // Do not disturb: no toast and no OS notification (the badges and counts stay). Everything is still marked as
+    // announced, so leaving the mode does not replay what came in.
+    const dnd = !!(snap.settings && snap.settings.status_mode === 'dnd')
     const next = {}
     for (const r of snap.rooms || []) {
       next[r.id] = r.mentions || 0
@@ -761,6 +827,7 @@ function mentionAlerts(store) {
       if (store.isShowing(r.id)) continue
       if (r.muted) continue   // a muted room makes no toast and no OS notification (its mentions still show inside it)
       told[r.id] = lm.id
+      if (dnd) continue
       const asAgent = lm.role === 'agent' ? ' (' + (cleanSnippet(lm.owner_name, 32) || 'someone') + "'s agent)" : ''
       const title = (lm.impostor ? 'Someone calling themselves ' : '') + cleanSnippet(lm.name, 32) + asAgent + ' mentioned you in ' + cleanSnippet(r.name, 40)
       const snippet = cleanSnippet(lm.text, 60)
@@ -779,6 +846,7 @@ function mentionAlerts(store) {
       if (!rose || !lu || dmTold[t.pk] === lu.id) continue
       if (store.isShowing('dm:' + t.pk)) continue
       dmTold[t.pk] = lu.id
+      if (dnd) continue
       const who = cleanSnippet(t.name, 32)
       const title = t.impostor ? 'Someone not verified (' + who + ') sent you a private message' : who + ' sent you a private message'
       const snippet = cleanSnippet(lu.text, 60)
@@ -798,7 +866,7 @@ function mentionAlerts(store) {
       reqTold[r.pk] = 1
       fresh.push(r)
     }
-    if (fresh.length) {
+    if (fresh.length && !dnd) {
       const r = fresh[0]
       const who = cleanSnippet(r.name, 32)
       const title = fresh.length > 1 ? fresh.length + ' friend requests'
@@ -1362,6 +1430,13 @@ function Ring(props) {
     ] })
 }
 
+// What other people's messages cost today, for the budget card, and the plain words when their share runs out.
+const OTHERS_SPENT = 'Others used their share today; your agent still answers you.'
+function othersLine(b) {
+  const o = b && b.others
+  return o && o.used > 0 ? fmtTokens(o.used) + ' of it by others' : ''
+}
+
 function BudgetRing(props) {
   const b = props.budget || { pct: 0, used: 0, limit: 0 }
   const pct = Number(b.pct) || 0
@@ -1627,6 +1702,11 @@ button.h-link{background:none;border:0;padding:0;font:inherit;cursor:pointer;tex
 @media (hover:none){.h-person-row .h-hide{opacity:1}}
 .h-presence{width:7px;height:7px;border-radius:50%;flex:none;background:var(--h-fg4)}
 .h-presence[data-on=true]{background:var(--h-good)}
+.h-presence[data-s=idle]{background:var(--h-warn)}
+.h-presence[data-s=dnd]{background:var(--h-bad)}
+.h-statusbtn{display:flex;align-items:center;gap:6px;max-width:100%;min-width:0;padding:1px 4px;margin:0 -4px;border:0;border-radius:6px;background:transparent;color:inherit;font:inherit;cursor:pointer;text-align:left}
+.h-statusbtn:hover{background:var(--h-hover)}.h-statusbtn:focus-visible{outline:2px solid var(--h-accent);outline-offset:1px}
+.h-mystatus{display:block;min-width:0}.h-mystatus .h-menu{left:0;right:auto;min-width:250px;max-width:min(300px,86vw)}
 .h-agentrow{display:flex;align-items:center;gap:8px;margin-left:14px;padding:3px 6px 3px 8px;border-left:1px solid var(--h-line);min-width:0}
 .h-statepill{font-size:10.5px;color:var(--h-fg3)}
 .h-mine{border:1px solid var(--h-line);border-radius:12px;padding:12px;display:flex;flex-direction:column;gap:10px;margin-top:14px}
@@ -2083,6 +2163,12 @@ function Seg(props) {
   return jsx('div', { className: 'h-seg', role: 'radiogroup', 'aria-label': props.label, children:
     props.options.map(o => jsx('button', { type: 'button', role: 'radio', 'aria-checked': props.value === o.id,
       'data-on': props.value === o.id, onClick: () => props.onChange(o.id), children: o.label }, o.id)) })
+}
+
+// A person's status dot. The word is its label (and its tooltip): colour alone never says it.
+function StatusDot(props) {
+  const k = statusKey(props.p)
+  return jsx('span', { className: 'h-presence', 'data-s': k, 'data-on': k !== 'away', role: 'img', 'aria-label': STATUS_LABEL[k], title: STATUS_LABEL[k] })
 }
 
 function Chips(props) {
@@ -3639,12 +3725,12 @@ function personSheet(who, found, card, onOpen, flip, art) {
   const name = p.name || who.name || 'Someone'
   const agents = p.agents || []
   const interests = (card && card.interests) || []
-  const fields = [['Agents', agents.length ? agents.map(a => a.name).join(', ') : 'None here'], ['In the room', p.online ? 'Online' : 'Away']]
+  const fields = [['Agents', agents.length ? agents.map(a => a.name).join(', ') : 'None here'], ['Status', STATUS_LABEL[statusKey(p)]]]
   const serial = cardSerial(who.pk)
   const activity = activityText(p.first, p.posts)
   return {
     title: name + (p.you ? ', you' : ''),
-    card: jsx(IdCard, Object.assign({ kind: 'person', name, pk: who.pk, face: agents[0] && agents[0].face, fields, warn: !!p.impostor, online: !!p.online,
+    card: jsx(IdCard, Object.assign({ kind: 'person', name, pk: who.pk, face: agents[0] && agents[0].face, fields, warn: !!p.impostor, online: isHere(p),
       agents, about: card && card.line, first: p.first, posts: p.posts, art }, flip)),
     rows: [
       card && card.line ? jsx('div', { className: 'h-profile-vibe', children: card.line }, 'l') : null,
@@ -4275,6 +4361,12 @@ function Settings(props) {
   return jsx(SettingsForm, { store, snap, key: snap.me && snap.me.pk })
 }
 
+const AWAY_CHOICES = [
+  { id: 'named', label: 'Answers only when named', hint: 'Replies to someone who names it or replies to it. It starts no chatter and drafts no offers.' },
+  { id: 'quiet', label: 'Stays quiet', hint: 'Answers only you. No offers, no games.' },
+  { id: 'chat', label: 'Chats as usual', hint: 'Behaves as it does when you are here.' }
+]
+
 function SettingsForm(props) {
   const store = props.store
   const snap = props.snap
@@ -4348,6 +4440,13 @@ function SettingsForm(props) {
       jsx(Field, { label: 'Chattiness', hint: 'How often your agent joins in unprompted. It always answers when someone addresses it by name.',
         children: jsx(Seg, { label: 'Chattiness', value: s.chattiness, onChange: v => now({ chattiness: v }),
           options: [{ id: 'quiet', label: 'Quiet' }, { id: 'normal', label: 'Normal' }, { id: 'lively', label: 'Lively' }] }) }),
+      jsx(Field, { label: 'When I’m away, my agent…', hint: 'Away means Ninsei has not been open on your screen for 15 minutes, whatever status you show. It always answers you.',
+        children: jsxs('div', { className: 'h-col', style: { gap: 8 }, children: [
+          jsx(Seg, { label: 'When I am away', value: s.away_mode || 'named', onChange: v => now({ away_mode: v }),
+            options: AWAY_CHOICES.map(c => ({ id: c.id, label: c.label })) }),
+          jsx('div', { className: 'h-col', style: { gap: 2 }, children: AWAY_CHOICES.map(c => jsxs('div', { className: 'h-small', 'data-on': (s.away_mode || 'named') === c.id,
+            style: { opacity: (s.away_mode || 'named') === c.id ? 1 : 0.6 }, children: [jsx('b', { children: c.label }), ' ' + c.hint] }, c.id)) })
+        ] }) }),
       jsx(K.Toggle, { checked: !!s.offers, onChange: v => now({ offers: v }), label: 'Offers to build things',
         description: 'Your agent may propose a small web toy when a room keeps circling an idea. Only you can accept, and your own Hermes builds it.' }),
       jsx(K.Toggle, { checked: !!s.share_budget, onChange: v => now({ share_budget: v }), label: "Show my agent's budget to the room",
@@ -4362,9 +4461,14 @@ function SettingsForm(props) {
         jsxs('div', { className: 'h-grow', children: [
           jsx('div', { children: fmtTokens(snap.budget.used) + ' of ' + fmtTokens(snap.budget.limit) + ' tokens used today' }),
           jsx('div', { className: 'h-faint h-small', children: Object.keys(snap.budget.by || {}).map(k => k + ' ' + fmtTokens(snap.budget.by[k])).join(' · ') || 'Nothing spent yet' }),
+          othersLine(snap.budget) && jsx('div', { className: 'h-faint h-small', children: othersLine(snap.budget) }),
           snap.budget.msgs && jsx('div', { className: 'h-faint h-small', children: snap.budget.msgs.used + ' of ' + snap.budget.msgs.limit + ' messages said today' })
         ] })
       ] }),
+      snap.budget.others && snap.budget.others.spent && jsx(Notice, { icon: 'clock', role: 'status', children: OTHERS_SPENT }),
+      jsx(Field, { label: 'Others can use', hint: 'The most of the daily budget, and of the message limit, that people other than you can use by talking to your agent. It halves while you are away, and you always keep the rest.',
+        children: jsx(Seg, { label: 'Others can use', value: s.stranger_share == null ? 0.5 : s.stranger_share, onChange: v => now({ stranger_share: v }),
+          options: [{ id: 0.25, label: 'A quarter' }, { id: 0.5, label: 'Half' }, { id: 0.75, label: 'Three quarters' }] }) }),
       jsx(Field, { label: 'Daily limit (tokens)', id: 'h-s-budget', error: budgetErr, children: jsxs('div', { className: 'h-row', children: [
         jsx(Seg, { label: 'Budget presets', value: Number(form.budget_daily), onChange: v => set({ budget_daily: v }),
           options: BUDGET_PRESETS.map(n => ({ id: n, label: fmtTokens(n) })) }),
@@ -4620,7 +4724,7 @@ function RoomHeader(props) {
   const rm = (snap.rooms || []).find(r => r.id === room.id) || {}
   const closeMenu = back => { setMenu(false); if (back) P.setTimeout(() => menuBtn.current && menuBtn.current.focus && menuBtn.current.focus(), 0) }
   const mine = new Set((snap.settings && snap.settings.interests) || [])
-  const online = (room.members || []).filter(p => p.online).length
+  const online = (room.members || []).filter(isHere).length
   const copyCode = async () => {
     const ok = await P.copy('ninsei:' + room.id)
     P.toast(ok ? 'info' : 'error', ok ? 'Room code copied. Anyone with it can join; rooms are public.' : 'Could not reach the clipboard. The code is ninsei:' + room.id)
@@ -5702,9 +5806,9 @@ function TypingRow(props) {
 function mentionCandidates(room) {
   const out = []
   for (const p of (room && room.members) || []) {
-    if (!p.you && !p.impostor) out.push({ pk: p.pk, name: p.name, kind: 'person', sub: p.online ? 'here now' : 'person', online: !!p.online })
+    if (!p.you && !p.impostor) out.push({ pk: p.pk, name: p.name, kind: 'person', sub: isHere(p) ? 'here now' : 'person', online: isHere(p) })
     for (const a of p.agents || []) if (!a.impostor) out.push({ pk: a.pk, name: a.name, kind: 'agent', face: a.face, yours: !!a.yours,
-      sub: a.yours ? 'your agent' : p.name + '’s agent', online: !!(a.yours || p.online) })
+      sub: a.yours ? 'your agent' : p.name + '’s agent', online: !!(a.yours || isHere(p)) })
   }
   return out.sort((a, b) => (!!b.yours - !!a.yours) || (!!b.online - !!a.online) || a.name.localeCompare(b.name))
 }
@@ -5893,12 +5997,13 @@ function Person(props) {
   const ref = useEnter(false)
   return jsxs('div', { className: 'h-person', ref, children: [
     jsxs('div', { className: 'h-person-row', children: [
-      jsx('span', { className: 'h-presence', 'data-on': !!p.online, role: 'img', 'aria-label': p.online ? 'online' : 'away' }),
+      jsx(StatusDot, { p }),
       jsx(ProfileButton, { who: { kind: 'person', pk: p.pk, name: p.name }, label: 'Show ' + p.name + '’s card',
         children: jsx(PersonMark, { pk: p.pk, name: p.name, size: 22, flagged: !!p.impostor }) }),
       jsx(ProfileButton, { who: { kind: 'person', pk: p.pk, name: p.name }, className: 'h-trunc', label: 'Show ' + p.name + '’s card',
         children: jsx('span', { className: 'h-trunc h-namelink', style: { fontWeight: 600 }, children: p.name }) }),
       p.you && jsx('span', { className: 'h-faint h-tiny', children: 'you' }),
+      jsx('span', { className: 'h-faint h-tiny', children: STATUS_LABEL[statusKey(p)] }),
       p.impostor && jsx(NotVerified, { name: p.name }),
       !p.you && props.store && jsx('span', { className: 'h-hide', children: jsx(K.Tip, { label: 'Hide ' + p.name + ' and their agent', children:
         jsx(K.Button, { variant: 'ghost', size: 'icon', 'aria-label': 'Hide ' + p.name,
@@ -5944,9 +6049,11 @@ function MyAgentCard(props) {
       jsx(BudgetRing, { budget: snap.budget, size: 30, stroke: 3, children: Math.round((snap.budget.pct || 0) * 100) }),
       jsxs('div', { className: 'h-grow h-small', children: [
         jsx('div', { children: fmtTokens(snap.budget.used) + ' / ' + fmtTokens(snap.budget.limit) }),
-        jsx('div', { className: 'h-faint', children: snap.budget.pct >= 1 ? 'resting until tomorrow' : 'tokens today' })
+        jsx('div', { className: 'h-faint', children: snap.budget.pct >= 1 ? 'resting until tomorrow' : 'tokens today' }),
+        othersLine(snap.budget) && jsx('div', { className: 'h-faint', children: othersLine(snap.budget) })
       ] })
-    ] })
+    ] }),
+    snap.budget.others && snap.budget.others.spent && snap.budget.pct < 1 && jsx('div', { className: 'h-faint h-small', children: OTHERS_SPENT })
   ] })
 }
 
@@ -5989,6 +6096,68 @@ function useSlide(ref, open, from) {
     }, onRest: () => { el.style.opacity = ''; el.style.transform = '' } })
     return () => { sp.stop(); el.style.opacity = ''; el.style.transform = '' }
   }, [open])
+}
+
+// ---- my status ----------------------------------------------------------------------------------
+
+const STATUS_CHOICES = [
+  { id: 'auto', label: 'Automatic', hint: 'Present while you use Ninsei, then idle, then away when you stop.' },
+  { id: 'present', label: 'Present', hint: 'Show as present while you are here.' },
+  { id: 'idle', label: 'Idle', hint: 'Show as idle while you are here.' },
+  { id: 'dnd', label: 'Do not disturb', hint: 'People see it. This screen shows no pop-ups or notifications.' },
+  { id: 'invisible', label: 'Invisible', hint: 'You show as away. Your agent still works.' }
+]
+
+// The sidebar header's line, "Maya & Ada · idle", is a button: it shows your status as a dot (the word is its label)
+// and opens the picker. People in your rooms see this status; Invisible hides it.
+function MyStatus(props) {
+  const { store, snap } = props
+  const [open, setOpen] = useState(false)
+  const btn = useRef(null)
+  const a = snap.me.agent
+  const st = snap.status || { mode: 'auto', shown: 'away', auto: 'away' }
+  const shown = STATUS_LABEL[st.shown] || 'Away'
+  const text = (snap.me.name || 'You') + ' & ' + (a.name || 'agent') + ' · ' + STATE_LABEL[stateWord(a.state)]
+  const close = back => { setOpen(false); if (back) P.setTimeout(() => btn.current && btn.current.focus && btn.current.focus(), 0) }
+  return jsxs('div', { className: 'h-menuwrap h-mystatus', children: [
+    jsxs('button', { type: 'button', className: 'h-statusbtn h-faint h-tiny', ref: btn, 'aria-haspopup': 'menu', 'aria-expanded': open,
+      'aria-label': 'You show as ' + shown + '. ' + text + '. Change your status', title: 'You show as ' + shown, onClick: () => setOpen(!open), children: [
+        jsx('span', { className: 'h-presence', 'data-s': st.shown, 'data-on': st.shown !== 'away', 'aria-hidden': true }),
+        jsx('span', { className: 'h-trunc', children: text })
+      ] }),
+    open && jsx(StatusMenu, { store, st, anchor: btn, onClose: close })
+  ] })
+}
+
+function StatusMenu(props) {
+  const { store, st } = props
+  const ref = useEnter(true)
+  const items = useRef([])
+  const [idx, setIdx] = useState(Math.max(0, STATUS_CHOICES.findIndex(c => c.id === st.mode)))
+  useEffect(() => { const el = items.current[idx]; if (el && el.focus) el.focus() }, [idx])
+  useEffect(() => {
+    const away = e => { if (ref.current && !ref.current.contains(e.target) && !(props.anchor.current && props.anchor.current.contains(e.target))) props.onClose(false) }
+    return P.listen(document, 'pointerdown', away)
+  }, [])
+  const pick = id => { props.onClose(true); if (id !== st.mode) store.post('/settings', { status_mode: id }).catch(() => {}) }
+  const n = STATUS_CHOICES.length
+  const onKeyDown = e => {
+    if (e.key === 'ArrowDown') { e.preventDefault(); setIdx((idx + 1) % n) }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); setIdx((idx + n - 1) % n) }
+    else if (e.key === 'Home') { e.preventDefault(); setIdx(0) }
+    else if (e.key === 'End') { e.preventDefault(); setIdx(n - 1) }
+    else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); props.onClose(true) }
+    else if (e.key === 'Tab') props.onClose(false)
+  }
+  return jsxs('div', { className: 'h-menu h-menu-down', ref, role: 'menu', 'aria-label': 'Your status', onKeyDown, children: [
+    jsx('div', { className: 'h-menu-h h-sec', role: 'presentation', children: 'Your status' }),
+    jsx('div', { className: 'h-menu-h h-faint h-small', role: 'presentation', children: 'People in your rooms see it. You show as ' + (STATUS_LABEL[st.shown] || 'Away') + ' now.' }),
+    STATUS_CHOICES.map((c, i) => jsxs('button', { type: 'button', role: 'menuitemradio', 'aria-checked': c.id === st.mode, tabIndex: i === idx ? 0 : -1,
+      ref: el => { items.current[i] = el }, onClick: () => pick(c.id), onMouseEnter: () => setIdx(i), children: [
+        jsx('span', { className: 'h-menu-tick', 'aria-hidden': true, children: c.id === st.mode ? jsx(K.Icon, { name: 'check', size: 13 }) : null }),
+        jsxs('span', { className: 'h-grow', children: [jsx('b', { children: c.label }), jsx('span', { className: 'h-faint h-small h-gm-line', children: c.hint })] })
+      ] }, c.id))
+  ] })
 }
 
 // ---- room options -------------------------------------------------------------------------------
@@ -6391,6 +6560,7 @@ function DmRail(props) {
           jsx(PersonMark, { pk: t.pk, name: t.name, size: 18, flagged: !!t.impostor }),
           jsx('span', { className: 'h-grow h-trunc', style: { fontWeight: t.unread ? 600 : 400, opacity: t.friend === false ? 0.6 : 1 }, children: t.name }),
           t.friend === false && jsx('span', { className: 'h-faint h-small', children: 'not friends' }),
+          t.friend !== false && jsx(StatusDot, { p: t }),
           t.unread > 0 && jsx('span', { className: 'h-dot', 'aria-label': t.unread + (t.unread === 1 ? ' unread private message' : ' unread private messages') })
         ] }, t.pk)),
       dms.requests > 0 && jsxs('button', { type: 'button', className: 'h-navrow', 'data-on': cur === DM_REQUESTS, onClick: () => open(DM_REQUESTS), children: [
@@ -7587,7 +7757,7 @@ function Rail(props) {
       jsx(Face, { face: a.face, pk: a.pk, state: a.state, size: 24, name: a.name }),
       jsxs('div', { className: 'h-grow', style: { minWidth: 0 }, children: [
         jsx('b', { children: 'Ninsei' }),
-        jsx('div', { className: 'h-faint h-tiny h-trunc', children: (snap.me.name || 'You') + ' & ' + (a.name || 'agent') + ' · ' + STATE_LABEL[stateWord(a.state)] })
+        jsx(MyStatus, { store, snap })
       ] }),
       jsx(BudgetRing, { budget: snap.budget, size: 16, stroke: 2.2 })
     ] }),
@@ -7617,7 +7787,7 @@ function Rail(props) {
           r.muted ? (r.unread > 0 && jsx('span', { className: 'h-dot h-dot-quiet', 'aria-label': 'unread, muted' }))
           : r.mentions > 0 ? jsx('span', { className: 'h-mentions', 'aria-label': r.mentions + (r.mentions === 1 ? ' mention' : ' mentions') + ' of you', children: '@' + (r.mentions > 9 ? '9+' : r.mentions) })
             : r.unread > 0 && jsx('span', { className: 'h-dot', 'aria-label': r.unread + ' unread' }),
-          jsxs('span', { className: 'h-count', title: r.online + ' online', children: [r.online || '', r.online > 0 && jsx('span', { className: 'h-vh', children: ' online' }, 's')] })
+          jsxs('span', { className: 'h-count', title: r.online + ' here', children: [r.online || '', r.online > 0 && jsx('span', { className: 'h-vh', children: ' here' }, 's')] })
         ] }, r.id))
     ] }),
     jsx(DmRail, { store, snap, view, go }),
@@ -7900,6 +8070,7 @@ export default {
     store.start()
     ctx.onDispose(() => store.stop())
     ctx.onDispose(mentionAlerts(store))
+    ctx.onDispose(hereSignals(store))
     // the backend pushes after every change; polling stays as the fallback
     ctx.onEvent('plugin.ninsei.changed', () => store.refresh())
 

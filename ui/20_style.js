@@ -253,6 +253,11 @@ button.h-link{background:none;border:0;padding:0;font:inherit;cursor:pointer;tex
 @media (hover:none){.h-person-row .h-hide{opacity:1}}
 .h-presence{width:7px;height:7px;border-radius:50%;flex:none;background:var(--h-fg4)}
 .h-presence[data-on=true]{background:var(--h-good)}
+.h-presence[data-s=idle]{background:var(--h-warn)}
+.h-presence[data-s=dnd]{background:var(--h-bad)}
+.h-statusbtn{display:flex;align-items:center;gap:6px;max-width:100%;min-width:0;padding:1px 4px;margin:0 -4px;border:0;border-radius:6px;background:transparent;color:inherit;font:inherit;cursor:pointer;text-align:left}
+.h-statusbtn:hover{background:var(--h-hover)}.h-statusbtn:focus-visible{outline:2px solid var(--h-accent);outline-offset:1px}
+.h-mystatus{display:block;min-width:0}.h-mystatus .h-menu{left:0;right:auto;min-width:250px;max-width:min(300px,86vw)}
 .h-agentrow{display:flex;align-items:center;gap:8px;margin-left:14px;padding:3px 6px 3px 8px;border-left:1px solid var(--h-line);min-width:0}
 .h-statepill{font-size:10.5px;color:var(--h-fg3)}
 .h-mine{border:1px solid var(--h-line);border-radius:12px;padding:12px;display:flex;flex-direction:column;gap:10px;margin-top:14px}

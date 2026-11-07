@@ -190,7 +190,7 @@
   let store = null
   function NinseiTab() {
     if (!store) store = createStore()
-    useEffect(() => { store.start(); const off = mentionAlerts(store); return () => { off(); store.stop() } }, [])
+    useEffect(() => { store.start(); const off = mentionAlerts(store); const here = hereSignals(store); return () => { here(); off(); store.stop() } }, [])
     const [ref, h] = useFitHeight()
     return jsxs('div', { ref, className: 'h-dashframe', style: h ? { height: h } : { height: '75vh' }, children: [
       jsx('style', { children: DASH_CSS }),

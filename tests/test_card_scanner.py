@@ -144,7 +144,7 @@ console.log(JSON.stringify([scanLed({ kind: 'agent', state: 'activity: idle' }),
   scanLed({ kind: 'agent', state: 'system: absent' }), scanLed({ kind: 'agent' }), scanLed({ kind: 'agent', state: 'system: absent', warn: true }),
   scanLed({ kind: 'person', online: true }), scanLed({ kind: 'person', online: false }), scanLed({ kind: 'person', online: true, warn: true })]))""")
     assert out == ["green", "green", "amber", "green", "red", "green", "amber", "red"]
-    assert "online: !!p.online" in _fn(CARD, "personSheet")
+    assert "online: isHere(p)" in _fn(CARD, "personSheet")
 
 
 # ---- the nebula --------------------------------------------------------------------------------

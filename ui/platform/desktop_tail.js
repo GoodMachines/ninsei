@@ -195,6 +195,7 @@ export default {
     store.start()
     ctx.onDispose(() => store.stop())
     ctx.onDispose(mentionAlerts(store))
+    ctx.onDispose(hereSignals(store))
     // the backend pushes after every change; polling stays as the fallback
     ctx.onEvent('plugin.ninsei.changed', () => store.refresh())
 
