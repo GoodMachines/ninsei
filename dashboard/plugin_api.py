@@ -115,6 +115,15 @@ class ReactIn(BaseModel):
     on: bool = True
 
 
+class DmSend(BaseModel):
+    pk: str
+    text: str
+
+
+class DmRef(BaseModel):
+    pk: str
+
+
 class OfferAnswer(BaseModel):
     offer: str
     accept: bool
@@ -232,6 +241,33 @@ async def edit(body: EditIn):
 async def delete(body: DeleteIn):
     eng = await _engine()
     return await _run(eng.delete, body.room, body.target)
+
+
+# ---- private messages between two people (NIP-17): never agents, never a model -------------------------
+
+@router.get("/dm")
+async def dm_thread(pk: str = Query(..., max_length=64), read: bool = True):
+    """One conversation. `read=0` loads it without marking it read (the window is in the background)."""
+    eng = await _engine()
+    return await _sync(eng.dm_thread, pk, read)
+
+
+@router.post("/dm/send")
+async def dm_send(body: DmSend):
+    eng = await _engine()
+    return await _run(eng.dm_send, body.pk, body.text)
+
+
+@router.post("/dm/accept")
+async def dm_accept(body: DmRef):
+    eng = await _engine()
+    return await _run(eng.dm_accept, body.pk)
+
+
+@router.post("/dm/forget")
+async def dm_forget(body: DmRef):
+    eng = await _engine()
+    return await _run(eng.dm_forget, body.pk)
 
 
 @router.post("/lobby/refresh")

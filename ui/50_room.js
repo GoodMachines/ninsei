@@ -937,6 +937,8 @@ function mentionCandidates(room) {
 
 function Composer(props) {
   const { store, room, gameOn, reply, onCancelReply } = props
+  // dm: a private conversation ({ onSend, placeholder, max }): no @ list (your agent is not in it), no games, no replies
+  const dm = props.dm
   const [text, setText] = useState('')
   const [menu, setMenu] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -945,7 +947,7 @@ function Composer(props) {
   const [shut, setShut] = useState(-1)  // the '@' position the menu was dismissed at, with Escape
   const ta = useRef(null)
   const caretTo = useRef(null)
-  const cands = useMemo(() => mentionCandidates(room), [room.members])
+  const cands = useMemo(() => dm ? [] : mentionCandidates(room), [room.members, !!dm])
   const mq = mentionQuery(text, caret)
   const opts = mq && mq.at !== shut ? mentionMatches(cands, mq.q) : []
   const open = opts.length > 0
@@ -965,7 +967,10 @@ function Composer(props) {
     setBusy(true)
     setText('')
     const body = reply ? { room: room.id, text: t, reply: reply.id } : { room: room.id, text: t }
-    try { await store.post('/post', body); if (reply && onCancelReply) onCancelReply() } catch (_) { setText(t) }
+    try {
+      if (dm) await dm.onSend(t)
+      else { await store.post('/post', body); if (reply && onCancelReply) onCancelReply() }
+    } catch (_) { setText(t) }
     setBusy(false)
     ta.current && ta.current.focus()
   }
@@ -995,12 +1000,13 @@ function Composer(props) {
     setMenu(false)
     try { await store.post('/game/start', { room: room.id, mode }, gameName(mode) + ' is starting') } catch (_) { /* toasted */ }
   }
-  return jsxs('div', { className: 'h-compose-box', style: { position: 'relative' }, children: [
+  return jsxs('div', { className: 'h-compose-box', style: { position: 'relative' }, 'data-private': dm ? true : undefined, children: [
     reply && jsxs('div', { className: 'h-replying', children: [
       jsx(K.Icon, { name: 'reply', size: 12 }),
       jsx('span', { className: 'h-trunc', children: jsxs(Fragment, { children: ['Replying to ', jsx('b', { children: reply.name }), jsx('span', { className: 'h-faint', children: ' · ' + reply.text })] }) }),
       jsx('button', { type: 'button', className: 'h-bar-btn', 'aria-label': 'Cancel reply', onClick: onCancelReply, children: jsx(K.Icon, { name: 'close', size: 12 }) })
     ] }),
+    dm && jsx(K.Icon, { name: 'lock', size: 13 }),
     open && jsx('div', { className: 'h-ac', id: listId, role: 'listbox', 'aria-label': 'Mention someone', children: opts.map((c, i) =>
       jsxs('div', { id: listId + '-' + i, role: 'option', className: 'h-ac-opt', 'aria-selected': i === sel,
         onMouseDown: e => { e.preventDefault(); choose(c) }, onMouseEnter: () => setPick(i), children: [
@@ -1008,12 +1014,12 @@ function Composer(props) {
           jsx('b', { className: 'h-trunc', children: c.name }),
           jsx('span', { className: 'h-ac-sub h-trunc', children: c.sub })
         ] }, c.pk)) }),
-    jsx('textarea', { ref: ta, rows: 1, value: text, placeholder: 'Message ' + room.name + ' (type @ to mention someone)', 'aria-label': 'Message',
-      role: 'combobox', 'aria-autocomplete': 'list', 'aria-expanded': open, 'aria-controls': open ? listId : undefined,
+    jsx('textarea', { ref: ta, rows: 1, value: text, placeholder: dm ? dm.placeholder : 'Message ' + room.name + ' (type @ to mention someone)', 'aria-label': dm ? dm.placeholder : 'Message', maxLength: dm ? dm.max : undefined,
+      role: dm ? undefined : 'combobox', 'aria-autocomplete': dm ? undefined : 'list', 'aria-expanded': dm ? undefined : open, 'aria-controls': open ? listId : undefined,
       'aria-activedescendant': open ? listId + '-' + sel : undefined,
       onChange: e => { setText(e.target.value); track(e); setPick(0); if (!mentionQuery(e.target.value, e.target.selectionStart)) setShut(-1) }, onSelect: track, onClick: track, onKeyUp: e => { if (!open || !/Arrow(Up|Down)/.test(e.key)) track(e) },
       onKeyDown: onKey }),
-    jsxs('div', { style: { position: 'relative' }, children: [
+    !dm && jsxs('div', { style: { position: 'relative' }, children: [
       jsx(K.Tip, { label: 'Games', children: jsx(K.Button, { variant: 'ghost', size: 'icon', 'aria-label': 'Games', 'aria-expanded': menu,
         onClick: () => setMenu(!menu), children: jsx(K.Icon, { name: 'game', size: 15 }) }) }),
       menu && jsx(GamesMenu, { onClose: () => setMenu(false), onStart: startGame, gameOn })

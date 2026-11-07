@@ -277,6 +277,7 @@ function createStore() {
   const listeners = new Set()
   let state = { snap: null, error: null, status: 0, loading: true }
   let room = P.prefs.get('room', '') || ''
+  let dmPk = P.prefs.get('dm', '') || ''   // the private conversation open (a person's key, or 'requests')
   let lastJson = ''
   let inflight = null
   let again = false
@@ -338,6 +339,15 @@ function createStore() {
       lastJson = ''
       refresh()
     },
+    dm: () => dmPk,
+    setDm(pk) {
+      pk = pk || ''
+      if (pk === dmPk) return
+      dmPk = pk
+      P.prefs.set('dm', pk)
+      state = Object.assign({}, state)  // a new object, so the page re-renders on the choice
+      emit()
+    },
     // a page or panel showing details: poll faster while it is mounted
     view() { views++; schedule(); return () => { views--; } },
     // a room is on screen until the returned function runs; its next snapshot marks it read
@@ -384,7 +394,9 @@ function cleanSnippet(s, n) {
 
 function mentionAlerts(store) {
   let seen = null
+  let dmSeen = null
   const told = {}
+  const dmTold = {}
   return store.subscribe(st => {
     const snap = st && st.snap
     if (!snap) return
@@ -401,10 +413,29 @@ function mentionAlerts(store) {
       if (P.osNotify) P.osNotify({ title, body: snippet, onActivate: () => { store.setRoom(r.id); nav().set('room') } })
     }
     seen = next
+    // Private messages go through the same door. The first snapshot only sets the baseline; after it, a
+    // conversation with more unread than before (or a brand-new one) that you aren't looking at is announced. The
+    // name is the engine's: a name someone else holds in a room arrives as a short key, never as the real name.
+    // A request (a stranger) is announced once, by name alone: their words stay unseen until you open it.
+    const dnext = {}
+    for (const t of (snap.dms && snap.dms.threads) || []) {
+      dnext[t.pk] = t.unread || 0
+      const lu = t.last_unread
+      const rose = dmSeen !== null && (t.pk in dmSeen ? t.unread > dmSeen[t.pk] : t.unread > 0)
+      if (!rose || !lu || dmTold[t.pk] === lu.id || (t.request && dmTold[t.pk])) continue
+      if (store.isShowing('dm:' + t.pk)) continue
+      dmTold[t.pk] = lu.id
+      const who = cleanSnippet(t.name, 32)
+      const title = t.request ? who + ' wants to message you' : t.impostor ? 'Someone not verified (' + who + ') sent you a private message' : who + ' sent you a private message'
+      const snippet = t.request ? '' : cleanSnippet(lu.text, 60)
+      P.toast('info', snippet ? title + ': "' + snippet + '"' : title)
+      if (P.osNotify) P.osNotify({ title, body: snippet || 'Open Ninsei to see it.', onActivate: () => { store.setDm(t.pk); nav().set('dm') } })
+    }
+    dmSeen = dnext
   })
 }
 
-// Which Ninsei view is showing (room, lobby, hermes, settings). One shared value, so in Desktop the
+// Which Ninsei view is showing (room, lobby, hermes, dm, settings). One shared value, so in Desktop the
 // sidebar's Ninsei tab and the room tab beside your chats stay in step. Remembered across launches.
 let NAV = null
 function nav() {

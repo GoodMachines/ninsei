@@ -295,15 +295,16 @@ const r = [
 console.log(JSON.stringify(r))"""
     out = _run(js)
     sam = {"pk": "c" * 64, "name": "Sam"}
-    assert out[0] == {"edit": True, "hide": None}
-    assert out[1] == {"edit": True, "hide": None}
-    assert out[2] == {"edit": False, "hide": sam}
-    assert out[3] == {"edit": False, "hide": None}  # owner unknown: no hide on an agent card
-    assert out[4] == {"edit": False, "hide": None}
-    assert out[5] == out[6] == {"edit": False, "hide": None}  # never on your own person card
-    assert out[7] == out[8] == {"edit": False, "hide": sam}
-    assert out[9] == {"edit": False, "hide": None}
-    assert out[10]["hide"] == {"pk": "c" * 64, "name": "them"}
+    # `message` (private message) goes where `hide` does: to a person, or an agent's owner; never to yourself
+    assert out[0] == {"edit": True, "hide": None, "message": None}
+    assert out[1] == {"edit": True, "hide": None, "message": None}
+    assert out[2] == {"edit": False, "hide": sam, "message": sam}
+    assert out[3] == {"edit": False, "hide": None, "message": None}  # owner unknown: no hide on an agent card
+    assert out[4] == {"edit": False, "hide": None, "message": None}
+    assert out[5] == out[6] == {"edit": False, "hide": None, "message": None}  # never on your own person card
+    assert out[7] == out[8] == {"edit": False, "hide": sam, "message": sam}
+    assert out[9] == {"edit": False, "hide": None, "message": None}
+    assert out[10]["hide"] == {"pk": "c" * 64, "name": "them"} and out[10]["message"] == out[10]["hide"]
 
 
 def test_actions_hide_the_way_the_people_column_does():

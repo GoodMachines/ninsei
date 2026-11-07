@@ -5,6 +5,11 @@ Library:  async with LocalRelay(port=0) as relay: relay.url   # ws://127.0.0.1:<
 
 `relay.stop()` / `relay.start()` bounce the server on the same port (stored events survive), and
 `drop_rate` / `delay_ms` (settable at any time) make live deliveries lossy or slow.
+
+`auth_kinds={1059}` makes it behave like relay.damus.io: a connection gets a NIP-42 challenge, a REQ that asks for
+those kinds is closed with "auth-required" until the client answers with a good kind 22242 event, and once it
+has, those kinds are served only to the key they are p-tagged to. `challenge_late=True` sends the challenge
+after the CLOSED instead of on connect.
 """
 from __future__ import annotations
 
@@ -12,7 +17,9 @@ import argparse
 import asyncio
 import json
 import random
+import secrets
 import sys
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -71,7 +78,9 @@ def _newer(a: dict, b: dict) -> bool:
 
 class LocalRelay:
     def __init__(self, host: str = "127.0.0.1", port: int = 0, *, max_message_size: int = 128 * 1024,
-                 drop_rate: float = 0.0, delay_ms: int = 0, seed: Optional[int] = None):
+                 drop_rate: float = 0.0, delay_ms: int = 0, seed: Optional[int] = None,
+                 auth_kinds: Optional[set] = None, challenge_late: bool = False,
+                 closed_reason: str = "auth-required: this relay serves those events to the key they are for"):
         self.host = host
         self.port = port
         self.max_message_size = max_message_size
@@ -83,6 +92,14 @@ class LocalRelay:
         self._conns: set = set()
         self._subs: dict = {}  # ws -> {sub_id: [filters]}
         self._tasks: set[asyncio.Task] = set()
+        self.auth_kinds = set(auth_kinds or ())
+        self.challenge_late = challenge_late
+        self.closed_reason = closed_reason   # relay.damus.io says "ERROR: auth-required: requested filter requires authentication"
+        self._auth: dict = {}      # ws -> {"challenge": str, "pubkeys": set}
+        self.auth_ok = 0           # logins accepted
+        self.auth_refused = 0      # logins refused
+        self.auth_required = 0     # REQs closed with "auth-required"
+        self.req_log: list = []    # every REQ received: (sub_id, [filters]), in order
 
     # -- lifecycle ----------------------------------------------------------------------------
     @property
@@ -121,7 +138,10 @@ class LocalRelay:
     async def _handle(self, ws) -> None:
         self._conns.add(ws)
         self._subs[ws] = {}
+        self._auth[ws] = {"challenge": secrets.token_hex(16), "pubkeys": set()}
         try:
+            if self.auth_kinds and not self.challenge_late:
+                await self._send(ws, ["AUTH", self._auth[ws]["challenge"]])
             async for raw in ws:
                 await self._on_message(ws, raw)
         except ConnectionClosed:
@@ -129,6 +149,7 @@ class LocalRelay:
         finally:
             self._conns.discard(ws)
             self._subs.pop(ws, None)
+            self._auth.pop(ws, None)
 
     async def _send(self, ws, msg: list) -> None:
         try:
@@ -158,6 +179,8 @@ class LocalRelay:
             await self._on_event(ws, msg[1])
         elif kind == "REQ" and len(msg) >= 2 and isinstance(msg[1], str):
             await self._on_req(ws, msg[1], [f for f in msg[2:] if isinstance(f, dict)])
+        elif kind == "AUTH" and len(msg) >= 2:
+            await self._on_auth(ws, msg[1])
         elif kind == "CLOSE" and len(msg) >= 2:
             self._subs.get(ws, {}).pop(msg[1], None)
         else:
@@ -194,11 +217,46 @@ class LocalRelay:
         self.events[ev["id"]] = ev
         return True
 
+    async def _on_auth(self, ws, ev) -> None:
+        eid = ev.get("id", "") if isinstance(ev, dict) else ""
+        st = self._auth.get(ws)
+        tags = ev.get("tags", []) if isinstance(ev, dict) else []
+        have = {t[0]: t[1] for t in tags if isinstance(t, list) and len(t) > 1}
+        good = (st is not None and check_event(ev) and ev["kind"] == 22242
+                and have.get("challenge") == st["challenge"]
+                and str(have.get("relay", "")).rstrip("/") == self.url.rstrip("/")
+                and abs(ev["created_at"] - time.time()) < 600)
+        if not good:
+            self.auth_refused += 1
+            await self._send(ws, ["OK", eid, False, "invalid: bad login"])
+            return
+        st["pubkeys"].add(ev["pubkey"])
+        self.auth_ok += 1
+        await self._send(ws, ["OK", eid, True, ""])
+
+    def _visible(self, ws, ev: dict) -> bool:
+        """Auth-protected kinds go only to a logged-in key that the event is p-tagged to."""
+        if ev["kind"] not in self.auth_kinds:
+            return True
+        keys = self._auth.get(ws, {}).get("pubkeys", set())
+        return any(t[0] == "p" and len(t) > 1 and t[1] in keys for t in ev["tags"])
+
+    def _needs_login(self, ws, filters: list[dict]) -> bool:
+        asked = any("kinds" not in f or self.auth_kinds & set(f["kinds"]) for f in filters)
+        return bool(self.auth_kinds) and asked and not self._auth.get(ws, {}).get("pubkeys")
+
     async def _on_req(self, ws, sub_id: str, filters: list[dict]) -> None:
+        self.req_log.append((sub_id, filters))
+        if self._needs_login(ws, filters):
+            self.auth_required += 1
+            await self._send(ws, ["CLOSED", sub_id, self.closed_reason])
+            if self.challenge_late:
+                await self._send(ws, ["AUTH", self._auth[ws]["challenge"]])
+            return
         self._subs[ws][sub_id] = filters
         seen: set[str] = set()
         for flt in filters:
-            hits = sorted((e for e in self.events.values() if matches(e, flt)),
+            hits = sorted((e for e in self.events.values() if matches(e, flt) and self._visible(ws, e)),
                           key=lambda e: (-e["created_at"], e["id"]))
             if "limit" in flt:
                 hits = hits[: max(0, int(flt["limit"]))]
@@ -211,7 +269,7 @@ class LocalRelay:
     def _fanout(self, ev: dict) -> None:
         for ws, subs in list(self._subs.items()):
             for sub_id, filters in list(subs.items()):
-                if any(matches(ev, f) for f in filters):
+                if any(matches(ev, f) for f in filters) and self._visible(ws, ev):
                     if self.drop_rate and self._rng.random() < self.drop_rate:
                         continue
                     self._spawn(self._deliver(ws, sub_id, ev))

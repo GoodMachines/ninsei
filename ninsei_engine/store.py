@@ -35,6 +35,21 @@ CREATE TABLE IF NOT EXISTS private_line (
   reply_to TEXT, created_at REAL NOT NULL, updated_at REAL NOT NULL);
 CREATE INDEX IF NOT EXISTS private_line_status ON private_line(role, status);
 CREATE INDEX IF NOT EXISTS private_line_time ON private_line(created_at);
+-- Private messages between two people (NIP-17), decrypted. One row per rumor id, so the copy wrapped to
+-- myself and the copy my other install sent are one message. `peer` is the other person; `sender` is the
+-- peer or me. `wrap` is the gift wrap I sent to the peer (its delivery status lives in event_outbox).
+-- Readable by the user account only, like the keys above. Only the engine writes these tables, and nothing
+-- that reaches a model or the gateway reads them.
+CREATE TABLE IF NOT EXISTS dm_messages (
+  id TEXT PRIMARY KEY, peer TEXT NOT NULL, sender TEXT NOT NULL, text TEXT NOT NULL,
+  created_at INTEGER NOT NULL, arrived_at REAL NOT NULL, wrap TEXT);
+CREATE INDEX IF NOT EXISTS dm_messages_peer ON dm_messages(peer, created_at);
+-- A conversation partner: accepted (I wrote first, I accepted, or I have met them in a room) or a request.
+-- `last_read` is an arrival time: what came after it, from the peer, is unread.
+CREATE TABLE IF NOT EXISTS dm_peers (
+  peer TEXT PRIMARY KEY, accepted INTEGER NOT NULL DEFAULT 0, first_at REAL NOT NULL, last_read REAL NOT NULL DEFAULT 0);
+-- Gift wraps already opened (or refused): a restart or a relay replaying history costs one lookup, not a decryption.
+CREATE TABLE IF NOT EXISTS dm_wraps (id TEXT PRIMARY KEY, at REAL NOT NULL);
 -- Build progress, written by Ninsei's Hermes hooks in whatever process runs the owner's build chat
 -- (ninsei_hooks.py). Coarse on purpose: a step count and a state, never tool names or contents.
 CREATE TABLE IF NOT EXISTS build_progress (
@@ -54,6 +69,14 @@ LINE_TYPING_FRESH = 12    # seconds: the gateway re-sends typing every few secon
 EVENT_HISTORY_DAYS = 3
 EVENT_ROOM_CAP = 1500
 EVENT_PRUNE_EVERY = 100   # adds between cheap prune passes
+
+# private messages kept on disk (like EVENT_ROOM_CAP for rooms): per conversation, for a sender not yet
+# accepted (a request), how many such senders, and in all
+DM_PER_PEER = 500
+DM_PER_REQUEST = 20
+DM_REQUEST_PEERS = 20
+DM_TOTAL = 5000
+DM_WRAP_MEMORY = 20000    # gift wrap ids remembered
 
 
 def cap_reply(text: str) -> str:
@@ -97,6 +120,7 @@ class Store:
         self.event_history_days = EVENT_HISTORY_DAYS
         self.event_room_cap = EVENT_ROOM_CAP
         self._adds = 0
+        self._dm_wrap_adds = 0
         self.prune_events()
 
     def close(self) -> None:
@@ -428,3 +452,117 @@ class Store:
         return {"count": n, "rev": f"{n}:{last_at or 0:.3f}", "queued": queued, "unread": unread,
                 "typing": now - (self.get("line_typing", 0) or 0) < LINE_TYPING_FRESH,
                 "gateway": now - (self.get("line_gateway_at", 0) or 0) < LINE_GATEWAY_FRESH}
+
+    # --- private messages (NIP-17; see dm.py and the engine's dm_* methods) --------------------------
+    def dm_wrap_seen(self, wid: str) -> bool:
+        with self._lock:
+            return self._db.execute("SELECT 1 FROM dm_wraps WHERE id=?", (wid,)).fetchone() is not None
+
+    def dm_wrap_mark(self, wid: str) -> None:
+        with self._lock:
+            cur = self._db.execute("INSERT OR IGNORE INTO dm_wraps(id, at) VALUES(?,?)", (wid, time.time()))
+            if cur.rowcount:
+                self._dm_wrap_adds += 1
+                if self._dm_wrap_adds % 200 == 0:
+                    self._db.execute("DELETE FROM dm_wraps WHERE id NOT IN "
+                                     "(SELECT id FROM dm_wraps ORDER BY at DESC LIMIT ?)", (DM_WRAP_MEMORY,))
+            self._db.commit()
+
+    def dm_add(self, *, id: str, peer: str, sender: str, text: str, created_at: int, arrived_at: float,
+               wrap: Optional[str] = None, accepted: bool = False) -> str:
+        """Store one message. Returns "added", "duplicate" (this rumor is already here) or "limit" (a request
+        sender over their caps). `accepted` says whether this conversation is one I have said yes to (or
+        have a reason to): a stranger gets DM_PER_REQUEST messages, and there is room for DM_REQUEST_PEERS of
+        them. Past DM_PER_PEER in one conversation the oldest go; past DM_TOTAL the biggest conversation
+        loses its oldest, so one sender can't push everyone else's out."""
+        with self._lock:
+            if self._db.execute("SELECT 1 FROM dm_messages WHERE id=?", (id,)).fetchone():
+                return "duplicate"
+            row = self._db.execute("SELECT accepted FROM dm_peers WHERE peer=?", (peer,)).fetchone()
+            ok = bool(accepted or (row and row[0]))
+            if row is None:
+                if not ok:
+                    (n,) = self._db.execute("SELECT COUNT(*) FROM dm_peers WHERE accepted=0").fetchone()
+                    if n >= DM_REQUEST_PEERS:
+                        return "limit"
+                self._db.execute("INSERT INTO dm_peers(peer, accepted, first_at, last_read) VALUES(?,?,?,?)",
+                                 (peer, 1 if ok else 0, arrived_at, arrived_at if sender != peer else 0))
+            elif ok and not row[0]:
+                self._db.execute("UPDATE dm_peers SET accepted=1 WHERE peer=?", (peer,))
+            if not ok:
+                (n,) = self._db.execute("SELECT COUNT(*) FROM dm_messages WHERE peer=?", (peer,)).fetchone()
+                if n >= DM_PER_REQUEST:
+                    return "limit"
+            self._db.execute("INSERT INTO dm_messages(id, peer, sender, text, created_at, arrived_at, wrap) "
+                             "VALUES(?,?,?,?,?,?,?)", (id, peer, sender, text, created_at, arrived_at, wrap))
+            self._db.execute("DELETE FROM dm_messages WHERE peer=? AND id NOT IN (SELECT id FROM dm_messages "
+                             "WHERE peer=? ORDER BY created_at DESC, arrived_at DESC, id DESC LIMIT ?)",
+                             (peer, peer, DM_PER_PEER))
+            while True:
+                (total,) = self._db.execute("SELECT COUNT(*) FROM dm_messages").fetchone()
+                if total <= DM_TOTAL:
+                    break
+                big = self._db.execute("SELECT peer FROM dm_messages GROUP BY peer ORDER BY COUNT(*) DESC LIMIT 1").fetchone()
+                self._db.execute("DELETE FROM dm_messages WHERE id IN (SELECT id FROM dm_messages WHERE peer=? "
+                                 "ORDER BY created_at, arrived_at, id LIMIT ?)", (big[0], total - DM_TOTAL))
+            self._db.commit()
+            return "added"
+
+    def dm_accept(self, peer: str) -> bool:
+        with self._lock:
+            cur = self._db.execute("UPDATE dm_peers SET accepted=1 WHERE peer=?", (peer,))
+            self._db.commit()
+            return cur.rowcount > 0
+
+    def dm_peer(self, peer: str) -> Optional[dict]:
+        with self._lock:
+            row = self._db.execute("SELECT accepted, first_at, last_read FROM dm_peers WHERE peer=?", (peer,)).fetchone()
+        return {"accepted": bool(row[0]), "first_at": row[1], "last_read": row[2]} if row else None
+
+    def dm_messages(self, peer: str, limit: int = 200) -> list[dict]:
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT id, sender, text, created_at, arrived_at, wrap FROM dm_messages WHERE peer=? "
+                "ORDER BY created_at DESC, arrived_at DESC, id DESC LIMIT ?", (peer, limit)).fetchall()
+        return [dict(zip(("id", "sender", "text", "created_at", "arrived_at", "wrap"), r)) for r in reversed(rows)]
+
+    def dm_threads(self, limit: int = 100) -> list[dict]:
+        """Every conversation, newest first: {peer, accepted, unread, last_ts}. Counts only; the text of the
+        newest unread message comes from `dm_newest_unread`, for the alert."""
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT p.peer, p.accepted, p.first_at, p.last_read, "
+                "(SELECT COUNT(*) FROM dm_messages m WHERE m.peer=p.peer AND m.sender=p.peer AND m.arrived_at>p.last_read), "
+                "COALESCE((SELECT MAX(created_at) FROM dm_messages m WHERE m.peer=p.peer), 0) AS last_ts "
+                "FROM dm_peers p WHERE EXISTS (SELECT 1 FROM dm_messages m WHERE m.peer=p.peer) "
+                "ORDER BY last_ts DESC, p.peer LIMIT ?", (limit,)).fetchall()
+        return [{"peer": r[0], "accepted": bool(r[1]), "first_at": r[2], "last_read": r[3], "unread": r[4], "last_ts": r[5]}
+                for r in rows]
+
+    def dm_newest_unread(self, peer: str) -> Optional[dict]:
+        with self._lock:
+            row = self._db.execute(
+                "SELECT m.id, m.text, m.created_at FROM dm_messages m JOIN dm_peers p ON p.peer=m.peer "
+                "WHERE m.peer=? AND m.sender=m.peer AND m.arrived_at>p.last_read "
+                "ORDER BY m.arrived_at DESC, m.id DESC LIMIT 1", (peer,)).fetchone()
+        return {"id": row[0], "text": row[1], "ts": row[2]} if row else None
+
+    def dm_mark_read(self, peer: str) -> None:
+        with self._lock:
+            self._db.execute("UPDATE dm_peers SET last_read=MAX(last_read, COALESCE("
+                             "(SELECT MAX(arrived_at) FROM dm_messages WHERE peer=?), 0)) WHERE peer=?", (peer, peer))
+            self._db.commit()
+
+    def dm_forget(self, peer: str) -> int:
+        """Delete a conversation from this computer (the other person's copy, and relays', are theirs)."""
+        with self._lock:
+            n = self._db.execute("DELETE FROM dm_messages WHERE peer=?", (peer,)).rowcount
+            self._db.execute("DELETE FROM dm_peers WHERE peer=?", (peer,))
+            self._db.commit()
+        return n
+
+    def dm_counts(self) -> dict:
+        with self._lock:
+            (msgs,) = self._db.execute("SELECT COUNT(*) FROM dm_messages").fetchone()
+            (peers,) = self._db.execute("SELECT COUNT(*) FROM dm_peers").fetchone()
+        return {"messages": msgs, "peers": peers}

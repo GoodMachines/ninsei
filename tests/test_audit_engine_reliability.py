@@ -35,7 +35,7 @@ class RoomPool(FakePool):
         self.subs = {}
         self.queries = []
 
-    async def subscribe(self, sub_id, filters, handler):
+    async def subscribe(self, sub_id, filters, handler, **kw):
         self.subs[sub_id] = filters
 
     async def unsubscribe(self, sub_id):
@@ -174,7 +174,7 @@ def test_store_keeps_arrival_times_and_upgrades_an_old_database(tmp_path):
 
 def _mini_relay(stored):
     """A relay that applies each filter's limit to what that filter matches, as real ones do."""
-    async def subscribe(sub_id, filters, handler):
+    async def subscribe(sub_id, filters, handler, **kw):
         for f in filters:
             if f["kinds"] != [KIND_ROOM]:
                 continue
@@ -213,6 +213,7 @@ async def test_every_joined_room_gets_its_own_history_filter_in_bounded_requests
     for r in rooms:
         e.store.save_room(r, {"id": r, "name": r})
     await e._resubscribe()
+    assert [f["kinds"] for f in e.pool.subs.pop("dm")] == [[1059]]  # the private-message request is its own, one filter
     hist = [f for fs in e.pool.subs.values() for f in fs if f["kinds"] == [KIND_ROOM]]
     assert sorted(f["#h"][0] for f in hist) == sorted([ROOM] + rooms) and all(len(f["#h"]) == 1 for f in hist)
     assert all(f["limit"] <= ROOM_HISTORY_LIMIT for f in hist)
@@ -220,7 +221,7 @@ async def test_every_joined_room_gets_its_own_history_filter_in_bounded_requests
     assert len(e.pool.subs) == 3 and "rooms" in e.pool.subs  # 21 rooms, 8 to a request
     for r in rooms:  # leave most of them: the requests that held only left rooms are closed
         await e.leave_room(r)
-    assert set(e.pool.subs) == {"rooms"}
+    assert set(e.pool.subs) - {"dm"} == {"rooms"}
 
 
 async def test_unhide_asks_for_each_rooms_history_separately(bare):
@@ -229,7 +230,7 @@ async def test_unhide_asks_for_each_rooms_history_separately(bare):
     e.store.save_room(BUSY, {"id": BUSY, "name": "busy"})
     e.events[BUSY] = {}
     await e.unhide_person("f" * 64)
-    asked = [f for fs in e.pool.queries for f in fs]
+    asked = [f for fs in e.pool.queries for f in fs if f["kinds"] == [KIND_ROOM]]   # (and one for gift wraps)
     assert sorted(f["#h"][0] for f in asked) == sorted([ROOM, BUSY]) and all(f["limit"] <= 300 for f in asked)
 
 

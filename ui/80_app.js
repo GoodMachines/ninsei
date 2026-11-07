@@ -53,6 +53,8 @@ function App(props) {
   const go = v => nav().set(v)
   // Settings is a view of this page on the dashboard and a page of Desktop's own Settings on Desktop (as in the Rail)
   const openSettings = () => { if (P.kind === 'dashboard') go('settings'); else P.openSettings() }
+  // "Message" on a person's card: their private conversation, in the centre
+  const openDm = pk => { store.setDm(pk); go('dm') }
   const embedded = !!props.embedded  // Desktop's room tab: the sidebar's Ninsei tab is the rail
   const snap = st.snap
 
@@ -68,7 +70,9 @@ function App(props) {
     const room = snap.room && snap.room.id === roomId ? snap.room : null
     const showRoom = view === 'room' && roomId
     let center
+    const dmPk = store.dm()
     if (view === 'hermes') center = jsx(LineView, { store, snap })
+    else if (view === 'dm') center = dmPk === DM_REQUESTS ? jsx(DmRequests, { store, snap }) : dmPk ? jsx(DmView, { store, snap, pk: dmPk, onPeople: togglePeople }, dmPk) : jsx(DmEmpty, {})
     else if (view === 'settings') center = jsx('div', { className: 'h-scroll', children: jsxs('div', { className: 'h-pane', children: [jsx('h1', { children: 'Settings' }, 'h'), jsx(SettingsForm, { store, snap, inset: true }, 's')] }) })
     else if (showRoom && room) center = jsx(RoomView, { store, snap, room, onPeople: togglePeople })
     else if (showRoom) center = jsx('div', { className: 'h-empty', children: 'Opening the room…' })
@@ -76,7 +80,7 @@ function App(props) {
     else center = jsx(Welcome, { store, snap, onLobby: () => go('lobby') })
 
     // ProfileLayer: a click on a name or face, in the room or the people column, opens that card
-    inner = jsx(RoomReactions, { snap, room: showRoom ? room : null, children: jsx(ProfileLayer, { room: showRoom ? room : null, snap, store, openSettings, children: jsxs('div', { className: 'h-grid', 'data-people': people ? 'open' : 'closed', 'data-embedded': embedded || undefined, children: [
+    inner = jsx(RoomReactions, { snap, room: showRoom ? room : null, children: jsx(ProfileLayer, { room: showRoom ? room : null, snap, store, openSettings, openDm, children: jsxs('div', { className: 'h-grid', 'data-people': people ? 'open' : 'closed', 'data-embedded': embedded || undefined, children: [
       !embedded && jsx('nav', { className: 'h-left', 'aria-label': 'Ninsei rooms', children: jsx(Rail, { store, snap, view, go, roomId }) }),
       jsxs('main', { className: 'h-center', children: [
         st.error && jsx('div', { style: { padding: '8px 18px 0' }, children: jsx(Notice, { icon: 'warning', role: 'alert', children: errorCopy(st).title + '. Showing the last state we had.' }) }),
@@ -90,7 +94,7 @@ function App(props) {
       jsxs('aside', { className: 'h-right', 'aria-label': 'People', ref: rightRef, children: [
         jsx('div', { className: 'h-right-bar', children: jsx(K.Button, { variant: 'ghost', size: 'icon', className: 'h-right-close', 'aria-label': 'Close people',
           onClick: closePeople, children: jsx(K.Icon, { name: 'close', size: 14 }) }) }),
-        view === 'hermes' ? jsx(LineAbout, { snap }) : room && showRoom ? jsx(People, { room, snap, store }) : jsx(MyAgentCard, { snap })
+        view === 'hermes' ? jsx(LineAbout, { snap }) : view === 'dm' ? jsx(DmAbout, {}) : room && showRoom ? jsx(People, { room, snap, store }) : jsx(MyAgentCard, { snap })
       ] })
     ] }) }) })
   }
@@ -232,6 +236,7 @@ function Rail(props) {
           jsxs('span', { className: 'h-count', title: r.online + ' online', children: [r.online || '', r.online > 0 && jsx('span', { className: 'h-sr', children: ' online' }, 's')] })
         ] }, r.id))
     ] }),
+    jsx(DmRail, { store, snap, view, go }),
     dialog === 'new' && jsx(NewRoomDialog, { store, snap, onClose: () => setDialog(''), onDone: id => { setDialog(''); open(id) } }),
     dialog === 'join' && jsx(JoinDialog, { store, onClose: () => setDialog(''), onDone: id => { setDialog(''); open(id) } })
   ] })

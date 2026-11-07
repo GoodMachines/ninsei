@@ -330,6 +330,7 @@ function createStore() {
   const listeners = new Set()
   let state = { snap: null, error: null, status: 0, loading: true }
   let room = P.prefs.get('room', '') || ''
+  let dmPk = P.prefs.get('dm', '') || ''   // the private conversation open (a person's key, or 'requests')
   let lastJson = ''
   let inflight = null
   let again = false
@@ -391,6 +392,15 @@ function createStore() {
       lastJson = ''
       refresh()
     },
+    dm: () => dmPk,
+    setDm(pk) {
+      pk = pk || ''
+      if (pk === dmPk) return
+      dmPk = pk
+      P.prefs.set('dm', pk)
+      state = Object.assign({}, state)  // a new object, so the page re-renders on the choice
+      emit()
+    },
     // a page or panel showing details: poll faster while it is mounted
     view() { views++; schedule(); return () => { views--; } },
     // a room is on screen until the returned function runs; its next snapshot marks it read
@@ -437,7 +447,9 @@ function cleanSnippet(s, n) {
 
 function mentionAlerts(store) {
   let seen = null
+  let dmSeen = null
   const told = {}
+  const dmTold = {}
   return store.subscribe(st => {
     const snap = st && st.snap
     if (!snap) return
@@ -454,10 +466,29 @@ function mentionAlerts(store) {
       if (P.osNotify) P.osNotify({ title, body: snippet, onActivate: () => { store.setRoom(r.id); nav().set('room') } })
     }
     seen = next
+    // Private messages go through the same door. The first snapshot only sets the baseline; after it, a
+    // conversation with more unread than before (or a brand-new one) that you aren't looking at is announced. The
+    // name is the engine's: a name someone else holds in a room arrives as a short key, never as the real name.
+    // A request (a stranger) is announced once, by name alone: their words stay unseen until you open it.
+    const dnext = {}
+    for (const t of (snap.dms && snap.dms.threads) || []) {
+      dnext[t.pk] = t.unread || 0
+      const lu = t.last_unread
+      const rose = dmSeen !== null && (t.pk in dmSeen ? t.unread > dmSeen[t.pk] : t.unread > 0)
+      if (!rose || !lu || dmTold[t.pk] === lu.id || (t.request && dmTold[t.pk])) continue
+      if (store.isShowing('dm:' + t.pk)) continue
+      dmTold[t.pk] = lu.id
+      const who = cleanSnippet(t.name, 32)
+      const title = t.request ? who + ' wants to message you' : t.impostor ? 'Someone not verified (' + who + ') sent you a private message' : who + ' sent you a private message'
+      const snippet = t.request ? '' : cleanSnippet(lu.text, 60)
+      P.toast('info', snippet ? title + ': "' + snippet + '"' : title)
+      if (P.osNotify) P.osNotify({ title, body: snippet || 'Open Ninsei to see it.', onActivate: () => { store.setDm(t.pk); nav().set('dm') } })
+    }
+    dmSeen = dnext
   })
 }
 
-// Which Ninsei view is showing (room, lobby, hermes, settings). One shared value, so in Desktop the
+// Which Ninsei view is showing (room, lobby, hermes, dm, settings). One shared value, so in Desktop the
 // sidebar's Ninsei tab and the room tab beside your chats stay in step. Remembered across launches.
 let NAV = null
 function nav() {
@@ -2616,7 +2647,7 @@ function ProfileLayer(props) {
   const close = useCallback(() => { shown.current = false; setWho(null) }, [])
   return jsxs(ProfileContext.Provider, { value: open, children: [
     props.children,
-    who && jsx(ProfileSheet, { who, room: props.room, snap: props.snap, store: props.store, openSettings: props.openSettings,
+    who && jsx(ProfileSheet, { who, room: props.room, snap: props.snap, store: props.store, openSettings: props.openSettings, openDm: props.openDm,
       opener, onClose: close, onOpen: open, key: who.pk })
   ] })
 }
@@ -2641,14 +2672,15 @@ function cardActions(who, found, snap) {
   const myPk = snap && snap.me && snap.me.pk
   const myAgent = snap && snap.me && snap.me.agent && snap.me.agent.pk
   const hide = (pk, name) => (typeof pk === 'string' && pk && pk !== myPk && pk !== myAgent ? { pk, name: String(name || 'them') } : null)
+  // Message: a private message goes person to person, so an agent's card offers its owner. Never to yourself.
   if (who.kind === 'agent' || found.agent) {
     const a = found.agent || {}
     const o = found.owner
-    if (a.yours || (myAgent && who.pk === myAgent)) return { edit: true, hide: null }
-    return { edit: false, hide: o && !o.you ? hide(o.pk, o.name) : null }
+    if (a.yours || (myAgent && who.pk === myAgent)) return { edit: true, hide: null, message: null }
+    return { edit: false, hide: o && !o.you ? hide(o.pk, o.name) : null, message: o && !o.you ? hide(o.pk, o.name) : null }
   }
   const p = found.person || {}
-  return { edit: false, hide: p.you ? null : hide(who.pk, p.name || who.name) }
+  return { edit: false, hide: p.you ? null : hide(who.pk, p.name || who.name), message: p.you ? null : hide(who.pk, p.name || who.name) }
 }
 
 function ProfileSheet(props) {
@@ -2726,6 +2758,12 @@ function ProfileSheet(props) {
     props.onClose()
     if (props.openSettings) props.openSettings()
   }
+  const messageThem = () => {
+    if (!act.message || !props.openDm) return
+    keepFocus.current = true
+    props.onClose()
+    props.openDm(act.message.pk)
+  }
   const hideThem = async () => {
     if (!act.hide || !props.store) return
     try {
@@ -2746,6 +2784,8 @@ function ProfileSheet(props) {
       body.card,
       jsxs('div', { className: 'h-profile-actions', children: [
         saveBtn, copyBtn,
+        act.message && props.openDm && jsx(K.Button, { variant: 'secondary', size: 'sm', onClick: messageThem, children: [jsx(K.Icon, { name: 'send', size: 13 }, 'i'),
+          jsx('span', { className: 'h-trunc', style: { maxWidth: 190 }, children: 'Message ' + act.message.name }, 't')] }, 'message'),
         act.edit && jsx(K.Button, { variant: 'ghost', size: 'sm', onClick: editFace, children: [jsx(K.Icon, { name: 'edit', size: 13 }, 'i'), 'Edit face'] }, 'edit'),
         act.hide && props.store && jsx(K.Button, { variant: 'ghost', size: 'sm', onClick: hideThem, children: [jsx(K.Icon, { name: 'eye-closed', size: 13 }, 'i'),
           jsx('span', { className: 'h-trunc', style: { maxWidth: 190 }, children: 'Hide ' + act.hide.name }, 't')] }, 'hide')
@@ -4491,6 +4531,8 @@ function mentionCandidates(room) {
 
 function Composer(props) {
   const { store, room, gameOn, reply, onCancelReply } = props
+  // dm: a private conversation ({ onSend, placeholder, max }): no @ list (your agent is not in it), no games, no replies
+  const dm = props.dm
   const [text, setText] = useState('')
   const [menu, setMenu] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -4499,7 +4541,7 @@ function Composer(props) {
   const [shut, setShut] = useState(-1)  // the '@' position the menu was dismissed at, with Escape
   const ta = useRef(null)
   const caretTo = useRef(null)
-  const cands = useMemo(() => mentionCandidates(room), [room.members])
+  const cands = useMemo(() => dm ? [] : mentionCandidates(room), [room.members, !!dm])
   const mq = mentionQuery(text, caret)
   const opts = mq && mq.at !== shut ? mentionMatches(cands, mq.q) : []
   const open = opts.length > 0
@@ -4519,7 +4561,10 @@ function Composer(props) {
     setBusy(true)
     setText('')
     const body = reply ? { room: room.id, text: t, reply: reply.id } : { room: room.id, text: t }
-    try { await store.post('/post', body); if (reply && onCancelReply) onCancelReply() } catch (_) { setText(t) }
+    try {
+      if (dm) await dm.onSend(t)
+      else { await store.post('/post', body); if (reply && onCancelReply) onCancelReply() }
+    } catch (_) { setText(t) }
     setBusy(false)
     ta.current && ta.current.focus()
   }
@@ -4549,12 +4594,13 @@ function Composer(props) {
     setMenu(false)
     try { await store.post('/game/start', { room: room.id, mode }, gameName(mode) + ' is starting') } catch (_) { /* toasted */ }
   }
-  return jsxs('div', { className: 'h-compose-box', style: { position: 'relative' }, children: [
+  return jsxs('div', { className: 'h-compose-box', style: { position: 'relative' }, 'data-private': dm ? true : undefined, children: [
     reply && jsxs('div', { className: 'h-replying', children: [
       jsx(K.Icon, { name: 'reply', size: 12 }),
       jsx('span', { className: 'h-trunc', children: jsxs(Fragment, { children: ['Replying to ', jsx('b', { children: reply.name }), jsx('span', { className: 'h-faint', children: ' · ' + reply.text })] }) }),
       jsx('button', { type: 'button', className: 'h-bar-btn', 'aria-label': 'Cancel reply', onClick: onCancelReply, children: jsx(K.Icon, { name: 'close', size: 12 }) })
     ] }),
+    dm && jsx(K.Icon, { name: 'lock', size: 13 }),
     open && jsx('div', { className: 'h-ac', id: listId, role: 'listbox', 'aria-label': 'Mention someone', children: opts.map((c, i) =>
       jsxs('div', { id: listId + '-' + i, role: 'option', className: 'h-ac-opt', 'aria-selected': i === sel,
         onMouseDown: e => { e.preventDefault(); choose(c) }, onMouseEnter: () => setPick(i), children: [
@@ -4562,12 +4608,12 @@ function Composer(props) {
           jsx('b', { className: 'h-trunc', children: c.name }),
           jsx('span', { className: 'h-ac-sub h-trunc', children: c.sub })
         ] }, c.pk)) }),
-    jsx('textarea', { ref: ta, rows: 1, value: text, placeholder: 'Message ' + room.name + ' (type @ to mention someone)', 'aria-label': 'Message',
-      role: 'combobox', 'aria-autocomplete': 'list', 'aria-expanded': open, 'aria-controls': open ? listId : undefined,
+    jsx('textarea', { ref: ta, rows: 1, value: text, placeholder: dm ? dm.placeholder : 'Message ' + room.name + ' (type @ to mention someone)', 'aria-label': dm ? dm.placeholder : 'Message', maxLength: dm ? dm.max : undefined,
+      role: dm ? undefined : 'combobox', 'aria-autocomplete': dm ? undefined : 'list', 'aria-expanded': dm ? undefined : open, 'aria-controls': open ? listId : undefined,
       'aria-activedescendant': open ? listId + '-' + sel : undefined,
       onChange: e => { setText(e.target.value); track(e); setPick(0); if (!mentionQuery(e.target.value, e.target.selectionStart)) setShut(-1) }, onSelect: track, onClick: track, onKeyUp: e => { if (!open || !/Arrow(Up|Down)/.test(e.key)) track(e) },
       onKeyDown: onKey }),
-    jsxs('div', { style: { position: 'relative' }, children: [
+    !dm && jsxs('div', { style: { position: 'relative' }, children: [
       jsx(K.Tip, { label: 'Games', children: jsx(K.Button, { variant: 'ghost', size: 'icon', 'aria-label': 'Games', 'aria-expanded': menu,
         onClick: () => setMenu(!menu), children: jsx(K.Icon, { name: 'game', size: 15 }) }) }),
       menu && jsx(GamesMenu, { onClose: () => setMenu(false), onStart: startGame, gameOn })
@@ -4874,6 +4920,194 @@ function LineAbout(props) {
       jsxs('div', { className: 'h-row', children: [jsx(Face, { face: a.face, pk: a.pk, state: a.state, size: 24, name: a.name }), jsx('b', { children: a.name || 'Your room agent' })] }),
       jsx('div', { className: 'h-faint h-small', children: 'Chats in rooms. No tools, no memory, no files: a stranger can’t make it do anything that matters.' })
     ] })
+  ] })
+}
+
+// ===== ui/57_dm.js ==============================================================================
+
+// ---------------------------------------------------------------------------------------------
+// private messages: person to person (NIP-17). Your agent is not in this view and never sees it:
+// the engine keeps these in their own tables, and no model call is ever made with their words.
+// A sender you have never met in a room waits under Requests until you accept or hide them.
+// ---------------------------------------------------------------------------------------------
+
+const DM_REQUESTS = 'requests'  // store.dm() value that opens the Requests list instead of one conversation
+
+// The sidebar's "Direct messages": the conversations you have, then Requests (if any) as one row.
+function DmRail(props) {
+  const { store, snap, view, go } = props
+  const dms = snap.dms || { threads: [], unread: 0, requests: 0 }
+  const cur = view === 'dm' ? store.dm() : ''
+  const list = (dms.threads || []).filter(t => !t.request)
+  const open = pk => { store.setDm(pk); go('dm') }
+  return jsxs(Fragment, { children: [
+    jsx('div', { className: 'h-navhead', children: jsx('span', { className: 'h-sec', children: 'Direct messages' }) }),
+    jsxs('div', { className: 'h-nav', children: [
+      list.length === 0 && !dms.requests && jsx('div', { className: 'h-faint h-small', style: { padding: '2px 8px' }, children: 'Open someone’s card and press Message.' }),
+      list.map(t => jsxs('button', { type: 'button', className: 'h-navrow', 'data-on': cur === t.pk, 'aria-current': cur === t.pk ? 'page' : undefined,
+        onClick: () => open(t.pk), children: [
+          jsx(K.Icon, { name: 'lock', size: 12 }),
+          jsx('span', { className: 'h-grow h-trunc', style: { fontWeight: t.unread ? 600 : 400 }, children: t.name }),
+          t.unread > 0 && jsx('span', { className: 'h-dot', 'aria-label': t.unread + (t.unread === 1 ? ' unread private message' : ' unread private messages') })
+        ] }, t.pk)),
+      dms.requests > 0 && jsxs('button', { type: 'button', className: 'h-navrow', 'data-on': cur === DM_REQUESTS, onClick: () => open(DM_REQUESTS), children: [
+        jsx(K.Icon, { name: 'shield', size: 12 }),
+        jsx('span', { className: 'h-grow h-trunc', children: 'Requests' }),
+        jsx('span', { className: 'h-mentions', 'aria-label': dms.requests + (dms.requests === 1 ? ' message request' : ' message requests'), children: dms.requests > 9 ? '9+' : dms.requests })
+      ] })
+    ] })
+  ] })
+}
+
+// One conversation, loaded from /dm. It reloads when the summary's `rev` moves (a message arrived or went), and
+// when the window regains focus, so a conversation that came in while you were away is marked read when you look.
+function useDmThread(store, pk, rev) {
+  const [data, setData] = useState(null)
+  const [err, setErr] = useState('')
+  useEffect(() => (store.showing ? store.showing('dm:' + pk) : undefined), [pk])
+  const load = useCallback(() => {
+    const read = store.isShowing ? store.isShowing('dm:' + pk) : true
+    return P.rest('/dm?pk=' + encodeURIComponent(pk) + (read ? '' : '&read=0')).then(d => { setData(d); setErr('') }, e => setErr(errText(e)))
+  }, [pk])
+  useEffect(() => { load() }, [pk, rev])
+  useEffect(() => P.listen(window, 'focus', load), [pk])
+  return { data, err, load }
+}
+
+function DmView(props) {
+  const { store, snap, pk } = props
+  const { data, err, load } = useDmThread(store, pk, snap.dms ? snap.dms.rev : 0)
+  const scroller = useRef(null)
+  const stick = useRef(true)
+  const seen = useRef(null)
+  const [asking, setAsking] = useState(false)
+  const msgs = (data && data.messages) || []
+  if (data && seen.current === null) seen.current = new Set(msgs.map(m => m.id))
+  const fresh = id => {
+    if (!seen.current || seen.current.has(id)) return false
+    seen.current.add(id)
+    return true
+  }
+  const onScroll = () => {
+    const el = scroller.current
+    if (el) stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80
+  }
+  const lastId = msgs.length ? msgs[msgs.length - 1].id : ''
+  useLayoutEffect(() => {
+    const el = scroller.current
+    if (el && stick.current) el.scrollTop = el.scrollHeight
+  }, [msgs.length, lastId])
+  const name = (data && data.name) || 'Someone'
+  const send = async text => {
+    await store.post('/dm/send', { pk, text })
+    stick.current = true
+    await load()
+  }
+  const accept = async () => { try { await store.post('/dm/accept', { pk }); load() } catch (_) { /* toasted */ } }
+  const hide = async () => {
+    try {
+      await store.post('/people/hide', { pk, name }, 'Hid ' + name + '. Their private messages are gone and new ones are dropped. Undo in Settings.')
+      store.setDm('')
+      nav().set('lobby')
+    } catch (_) { /* toasted */ }
+  }
+  const forget = async () => {
+    setAsking(false)
+    try { await store.post('/dm/forget', { pk }, 'Conversation deleted from this computer'); store.setDm(''); nav().set('lobby') } catch (_) { /* toasted */ }
+  }
+  const items = groupItems(msgs, 0)
+  const composeRoom = useMemo(() => ({ id: 'dm-' + pk, name, members: [] }), [pk, name])
+  const dmSend = useMemo(() => ({ onSend: send, placeholder: 'Message ' + name + ' (private)', max: 2000 }), [pk, name])
+  return jsxs(Fragment, { children: [
+    jsxs('div', { className: 'h-head', children: [
+      jsx(Initial, { name }),
+      jsxs('div', { className: 'h-grow h-col', style: { gap: 2, minWidth: 0 }, children: [
+        jsxs('div', { className: 'h-row', children: [
+          jsx('h2', { className: 'h-trunc', children: name }),
+          jsxs('span', { className: 'h-private', children: [jsx(K.Icon, { name: 'lock', size: 11 }), 'private'] }),
+          data && data.impostor && jsx(NotVerified, { name })
+        ] }),
+        jsx('div', { className: 'h-faint h-small h-trunc', children: 'Only the two of you can read this. Your agent never sees it.' })
+      ] }),
+      props.onPeople && jsx(K.Button, { variant: 'ghost', size: 'icon', 'aria-label': 'About private messages', onClick: props.onPeople, className: 'h-peoplebtn',
+        children: jsx(K.Icon, { name: 'shield', size: 14 }) }),
+      jsx(K.Tip, { label: 'Delete this conversation from this computer', children: jsx(K.Button, { variant: 'ghost', size: 'icon', 'aria-label': 'Delete this conversation',
+        onClick: () => setAsking(true), children: jsx(K.Icon, { name: 'trash', size: 14 }) }) })
+    ] }),
+    data && data.request && jsx('div', { style: { padding: '8px 18px 0' }, children: jsx(Notice, { icon: 'shield', role: 'status', children: jsxs('div', { className: 'h-col', style: { gap: 8 }, children: [
+      jsx('span', { children: name + ' isn’t someone you’ve met in a room. Reply or press Accept to move this conversation to your list. Hide drops it, and everything they send later.' }),
+      jsxs('div', { className: 'h-actions', children: [
+        jsx(K.Button, { variant: 'primary', size: 'sm', onClick: accept, children: 'Accept' }, 'a'),
+        jsx(K.Button, { variant: 'ghost', size: 'sm', onClick: hide, children: 'Hide ' + name }, 'h')
+      ] })
+    ] }) }) }),
+    jsx('div', { className: 'h-scroll', ref: scroller, onScroll, children: jsxs('div', { className: 'h-timeline', role: 'log', 'aria-live': 'polite', 'aria-label': 'Private messages with ' + name, children: [
+      err && jsx(Notice, { icon: 'warning', role: 'alert', children: err }),
+      !data && !err && jsx('div', { className: 'h-empty', children: 'Opening the conversation…' }),
+      data && msgs.length === 0 && jsxs('div', { className: 'h-empty', children: [
+        jsx(K.Icon, { name: 'lock', size: 22 }),
+        jsx('b', { children: 'Say hello to ' + name }),
+        jsx('div', { style: { maxWidth: 420 }, children: 'Only the two of you can read what you write here. It is encrypted on its way, and your agent never sees it.' })
+      ] }),
+      items.map(it => it.kind === 'msg' && jsx(DmItem, { it, animate: fresh(it.key) }, it.key))
+    ] }) }),
+    jsx('div', { className: 'h-composer', children: jsx(Composer, { store, room: composeRoom, snap, dm: dmSend }) }),
+    jsx(Modal, { open: asking, onClose: () => setAsking(false), title: 'Delete this conversation?',
+      description: 'It is removed from this computer only. ' + name + ' keeps their copy, and a new message from them starts it again.',
+      footer: [
+        jsx(K.Button, { variant: 'ghost', onClick: () => setAsking(false), children: 'Keep it' }, 'c'),
+        jsx(K.Button, { variant: 'danger', onClick: forget, children: 'Delete' }, 'd')
+      ] })
+  ] })
+}
+
+function DmItem(props) {
+  const ref = useEnter(props.animate)
+  return jsx('div', { ref, children: jsx(Message, { m: props.it.m, first: props.it.first, book: {} }) })
+}
+
+// Strangers' first messages. What they wrote stays unseen until you open the conversation.
+function DmRequests(props) {
+  const { store, snap } = props
+  const reqs = ((snap.dms && snap.dms.threads) || []).filter(t => t.request)
+  const open = pk => store.setDm(pk)
+  const accept = async t => { try { await store.post('/dm/accept', { pk: t.pk }, t.name + ' accepted'); } catch (_) { /* toasted */ } }
+  const hide = async t => { try { await store.post('/people/hide', { pk: t.pk, name: t.name }, 'Hid ' + t.name + '. Undo in Settings.') } catch (_) { /* toasted */ } }
+  return jsx('div', { className: 'h-scroll', children: jsxs('div', { className: 'h-pane', style: { maxWidth: 560 }, children: [
+    jsx('h1', { children: 'Message requests' }),
+    jsx('div', { className: 'h-muted', children: 'People you haven’t met in a room. Their words stay hidden until you open the conversation. Accepting moves it to your list; hiding drops it and anything they send later.' }),
+    reqs.length === 0 && jsx('div', { className: 'h-faint', style: { marginTop: 14 }, children: 'No requests right now.' }),
+    jsx('div', { className: 'h-list', children: reqs.map(t => jsxs('div', { className: 'h-row', style: { gap: 10, padding: '8px 0' }, children: [
+      jsx(Initial, { name: t.name }),
+      jsxs('div', { className: 'h-grow h-col', style: { gap: 2, minWidth: 0 }, children: [
+        jsx('b', { className: 'h-trunc', children: t.name }),
+        jsx('span', { className: 'h-faint h-small', children: (t.unread || 1) + (t.unread === 1 ? ' message · ' : ' messages · ') + fmtAgo(t.ts) })
+      ] }),
+      jsx(K.Button, { variant: 'secondary', size: 'sm', onClick: () => open(t.pk), children: 'Open' }),
+      jsx(K.Button, { variant: 'primary', size: 'sm', onClick: () => accept(t), children: 'Accept' }),
+      jsx(K.Button, { variant: 'ghost', size: 'sm', 'aria-label': 'Hide ' + t.name, onClick: () => hide(t), children: 'Hide' })
+    ] }, t.pk)) })
+  ] }) })
+}
+
+// Right rail while private messages are open: exactly what is and isn't private.
+function DmAbout() {
+  const row = (title, body) => jsxs('div', { className: 'h-mine', style: { marginTop: 0 }, children: [
+    jsx('b', { children: title }), jsx('div', { className: 'h-faint h-small', children: body })
+  ] })
+  return jsxs('div', { className: 'h-col', style: { gap: 10 }, children: [
+    jsx('div', { className: 'h-sec', style: { padding: '0 4px' }, children: 'What is private' }),
+    row('Encrypted in transit', 'Relays carry a sealed message. They can’t read it or tell who sent it, but they can see that some key received one.'),
+    row('Stored on this computer', 'Readable here, unencrypted, by anyone who can open your account, like your keys. Delete a conversation to remove it.'),
+    row('Never your agent', 'Your agent can’t send, read or be shown a private message, and no model is ever asked about one.')
+  ] })
+}
+
+function DmEmpty() {
+  return jsxs('div', { className: 'h-empty', children: [
+    jsx(K.Icon, { name: 'lock', size: 22 }),
+    jsx('b', { children: 'Private messages' }),
+    jsx('div', { style: { maxWidth: 420 }, children: 'Open anyone’s card in a room and press Message. Only the two of you can read it, and your agent never sees it.' })
   ] })
 }
 
@@ -5592,6 +5826,8 @@ function App(props) {
   const go = v => nav().set(v)
   // Settings is a view of this page on the dashboard and a page of Desktop's own Settings on Desktop (as in the Rail)
   const openSettings = () => { if (P.kind === 'dashboard') go('settings'); else P.openSettings() }
+  // "Message" on a person's card: their private conversation, in the centre
+  const openDm = pk => { store.setDm(pk); go('dm') }
   const embedded = !!props.embedded  // Desktop's room tab: the sidebar's Ninsei tab is the rail
   const snap = st.snap
 
@@ -5607,7 +5843,9 @@ function App(props) {
     const room = snap.room && snap.room.id === roomId ? snap.room : null
     const showRoom = view === 'room' && roomId
     let center
+    const dmPk = store.dm()
     if (view === 'hermes') center = jsx(LineView, { store, snap })
+    else if (view === 'dm') center = dmPk === DM_REQUESTS ? jsx(DmRequests, { store, snap }) : dmPk ? jsx(DmView, { store, snap, pk: dmPk, onPeople: togglePeople }, dmPk) : jsx(DmEmpty, {})
     else if (view === 'settings') center = jsx('div', { className: 'h-scroll', children: jsxs('div', { className: 'h-pane', children: [jsx('h1', { children: 'Settings' }, 'h'), jsx(SettingsForm, { store, snap, inset: true }, 's')] }) })
     else if (showRoom && room) center = jsx(RoomView, { store, snap, room, onPeople: togglePeople })
     else if (showRoom) center = jsx('div', { className: 'h-empty', children: 'Opening the room…' })
@@ -5615,7 +5853,7 @@ function App(props) {
     else center = jsx(Welcome, { store, snap, onLobby: () => go('lobby') })
 
     // ProfileLayer: a click on a name or face, in the room or the people column, opens that card
-    inner = jsx(RoomReactions, { snap, room: showRoom ? room : null, children: jsx(ProfileLayer, { room: showRoom ? room : null, snap, store, openSettings, children: jsxs('div', { className: 'h-grid', 'data-people': people ? 'open' : 'closed', 'data-embedded': embedded || undefined, children: [
+    inner = jsx(RoomReactions, { snap, room: showRoom ? room : null, children: jsx(ProfileLayer, { room: showRoom ? room : null, snap, store, openSettings, openDm, children: jsxs('div', { className: 'h-grid', 'data-people': people ? 'open' : 'closed', 'data-embedded': embedded || undefined, children: [
       !embedded && jsx('nav', { className: 'h-left', 'aria-label': 'Ninsei rooms', children: jsx(Rail, { store, snap, view, go, roomId }) }),
       jsxs('main', { className: 'h-center', children: [
         st.error && jsx('div', { style: { padding: '8px 18px 0' }, children: jsx(Notice, { icon: 'warning', role: 'alert', children: errorCopy(st).title + '. Showing the last state we had.' }) }),
@@ -5629,7 +5867,7 @@ function App(props) {
       jsxs('aside', { className: 'h-right', 'aria-label': 'People', ref: rightRef, children: [
         jsx('div', { className: 'h-right-bar', children: jsx(K.Button, { variant: 'ghost', size: 'icon', className: 'h-right-close', 'aria-label': 'Close people',
           onClick: closePeople, children: jsx(K.Icon, { name: 'close', size: 14 }) }) }),
-        view === 'hermes' ? jsx(LineAbout, { snap }) : room && showRoom ? jsx(People, { room, snap, store }) : jsx(MyAgentCard, { snap })
+        view === 'hermes' ? jsx(LineAbout, { snap }) : view === 'dm' ? jsx(DmAbout, {}) : room && showRoom ? jsx(People, { room, snap, store }) : jsx(MyAgentCard, { snap })
       ] })
     ] }) }) })
   }
@@ -5771,6 +6009,7 @@ function Rail(props) {
           jsxs('span', { className: 'h-count', title: r.online + ' online', children: [r.online || '', r.online > 0 && jsx('span', { className: 'h-sr', children: ' online' }, 's')] })
         ] }, r.id))
     ] }),
+    jsx(DmRail, { store, snap, view, go }),
     dialog === 'new' && jsx(NewRoomDialog, { store, snap, onClose: () => setDialog(''), onDone: id => { setDialog(''); open(id) } }),
     dialog === 'join' && jsx(JoinDialog, { store, onClose: () => setDialog(''), onDone: id => { setDialog(''); open(id) } })
   ] })

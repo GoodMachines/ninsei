@@ -206,7 +206,7 @@ export default {
       const v = nav().get()
       const snap = store.get().snap
       const r = v === 'room' && snap && (snap.rooms || []).find(x => x.id === store.room())
-      return r ? '# ' + r.name : v === 'lobby' ? 'Ninsei Lobby' : v === 'hermes' ? 'Your Hermes' : 'Ninsei'
+      return r ? '# ' + r.name : v === 'lobby' ? 'Ninsei Lobby' : v === 'hermes' ? 'Your Hermes' : v === 'dm' ? 'Private messages' : 'Ninsei'
     }
     // Room-sized on a desktop, but never wider than the screen: the Webapp on a phone is ~375 px wide.
     const TAB_MIN_WIDTH = 'min(26rem, 100vw)'

@@ -24,7 +24,7 @@ import unicodedata
 from pathlib import Path
 from typing import Any, Callable, Iterable, Optional
 
-from . import game, nip44, nostr
+from . import dm, game, nip44, nostr
 from .brain import Brain, BudgetExhausted, Line
 from .relays import RelayPool
 from .store import EVENT_ROOM_CAP, Store, today
@@ -99,6 +99,14 @@ SEARCH_CONTEXT = 3         # messages shown on each side of a search result that
 QUOTE_CHARS = 120          # how much of the replied-to message a quote carries
 ROOM_HISTORY_LIMIT = 300   # history events asked of the relays per room, and per room, not across all rooms
 HISTORY_FILTERS_PER_SUB = 8  # filters in one REQ, of any kind (relays cap the filters in a request)
+DM_QUEUE_MAX = 400         # gift wraps waiting to be opened; more than this are dropped unread (a flood)
+DM_HISTORY_LIMIT = 400     # gift wraps asked of each relay when subscribing (the newest)
+DM_SINCE_MARGIN = 3 * 86400  # wraps are dated up to 2 days before they were sent: ask this far before "last online"
+DM_PACE_S = 0.05           # between wraps the worker opens: a flood of them costs a fraction of one core
+DM_SEND_PER_MIN = 10       # private messages one install sends a minute (each is two wraps)
+DM_SNIPPET = 60            # how much of a new private message the sidebar carries, for the alert
+DM_THREAD_MESSAGES = 200   # messages of one conversation the UI loads
+DM_SEEN_MEMORY = 4000      # wrap ids remembered in memory, for the ones not recorded on disk (hidden senders)
 NAME_IDLE_EVICT = 3 * 86400  # when the registry is full, holders not seen for this long make room
 # An agent whose name is a short or everyday word would "be named" in every other message, which
 # would silence every other agent (they skip messages that name someone else's agent).
@@ -516,6 +524,13 @@ class Engine:
         self._name_tentative: dict[str, set] = {}
         self._starting_games: set[str] = set()   # rooms where start_tales is between its checks and its start
         self._room_subs: set[str] = set()        # subscription ids held for the joined rooms' history
+        # private messages: gift wraps wait in a bounded queue and one worker opens them, on a thread
+        self._dm_queue: Optional[asyncio.Queue] = None
+        self._dm_queued: set[str] = set()        # wrap ids in the queue or being opened
+        self._dm_seen: dict[str, None] = {}      # wrap ids already handled this run (bounded)
+        self._dm_rev = 0                         # moves whenever a private message or conversation changes
+        self._dm_dropped = False                 # the queue overflowed: don't move `dm_since` this run
+        self._dm_busy = False
 
     # ============================================================================================
     # lifecycle and thread bridge
@@ -741,12 +756,25 @@ class Engine:
             for e in self.events[room].values():
                 hs[e["pubkey"]] = max(hs.get(e["pubkey"], 0), e["created_at"])
             self.topics[room] = TopicTracker()
-        self.pool = RelayPool(self.relays(), outbox=self.store)
+        self.pool = self._new_pool()
         self.pool.start()
+        self._dm_queue = asyncio.Queue(maxsize=DM_QUEUE_MAX)
+        self._spawn(self._dm_worker())
         await self._resubscribe()
         self._spawn(self._presence_loop())
         self._spawn(self._watch_builds())
         self._spawn(self.ensure_commons())
+
+    def _new_pool(self) -> RelayPool:
+        pool = RelayPool(self.relays(), outbox=self.store)
+        pool.set_auth(self._login_event)   # asked only for the private-message subscription (see relays.py)
+        return pool
+
+    def _login_event(self, url: str, challenge: str) -> dict:
+        """NIP-42: the answer to a relay's challenge, signed by the PERSON key (the key private messages are
+        wrapped to). Ephemeral kind 22242; it is sent to that one relay only and never published."""
+        return nostr.build_event(self._identity()["person_sk"], 22242, "",
+                                 [["relay", url], ["challenge", challenge]])
 
     @staticmethod
     def _meta_filters(rooms: dict) -> list[dict]:
@@ -773,7 +801,21 @@ class Engine:
         messages, offers and game events from the gap never arrive."""
         return [{"kinds": [KIND_ROOM], "#h": [r], "since": since, "limit": limit} for r in rooms]
 
+    async def _resubscribe_dm(self) -> None:
+        """The private-message subscription: gift wraps addressed to my person key. A REQ of its own, never
+        chunked in with the rooms' filters: a relay that closes it with "auth-required" (damus) must not take
+        a room's history down with it, and it never has more than the one filter. Only once set up."""
+        if not self.settings()["onboarded"]:
+            await self.pool.unsubscribe("dm")
+            return
+        flt: dict = {"kinds": [dm.KIND_WRAP], "#p": [self._identity()["person_pk"]], "limit": DM_HISTORY_LIMIT}
+        since = self.store.get("dm_since")
+        if isinstance(since, (int, float)) and not isinstance(since, bool) and since > 0:
+            flt["since"] = max(0, int(since) - DM_SINCE_MARGIN)
+        await self.pool.subscribe("dm", [flt], self._on_dm_wrap, resume=False, needs_auth=True)
+
     async def _resubscribe(self) -> None:
+        await self._resubscribe_dm()
         joined = self.store.rooms()
         rooms = list(joined)
         if not rooms:
@@ -804,7 +846,7 @@ class Engine:
     async def reconnect(self) -> None:
         if self.pool:
             await self.pool.stop()
-        self.pool = RelayPool(self.relays(), outbox=self.store)
+        self.pool = self._new_pool()
         self.pool.start()
         await self._resubscribe()
         self._bump()
@@ -2823,6 +2865,8 @@ class Engine:
             for apk in [a for a, p in pres.items() if p.get("owner") == pk]:
                 pres.pop(apk, None)
         self.lobby = {**self.lobby, "people": [p for p in self.lobby.get("people", []) if p["pk"] != pk]}
+        self.store.dm_forget(pk)   # their private messages go too, and new ones are dropped unopened
+        self._dm_rev += 1
         self._bump()
         return {"hidden": len(h)}
 
@@ -2840,6 +2884,14 @@ class Engine:
                 hist += await self.pool.query(filters[i:i + HISTORY_FILTERS_PER_SUB], timeout=4)
             for ev in hist:
                 await self._on_event(ev, "history")
+        if self.settings()["onboarded"]:   # what they sent while hidden was never opened or recorded: ask again
+            self._dm_seen.clear()
+            try:
+                for ev in await self.pool.query([{"kinds": [dm.KIND_WRAP], "#p": [self._identity()["person_pk"]],
+                                                  "limit": DM_HISTORY_LIMIT}], timeout=4):
+                    await self._on_dm_wrap(ev, "history")
+            except Exception:
+                log.exception("ninsei: could not ask the relays for private messages")
         self._bump()
         return {"hidden": len(h)}
 
@@ -2978,6 +3030,7 @@ class Engine:
     async def _presence_loop(self) -> None:
         while True:
             await self._presence_once()
+            self._dm_touch()
             await asyncio.sleep(PRESENCE_EVERY)
 
     def _beat_soon(self) -> None:
@@ -3124,6 +3177,244 @@ class Engine:
         self._queue_event(req)
         self._spawn(self.pool.publish(req))
         return {"id": ev["id"]}
+
+    # ============================================================================================
+    # private messages (NIP-17), person to person
+    #
+    # People only. A private message is never an event in a room, never in a transcript, never seen by the
+    # agent or a model: it lives in its own tables, and this section is the only code that touches them
+    # besides the routes that show them to the owner. Wraps arrive on their own subscription, wait in a
+    # bounded queue, and one worker opens them (see dm.py for every check).
+    # ============================================================================================
+    async def _on_dm_wrap(self, ev: dict, _src: str) -> None:
+        """A gift wrap from a relay. Only cheap checks here (shape, size, already handled); the crypto runs in
+        the worker, at its own pace, so a flood of wraps can't stall the relay connection or the engine."""
+        if self._dm_queue is None or not dm.wrap_shape_ok(ev):
+            return
+        wid = ev["id"]
+        if wid in self._dm_seen or wid in self._dm_queued or self.store.dm_wrap_seen(wid):
+            return
+        try:
+            self._dm_queue.put_nowait(ev)
+        except asyncio.QueueFull:
+            self._dm_dropped = True   # unread and unrecorded: a restart asks the relays again
+            return
+        self._dm_queued.add(wid)
+
+    async def _dm_worker(self) -> None:
+        while True:
+            ev = await self._dm_queue.get()
+            self._dm_busy = True
+            try:
+                await self._dm_process(ev)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                log.exception("ninsei: a private message could not be handled")
+            finally:
+                self._dm_queued.discard(ev.get("id"))
+                self._dm_busy = bool(self._dm_queue.qsize())
+            await asyncio.sleep(DM_PACE_S)
+
+    def _dm_handled(self, wid: Any, record: bool = True) -> None:
+        """This wrap needs no second look. Recorded on disk, so a restart or a relay replaying its history costs one
+        lookup; a hidden sender's is remembered in memory only, so unhiding them can still bring theirs back."""
+        if not isinstance(wid, str):
+            return
+        if record:
+            self.store.dm_wrap_mark(wid)
+        self._dm_seen[wid] = None
+        while len(self._dm_seen) > DM_SEEN_MEMORY:
+            self._dm_seen.pop(next(iter(self._dm_seen)))
+
+    async def _dm_process(self, ev: Any) -> str:
+        """Open one gift wrap and file what is in it. Returns the verdict (dm.OK or why it was dropped)."""
+        wid = ev.get("id") if isinstance(ev, dict) else None
+        ident = self._identity()
+        hidden = frozenset(self._hidden)
+        verdict, msg = await asyncio.to_thread(dm.unwrap, ident["person_sk"], ident["person_pk"], ev, hidden.__contains__)
+        if verdict == dm.HIDDEN:
+            self._dm_handled(wid, record=False)
+            return verdict
+        if verdict != dm.OK:
+            self._dm_handled(wid)
+            return verdict
+        sender, peer = msg["sender"], msg["peer"]
+        mine = sender == ident["person_pk"]
+        if peer in self._hidden:   # hidden while it was being opened, or my own copy of a message to someone I hid
+            self._dm_handled(wid, record=False)
+            return dm.HIDDEN
+        now = time.time()
+        created = max(0, min(msg["created_at"], int(now)))   # a date ahead of us would pin it to the bottom
+        res = self.store.dm_add(id=msg["id"], peer=peer, sender=sender, text=msg["text"], created_at=created,
+                                arrived_at=now, accepted=mine or self._dm_known(peer))
+        self._dm_handled(wid)
+        if res == "added":
+            self._dm_rev += 1
+            self._bump()
+        return verdict
+
+    def _dm_touch(self) -> None:
+        """Called every minute while the engine runs: if the private-message subscription is up and everything
+        it delivered has been opened, anything a relay holds for me older than now was handled, so the next start
+        may ask from here (less the margin). Never moved after the queue overflowed."""
+        if self._dm_dropped or self._dm_busy or self._dm_queue is None or self._dm_queue.qsize() or not self.pool:
+            return
+        if not self.settings()["onboarded"] or self.pool.eose_count("dm") < 1:
+            return
+        self.store.set("dm_since", int(time.time()))
+
+    def _dm_book(self, pks: set) -> dict[str, dict]:
+        """What rooms say about these people: {pk: {"name", "known", "flag"}}. `known` is "seen in a room I'm in":
+        they posted something besides a bare join, or their agent showed up there; a bare join earns nothing, so
+        joining Commons once is not a way past Requests. `flag` is the impostor flag the room would show on them,
+        and a flagged key is never `known`. Names come from the room's own name book, never from a message."""
+        out: dict[str, dict] = {}
+        if not pks:
+            return out
+        latest: dict[str, tuple] = {}
+        seen: set[str] = set()
+        for room, evs in self.events.items():
+            for e in evs.values():
+                pk = e["pubkey"]
+                if pk not in pks or e["kind"] != KIND_ROOM:
+                    continue
+                c = self._content(e)
+                if c.get("t") in SILENT_TYPES:
+                    continue
+                if c.get("t") != "join":
+                    seen.add(pk)
+                if pk not in latest or e["created_at"] > latest[pk][0]:
+                    latest[pk] = (e["created_at"], room)
+        for room, pres in self.presence.items():
+            for p in pres.values():
+                owner = p.get("owner")
+                if owner in pks:
+                    seen.add(owner)
+                    latest.setdefault(owner, (0, room))
+        whos: dict[str, dict] = {}
+        for pk in pks:
+            name, flag = "", None
+            if pk in latest:
+                room = latest[pk][1]
+                who = whos.get(room) or whos.setdefault(room, self._who(room))
+                name = who["person"].get(pk, "")
+                flag = self._flag(who, pk, name, None, "", True) if name else None
+            out[pk] = {"name": name, "known": pk in seen and not flag and pk not in self._hidden, "flag": flag}
+        return out
+
+    def _dm_known(self, pk: str) -> bool:
+        return bool((self._dm_book({pk}).get(pk) or {}).get("known"))
+
+    def _dm_label(self, pk: str, info: dict) -> str:
+        """The name to show for a key: the room's name for it, unless someone else holds that name (then the
+        short key, as the room's own views do), and the short key when no room has named them."""
+        return info["name"] if info["name"] and not info["flag"] else _short(pk)
+
+    def dm_summary(self) -> dict:
+        """The sidebar's view of private messages, small enough for every /state snapshot: who, how many are
+        unread, and (for an alert) the start of the newest unread message, except from a request, whose words
+        a stranger chose and nobody has agreed to see yet."""
+        threads = self.store.dm_threads()
+        book = self._dm_book({t["peer"] for t in threads})
+        rows, unread, requests = [], 0, 0
+        for t in threads:
+            pk = t["peer"]
+            info = book.get(pk) or {"name": "", "known": False, "flag": None}
+            if not t["accepted"] and info["known"]:
+                self.store.dm_accept(pk)   # met in a room: a yes that stays, even after the room's history ages out
+                t["accepted"] = True
+            request = not t["accepted"]
+            row = {"pk": pk, "name": self._dm_label(pk, info), "impostor": bool(info["flag"]), "request": request,
+                   "unread": t["unread"], "ts": t["last_ts"]}
+            if t["unread"]:
+                nu = self.store.dm_newest_unread(pk)
+                if nu:
+                    row["last_unread"] = {"id": nu["id"], "ts": nu["ts"], "text": "" if request else nu["text"][:DM_SNIPPET]}
+            if request:
+                requests += 1
+            else:
+                unread += t["unread"]
+            rows.append(row)
+        return {"threads": rows, "unread": unread, "requests": requests, "rev": self._dm_rev}
+
+    def dm_thread(self, pk: str, read: bool = True) -> dict:
+        """One conversation for the DM view. `read` marks it read (the UI passes false when it isn't on screen)."""
+        pk = str(pk or "").lower()
+        if not re.fullmatch(r"[0-9a-f]{64}", pk):
+            raise ValueError("that isn't a person's key")
+        ident = self._identity()
+        info = self._dm_book({pk}).get(pk) or {"name": "", "known": False, "flag": None}
+        peer = self.store.dm_peer(pk)
+        accepted = peer is None or peer["accepted"] or info["known"]   # no conversation yet: I'm the one starting it
+        if read:
+            self.store.dm_mark_read(pk)
+        me = self.settings()["display_name"] or "You"
+        out = []
+        for m in self.store.dm_messages(pk, DM_THREAD_MESSAGES):
+            mine = m["sender"] == ident["person_pk"]
+            item = {"id": m["id"], "ts": m["created_at"], "t": "msg", "pk": m["sender"], "role": "person", "mine": mine,
+                    "name": me if mine else self._dm_label(pk, info), "text": m["text"][:dm.MAX_TEXT]}
+            if info["flag"] and not mine:
+                item["impostor"] = info["flag"]   # the room's own flag: a lookalike is never shown as the real name
+            if mine and m["wrap"] and self.pool:
+                d = self.pool.delivery(m["wrap"])
+                if d != "sent":
+                    item["delivery"] = d
+            out.append(item)
+        return {"pk": pk, "name": self._dm_label(pk, info), "impostor": bool(info["flag"]), "request": not accepted,
+                "hidden": pk in self._hidden, "messages": out}
+
+    async def dm_send(self, pk: str, text: str) -> dict:
+        """Send a private message: one rumor, sealed and wrapped for them and again for me. The copy for me is
+        what lets my other installs show what I sent. Both wraps go out like any durable event (outbox first)."""
+        pk = str(pk or "").lower()
+        if not re.fullmatch(r"[0-9a-f]{64}", pk):
+            raise ValueError("that isn't a person's key")
+        ident = self._identity()
+        if pk == ident["person_pk"]:
+            raise ValueError("you can't message yourself")
+        if pk in self._hidden:
+            raise ValueError("You hid them. Unhide them in Settings to message them.")
+        text = (text or "").strip()[:dm.SEND_TEXT]
+        if not text:
+            raise ValueError("empty message")
+        if not self._rate_ok("dm_send", DM_SEND_PER_MIN, 60):
+            raise ValueError(f"Slow down: Ninsei sends at most {DM_SEND_PER_MIN} private messages a minute.")
+        now = int(time.time())
+        rumor = dm.make_rumor(ident["person_pk"], pk, text, now)
+        to_them = dm.wrap_for(ident["person_sk"], pk, rumor)
+        to_me = dm.wrap_for(ident["person_sk"], ident["person_pk"], rumor)
+        # mine, accepted: writing to someone is a yes. Stored before it is sent, like any durable event.
+        self.store.dm_add(id=rumor["id"], peer=pk, sender=ident["person_pk"], text=text, created_at=now,
+                          arrived_at=time.time(), wrap=to_them["id"], accepted=True)
+        for w in (to_them, to_me):
+            self._dm_handled(w["id"])   # my own wraps coming back from a relay are not opened again
+            self._queue_event(w)
+            self._spawn(self.pool.publish(w))
+        self.store.dm_mark_read(pk)
+        self._dm_rev += 1
+        self._bump()
+        return {"id": rumor["id"]}
+
+    async def dm_accept(self, pk: str) -> dict:
+        pk = str(pk or "").lower()
+        if not re.fullmatch(r"[0-9a-f]{64}", pk) or not self.store.dm_accept(pk):
+            raise ValueError("that conversation isn't here")
+        self._dm_rev += 1
+        self._bump()
+        return {"ok": True}
+
+    async def dm_forget(self, pk: str) -> dict:
+        """Delete a conversation from this computer. The other person keeps theirs; relays may keep the wraps (they
+        cannot be read without the keys)."""
+        pk = str(pk or "").lower()
+        if not re.fullmatch(r"[0-9a-f]{64}", pk):
+            raise ValueError("that isn't a person's key")
+        n = self.store.dm_forget(pk)
+        self._dm_rev += 1
+        self._bump()
+        return {"deleted": n}
 
     # ============================================================================================
     # the view the UI renders
@@ -3530,6 +3821,7 @@ class Engine:
             "offers": pending,
             "lobby": self.lobby,
             "hidden": self.hidden_people(),
+            "dms": self.dm_summary(),
             "commons": COMMONS_ID,
         }
         if room and room in self.events:

@@ -45,6 +45,9 @@ FLUSH_GAP_S = 0.25          # between resent events: a backlog sent in one burst
 # NIP-01 asks for "rate-limited:"; damus answers "banned: too many rate-limit violations, try again later".
 # Sending on through either keeps a per-IP ban alive for every install behind that IP, so we wait instead.
 _BUSY_STATUS = re.compile(r"HTTP (?:429|503)\b")
+# NIP-42 says the reason starts "auth-required: "; relay.damus.io says "ERROR: auth-required: requested filter ..."
+# (found against the live relay), so look for the word near the start rather than at it.
+_AUTH_REQUIRED = re.compile(r"\bauth-required\b", re.I)
 _TRANSIENT = re.compile(r"^\s*rate-limited\b|rate[\s-]*limit|slow\s*down|try again later", re.I)
 
 
@@ -72,6 +75,9 @@ class Subscription:
     eose: set[str] = field(default_factory=set)
     dedupe: bool = True  # live subs dedupe across relays; one-shot queries keep their own set
     seen_ids: Optional[set] = None  # one-shot queries: ids already collected (skip before verifying)
+    resume: bool = True  # False: `since` is the caller's alone (gift wraps carry randomised dates, so the newest
+                         # one seen says nothing about where to resume)
+    needs_auth: bool = False  # a relay may close this one with "auth-required": answer NIP-42 AUTH, then ask again
 
 
 @dataclass
@@ -124,6 +130,10 @@ class RelayPool:
         self._delivery: dict[str, str] = {}
         self._flush_tasks: set[asyncio.Task] = set()
         self._inflight: dict[str, int] = {}   # ids waiting on their first relay answers (shown as sent, not pending)
+        self._auth_signer: Optional[Callable[[str, str], dict]] = None   # (relay url, challenge) -> signed kind 22242
+        self._challenge: dict[str, str] = {}   # url -> the relay's latest NIP-42 challenge on this connection
+        self._authed: dict[str, str] = {}      # url -> the challenge we already answered (one try per challenge)
+        self._auth_wait: dict[str, set] = {}   # url -> subs the relay closed before it had sent a challenge
         if self._store is not None:
             try:
                 keep = max(self._outbox_ttl, getattr(self._store, "event_history_days", 3) * 86400, FAILED_KEEP_S)
@@ -185,6 +195,9 @@ class RelayPool:
                     st.state, st.last_error = "open", ""
                     opened = time.monotonic()
                     self._got_traffic[url] = False   # the delay resets later, once this connection proves useful
+                    self._challenge.pop(url, None)   # a challenge, and a login, belong to one connection
+                    self._authed.pop(url, None)
+                    self._auth_wait.pop(url, None)
                     for sub in list(self._subs.values()):
                         await self._send_req(url, ws, sub)
                     self._spawn_flush(url, ws)
@@ -277,8 +290,73 @@ class RelayPool:
         elif typ == "NOTICE" and len(msg) >= 2 and isinstance(msg[1], str) and transient(msg[1]):
             self.status[url].last_reject = msg[1][:120]
             self._cool(url)
+        elif typ == "AUTH" and len(msg) >= 2 and isinstance(msg[1], str):
+            # NIP-42. A challenge alone is never answered: logging in tells the relay which key is asking, so
+            # that happens only for a subscription the relay refused with "auth-required" and that is marked
+            # `needs_auth` (the private-message one). A refusal that came before the challenge waits here.
+            self._challenge[url] = msg[1][:512]
+            for sid in self._auth_wait.pop(url, set()):
+                self._spawn_auth(url, sid)
         elif typ == "CLOSED" and len(msg) >= 2:
-            self.status[url].last_error = f"subscription closed: {msg[2] if len(msg) > 2 else ''}"[:120]
+            reason = msg[2] if len(msg) > 2 and isinstance(msg[2], str) else ""
+            self.status[url].last_error = f"subscription closed: {reason}"[:120]
+            sub = self._subs.get(msg[1]) if isinstance(msg[1], str) else None
+            if sub is not None and sub.needs_auth and self._auth_signer is not None \
+                    and _AUTH_REQUIRED.search(reason[:80]):
+                if self._challenge.get(url):
+                    self._spawn_auth(url, sub.sub_id)
+                else:
+                    self._auth_wait.setdefault(url, set()).add(sub.sub_id)
+
+    # --- NIP-42 login -----------------------------------------------------------------------------
+    def set_auth(self, signer: Optional[Callable[[str, str], dict]]) -> None:
+        """`signer(relay_url, challenge)` returns the signed kind 22242 event that answers a challenge."""
+        self._auth_signer = signer
+
+    def _spawn_auth(self, url: str, sub_id: str) -> None:
+        ws = self._ws.get(url)
+        if ws is None:
+            return
+        t = asyncio.ensure_future(self._login_and_ask_again(url, ws, sub_id))
+        self._flush_tasks.add(t)
+        t.add_done_callback(self._flush_tasks.discard)
+
+    async def _login_and_ask_again(self, url: str, ws, sub_id: str) -> None:
+        """Answer the relay's challenge with the signer's event, and when it says OK send the REQ again. A task of its own: the OK
+        arrives through the same read loop that started this. One try per challenge, so a relay that says
+        "auth-required" to a key it has just accepted can't make this loop."""
+        challenge = self._challenge.get(url)
+        sub = self._subs.get(sub_id)
+        st = self.status[url]
+        if not challenge or sub is None or self._auth_signer is None or self._ws.get(url) is not ws:
+            return
+        if self._authed.get(url) == challenge:
+            st.last_error = "relay still wants a login after ours"
+            return
+        self._authed[url] = challenge
+        try:
+            ev = self._auth_signer(url, challenge)
+            if not isinstance(ev, dict) or ev.get("kind") != 22242 or not isinstance(ev.get("id"), str):
+                return
+        except Exception:
+            log.exception("ninsei: could not sign a relay login")
+            return
+        fut = asyncio.get_running_loop().create_future()
+        self._pending_ok.setdefault(url, {})[ev["id"]] = fut
+        try:
+            await ws.send(json.dumps(["AUTH", ev]))
+            await asyncio.wait([fut], timeout=5.0)
+        except Exception as e:
+            st.last_error = f"login failed: {e}"[:120]
+        if not fut.done():
+            self._pending_ok.get(url, {}).pop(ev["id"], None)
+            return
+        ok, why = fut.result()
+        if not ok:
+            st.last_error = f"relay refused our login: {why}"[:120]
+            return
+        if self._ws.get(url) is ws and self._subs.get(sub_id) is sub:
+            await self._send_req(url, ws, sub)
 
     def _verify(self, url: str, ev: dict) -> bool:
         """Full check, but the signature (the slow part) only once per id. A repeat still has its id
@@ -353,7 +431,7 @@ class RelayPool:
         filters = []
         for f in sub.filters:
             f2 = dict(f)
-            if sub.newest and "since" in f2:  # resume where we left off, with room for clock skew
+            if sub.resume and sub.newest and "since" in f2:  # resume where we left off, with room for clock skew
                 f2["since"] = min(max(int(f2["since"]), sub.newest - RESUME_MARGIN_S), int(_now()))
             filters.append(f2)
         try:
@@ -361,8 +439,9 @@ class RelayPool:
         except Exception as e:
             self.status[url].last_error = f"req failed: {e}"
 
-    async def subscribe(self, sub_id: str, filters: list[dict], handler: EventHandler) -> None:
-        sub = Subscription(sub_id, filters, handler)
+    async def subscribe(self, sub_id: str, filters: list[dict], handler: EventHandler, *,
+                        resume: bool = True, needs_auth: bool = False) -> None:
+        sub = Subscription(sub_id, filters, handler, resume=resume, needs_auth=needs_auth)
         old = self._subs.get(sub_id)
         if old:
             sub.newest = old.newest

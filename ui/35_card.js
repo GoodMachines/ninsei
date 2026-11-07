@@ -284,7 +284,7 @@ function ProfileLayer(props) {
   const close = useCallback(() => { shown.current = false; setWho(null) }, [])
   return jsxs(ProfileContext.Provider, { value: open, children: [
     props.children,
-    who && jsx(ProfileSheet, { who, room: props.room, snap: props.snap, store: props.store, openSettings: props.openSettings,
+    who && jsx(ProfileSheet, { who, room: props.room, snap: props.snap, store: props.store, openSettings: props.openSettings, openDm: props.openDm,
       opener, onClose: close, onOpen: open, key: who.pk })
   ] })
 }
@@ -309,14 +309,15 @@ function cardActions(who, found, snap) {
   const myPk = snap && snap.me && snap.me.pk
   const myAgent = snap && snap.me && snap.me.agent && snap.me.agent.pk
   const hide = (pk, name) => (typeof pk === 'string' && pk && pk !== myPk && pk !== myAgent ? { pk, name: String(name || 'them') } : null)
+  // Message: a private message goes person to person, so an agent's card offers its owner. Never to yourself.
   if (who.kind === 'agent' || found.agent) {
     const a = found.agent || {}
     const o = found.owner
-    if (a.yours || (myAgent && who.pk === myAgent)) return { edit: true, hide: null }
-    return { edit: false, hide: o && !o.you ? hide(o.pk, o.name) : null }
+    if (a.yours || (myAgent && who.pk === myAgent)) return { edit: true, hide: null, message: null }
+    return { edit: false, hide: o && !o.you ? hide(o.pk, o.name) : null, message: o && !o.you ? hide(o.pk, o.name) : null }
   }
   const p = found.person || {}
-  return { edit: false, hide: p.you ? null : hide(who.pk, p.name || who.name) }
+  return { edit: false, hide: p.you ? null : hide(who.pk, p.name || who.name), message: p.you ? null : hide(who.pk, p.name || who.name) }
 }
 
 function ProfileSheet(props) {
@@ -394,6 +395,12 @@ function ProfileSheet(props) {
     props.onClose()
     if (props.openSettings) props.openSettings()
   }
+  const messageThem = () => {
+    if (!act.message || !props.openDm) return
+    keepFocus.current = true
+    props.onClose()
+    props.openDm(act.message.pk)
+  }
   const hideThem = async () => {
     if (!act.hide || !props.store) return
     try {
@@ -414,6 +421,8 @@ function ProfileSheet(props) {
       body.card,
       jsxs('div', { className: 'h-profile-actions', children: [
         saveBtn, copyBtn,
+        act.message && props.openDm && jsx(K.Button, { variant: 'secondary', size: 'sm', onClick: messageThem, children: [jsx(K.Icon, { name: 'send', size: 13 }, 'i'),
+          jsx('span', { className: 'h-trunc', style: { maxWidth: 190 }, children: 'Message ' + act.message.name }, 't')] }, 'message'),
         act.edit && jsx(K.Button, { variant: 'ghost', size: 'sm', onClick: editFace, children: [jsx(K.Icon, { name: 'edit', size: 13 }, 'i'), 'Edit face'] }, 'edit'),
         act.hide && props.store && jsx(K.Button, { variant: 'ghost', size: 'sm', onClick: hideThem, children: [jsx(K.Icon, { name: 'eye-closed', size: 13 }, 'i'),
           jsx('span', { className: 'h-trunc', style: { maxWidth: 190 }, children: 'Hide ' + act.hide.name }, 't')] }, 'hide')

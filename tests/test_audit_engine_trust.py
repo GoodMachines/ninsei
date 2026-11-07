@@ -406,7 +406,7 @@ async def test_resubscribe_uses_the_creator_filter(bare):
     e, _ = bare()
     got = {}
 
-    async def subscribe(sub_id, filters, handler):
+    async def subscribe(sub_id, filters, handler, **kw):
         got[sub_id] = filters
     e.pool.subscribe = subscribe
     e.store.save_room(ROOM, {"id": ROOM, "name": "test room", "creator": "d" * 64})

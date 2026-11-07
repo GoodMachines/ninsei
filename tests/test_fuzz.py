@@ -120,3 +120,30 @@ async def test_hostile_game_and_claim_floods(world):
     # to her own agent through it
     await run(maya, maya.post, room, "Ada, know a good palette tool?")
     assert await wait_for(lambda: llms["Maya"].calls.count("ninsei.reply") == 1)
+
+
+async def test_private_messages_survive_hostile_gift_wraps(world):
+    """Gift wraps are strangers' bytes too: junk in every field, junk text inside real wraps, and every view
+    that shows private messages must still render and serialise."""
+    from ninsei_engine import dm
+    _, engines, _ = world
+    maya = engines["Maya"]
+    ident = maya._identity()
+    rng = random.Random(99)
+    import hashlib
+    for i in range(60):
+        sk = hashlib.sha256(f"dm-fuzz-{i % 7}".encode()).hexdigest()
+        text = rng.choice(["hi", "x" * rng.randint(1, 3999), "<b>hi</b>\u202e", "\x00\x01", "@Ada @Maya", "😀" * 50, "  ", ""])
+        if text.strip():
+            await run(maya, maya._dm_process, dm.wrap_for(sk, ident["person_pk"], dm.make_rumor(nostr.pubkey(sk), ident["person_pk"], text)))
+        for ev in (junk(rng), {"kind": 1059, "id": junk(rng), "content": junk(rng), "tags": junk(rng), "pubkey": junk(rng)},
+                   nostr.build_event(sk, 1059, "A" * rng.randint(0, 300), [["p", ident["person_pk"]]])):
+            await run(maya, maya._on_dm_wrap, ev, "relay")
+            if isinstance(ev, dict):
+                await run(maya, maya._dm_process, ev)
+    snap, _cpu = await asyncio.wrap_future(maya.call(_timed(maya.snapshot)))
+    json.dumps(snap)
+    d = read(maya, maya.dm_summary)
+    assert d["threads"] and all(len(t["pk"]) == 64 for t in d["threads"])
+    for t in d["threads"][:5]:
+        json.dumps(read(maya, maya.dm_thread, t["pk"], False))
