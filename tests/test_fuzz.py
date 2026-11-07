@@ -10,10 +10,10 @@ from ninsei_engine.engine import KIND_LIVE, KIND_ROOM
 from test_engine import read, run, setup_room, world  # noqa: F401  (fixture re-export)
 
 TYPES = ["msg", "join", "offer", "offer_state", "share", "tales_start", "tales_round", "tales_vote_open",
-         "tales_reveal", "tales_end", "tales_fake", "tales_vote", "presence", "claim", "nope"]
+         "tales_reveal", "tales_end", "tales_fake", "tales_vote", "presence", "claim", "react", "nope"]
 FIELDS = ["text", "name", "face", "gid", "n", "q", "options", "ends_at", "secs", "truth", "answer", "authors",
           "picks", "points", "scores", "lucky", "names", "rounds", "option", "offer", "title", "pitch", "status",
-          "html", "bytes", "seq", "at", "state", "budget", "prio", "trigger", "to", "reply", "system", "aborted"]
+          "html", "bytes", "seq", "at", "state", "budget", "prio", "trigger", "to", "reply", "system", "aborted", "target", "emoji", "on"]
 
 
 def junk(rng, depth=0):

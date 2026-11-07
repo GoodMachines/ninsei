@@ -94,6 +94,14 @@ class RoomRef(BaseModel):
 class PostIn(BaseModel):
     room: str
     text: str
+    reply: Optional[str] = None  # id of the message this one answers
+
+
+class ReactIn(BaseModel):
+    room: str
+    target: str
+    emoji: str
+    on: bool = True
 
 
 class OfferAnswer(BaseModel):
@@ -193,7 +201,13 @@ async def leave_room(body: RoomRef):
 @router.post("/post")
 async def post(body: PostIn):
     eng = await _engine()
-    return await _run(eng.post, body.room, body.text)
+    return await _run(eng.post, body.room, body.text, body.reply)
+
+
+@router.post("/react")
+async def react(body: ReactIn):
+    eng = await _engine()
+    return await _run(eng.react, body.room, body.target, body.emoji, body.on)
 
 
 @router.post("/lobby/refresh")

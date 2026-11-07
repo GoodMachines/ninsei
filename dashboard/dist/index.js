@@ -803,6 +803,35 @@ const CSS = TOKENS + `
 .h-at{color:color-mix(in oklch,var(--h-accent) 75%,var(--h-fg));background:color-mix(in oklch,var(--h-accent) 14%,transparent);border-radius:4px;padding:0 2px;font-weight:500}
 .h-at[data-me=true]{color:var(--h-fg);background:color-mix(in oklch,var(--h-warn) 26%,transparent)}
 .h-msg[data-mentioned=true]{background:color-mix(in oklch,var(--h-warn) 7%,transparent);box-shadow:inset 2px 0 0 var(--h-warn);border-radius:0 6px 6px 0}
+.h-msg{position:relative}
+.h-msg::after{content:"";position:absolute;inset:0;border-radius:6px;background:var(--h-accent);opacity:calc(var(--h-flash,0)*.22);pointer-events:none}
+.h-msg[data-flash=true]{--h-flash:1}
+.h-bar{position:absolute;top:-14px;right:4px;z-index:5;display:flex;align-items:center;gap:2px;padding:2px;border:1px solid var(--h-line2);border-radius:8px;background:var(--h-card);box-shadow:0 6px 18px -8px var(--h-shadow);opacity:0;pointer-events:none}
+.h-msg:hover .h-bar,.h-msg:focus-within .h-bar,.h-msg[data-bar=true] .h-bar{opacity:1;pointer-events:auto}
+.h-bar-btn{display:grid;place-items:center;width:26px;height:24px;padding:0;border:0;border-radius:6px;background:transparent;color:var(--h-fg2);cursor:pointer}
+.h-bar-btn:hover,.h-bar-btn[aria-expanded=true]{background:var(--h-hover);color:var(--h-fg)}
+.h-bar-btn:focus-visible,.h-pick:focus-visible,.h-react:focus-visible,.h-quote:focus-visible{outline:2px solid var(--h-accent);outline-offset:1px}
+.h-picker{position:absolute;top:calc(100% + 4px);right:0;display:flex;gap:2px;padding:4px;border:1px solid var(--h-line2);border-radius:10px;background:var(--h-card);box-shadow:var(--h-shadow)}
+.h-pick{display:grid;place-items:center;width:30px;height:30px;border-radius:7px;font-size:17px;line-height:1;cursor:pointer;user-select:none}
+.h-pick:hover,.h-pick:focus-visible{background:var(--h-hover)}
+.h-pick[aria-checked=true]{background:color-mix(in oklch,var(--h-accent) 22%,transparent)}
+.h-reacts{display:flex;flex-wrap:wrap;gap:4px;margin-top:4px}
+.h-react{display:inline-flex;align-items:center;gap:5px;height:22px;padding:0 8px;border-radius:999px;border:1px solid var(--h-line2);background:var(--h-raise);color:var(--h-fg2);font:inherit;font-size:12px;cursor:pointer}
+.h-react:hover{border-color:var(--h-fg3)}
+.h-react[data-mine=true]{color:var(--h-fg);border-color:color-mix(in oklch,var(--h-accent) 60%,transparent);background:color-mix(in oklch,var(--h-accent) 18%,transparent)}
+.h-react-e{font-size:13px;line-height:1}
+.h-react-n{font-variant-numeric:tabular-nums;font-weight:600}
+.h-quote-row{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-bottom:2px}
+.h-quote{display:inline-flex;align-items:center;gap:6px;max-width:100%;min-width:0;padding:1px 8px 1px 6px;border:0;border-left:2px solid var(--h-line2);border-radius:0 6px 6px 0;background:transparent;color:var(--h-fg3);font:inherit;font-size:12px;text-align:left;cursor:pointer}
+.h-quote:hover{background:var(--h-hover);color:var(--h-fg2)}
+.h-quote b{font-weight:600;color:var(--h-fg2);flex:none}
+.h-quote-t{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.h-quote-gone{cursor:default;font-style:italic;margin-bottom:2px}
+.h-quote-gone:hover{background:transparent;color:var(--h-fg3)}
+.h-compose-box{flex-wrap:wrap}
+.h-replying{flex:0 0 100%;display:flex;align-items:center;gap:6px;min-width:0;margin:-2px 0 2px -6px;padding:2px 4px 4px 6px;border-bottom:1px solid var(--h-line);color:var(--h-fg3);font-size:12px}
+.h-replying .h-trunc{flex:1;min-width:0}
+.h-replying b{color:var(--h-fg2);font-weight:600}
 .h-navrow .h-mentions{flex:none;min-width:18px;height:16px;padding:0 5px;border-radius:999px;display:grid;place-items:center;font-size:10.5px;font-weight:700;line-height:1;color:var(--h-bg);background:var(--h-warn)}
 .h-ac{position:absolute;left:0;right:0;bottom:calc(100% + 6px);z-index:30;max-height:240px;overflow:auto;padding:4px;border:1px solid var(--h-line2);border-radius:10px;background:var(--h-card);box-shadow:var(--h-shadow)}
 .h-ac-opt{display:flex;align-items:center;gap:8px;min-width:0;padding:5px 8px;border-radius:7px;cursor:pointer}
@@ -3364,9 +3393,15 @@ function RoomView(props) {
   const book = useMemo(() => nameBook(room, snap.me), [room, snap.me])
   const drafts = (snap.drafts || []).filter(d => d.room === room.id)
   const game = room.game
+  // The message being answered: set from a message's Reply button, cleared by the composer (Escape, its cancel
+  // button, a sent reply) or by leaving the room. It is a small copy, so it survives the message scrolling away.
+  const [replyTo, setReplyTo] = useState(null)
+  useEffect(() => { setReplyTo(null) }, [room.id])
+  const onReply = useCallback(m => setReplyTo({ id: m.id, name: m.name, text: String(m.text || '').slice(0, 120) }), [])
+  const onCancelReply = useCallback(() => setReplyTo(null), [])
   return jsxs(Fragment, { children: [
     jsx(RoomHeader, { store, room, snap, onPeople: props.onPeople }),
-    jsx(Timeline, { store, snap, room, book }),
+    jsx(Timeline, { store, snap, room, book, onReply }),
     jsxs('div', { className: 'h-composer', children: [
       // pinned above the input: model notice, the running game, drafts. Scrolls on its own if tall.
       jsxs('div', { className: 'h-pinned', children: [
@@ -3375,7 +3410,7 @@ function RoomView(props) {
         game && jsx(TallTales, { store, room, game, book, key: game.gid }),
         drafts.length > 0 && jsx(DraftTray, { store, drafts })
       ] }),
-      jsx(Composer, { store, room, snap, gameOn: !!(game && game.phase !== 'end') })
+      jsx(Composer, { store, room, snap, gameOn: !!(game && game.phase !== 'end'), reply: replyTo, onCancelReply })
     ] })
   ] })
 }
@@ -3418,7 +3453,7 @@ function RoomHeader(props) {
 // ---- timeline -------------------------------------------------------------------------------
 
 function Timeline(props) {
-  const { store, snap, room, book } = props
+  const { store, snap, room, book, onReply } = props
   const scroller = useRef(null)
   const stick = useRef(true)
   const seen = useRef(null)
@@ -3441,10 +3476,19 @@ function Timeline(props) {
     if (el && stick.current) el.scrollTop = el.scrollHeight
   }, [msgs.length, msgs.length && msgs[msgs.length - 1].id])
 
+  // A quote's click: scroll to the original and flash it, when it is among the messages loaded.
+  const jump = useCallback(id => {
+    const el = scroller.current
+    const node = el && [].find.call(el.querySelectorAll('[data-mid]'), n => n.getAttribute('data-mid') === id)
+    if (!node) { P.toast('info', 'That message is further back than what is loaded.'); return }
+    springIntoView(node)
+    flash(node)
+  }, [])
+
   const items = groupItems(msgs)
   return jsx('div', { className: 'h-scroll', ref: scroller, onScroll, children: jsxs('div', { className: 'h-timeline', role: 'log', 'aria-live': 'polite', children: [
     items.length === 0 && jsx('div', { className: 'h-empty', children: 'Quiet in here. Say hello, or start a game of Tall Tales.' }),
-    items.map(it => jsx(TimelineItem, { it, store, snap, room, book, animate: fresh(it.key) }, it.key)),
+    items.map(it => jsx(TimelineItem, { it, store, snap, room, book, onReply, onJump: jump, animate: fresh(it.key) }, it.key)),
     jsx(Thinking, { room })
   ] }) })
 }
@@ -3521,7 +3565,7 @@ function TimelineItem(props) {
     jsx(Face, { face: m.face, pk: m.pk, state: 'system: waiting', size: 20 }),
     jsx('span', { children: m.text || (m.name + ' is resting: out of budget for today') })
   ] })
-  else if (it.kind === 'msg') body = jsx(Message, { m, first: it.first, book })
+  else if (it.kind === 'msg') body = jsx(Message, { m, first: it.first, book, store, roomId: room.id, onReply: props.onReply, onJump: props.onJump })
   else if (it.kind === 'offer') body = jsx(OfferCard, { m, store, snap, room })
   else if (it.kind === 'offer_state') body = jsxs('div', { className: 'h-line', children: [offerStateLine(m, room), m.impostor && ' ', m.impostor && jsx(ImpostorChip, { imp: m.impostor })] })
   else if (it.kind === 'share') body = jsx(ShareCard, { m, store, room })
@@ -3543,14 +3587,32 @@ function offerStateLine(m, room) {
   return m.name + ' · ' + title + ' · ' + m.state
 }
 
+// The eight reactions; the engine holds the same list and ignores anything else.
+const REACTION_LIST = ['\u{1F44D}', '\u2764\uFE0F', '\u{1F602}', '\u{1F62E}', '\u{1F389}', '\u{1F440}', '\u{1F525}', '\u{1F64F}']
+
+// A brief wash of the accent colour on a message the reader was sent to (a quote's click). The colour runs
+// on a spring through a custom property; with reduced motion it is a plain marker for a moment.
+function flash(node) {
+  if (motion.reduced()) {
+    node.setAttribute('data-flash', 'true')
+    P.setTimeout(() => node.removeAttribute('data-flash'), 1200)
+    return
+  }
+  motion.spring({ from: 1, to: 0, k: SPRING.calm.k, c: 9, onUpdate: x => { node.style.setProperty('--h-flash', String(Math.max(0, x).toFixed(3))) },
+    onRest: () => node.style.removeProperty('--h-flash') })
+}
+
 function Message(props) {
   const m = props.m
   const agent = m.role === 'agent'
   const f = agent ? faceFor(m.face, m.pk) : null
   const imp = m.impostor
+  const [picking, setPicking] = useState(false)
   const who = { kind: agent ? 'agent' : 'person', pk: m.pk, name: m.name, face: m.face, owner_name: m.owner_name }
   const text = jsx(MentionText, { text: m.text, book: props.book })
-  return jsxs('div', { className: cx('h-msg', agent && 'h-agent'), 'data-role': m.role, 'data-first': props.first,
+  const react = (emoji, on) => props.store.post('/react', { room: props.roomId, target: m.id, emoji, on }).catch(() => {})
+  const mineSet = (m.reactions || []).filter(r => r.mine).map(r => r.emoji)
+  return jsxs('div', { className: cx('h-msg', agent && 'h-agent'), 'data-role': m.role, 'data-first': props.first, 'data-mid': m.id, 'data-bar': picking,
     'data-impostor': !!imp, 'data-mentioned': !!m.mentions_me, style: agent ? { '--hue': f.hue } : undefined, children: [
       jsx('div', { className: 'h-gutter', children: props.first ? jsx(ProfileButton, { who, label: 'Show ' + m.name + '’s card',
         children: agent ? jsx(Face, { face: m.face, pk: m.pk, state: 'activity: idle', size: 28, name: m.name }) : jsx(Initial, { name: m.name }) }) : null }),
@@ -3560,14 +3622,107 @@ function Message(props) {
           agent && jsx('span', { className: 'h-owner', children: m.mine ? 'your agent' : (m.owner_name ? m.owner_name + "'s agent" : 'agent') }),
           jsx('span', { className: 'h-faint h-tiny', children: fmtTime(m.ts) })
         ] }),
+        m.quote && jsx(QuoteLine, { quote: m.quote, onJump: props.onJump }),
         agent ? jsx('div', { className: 'h-bubble', children: jsx('div', { className: 'h-text', children: text }) })
           : jsx('div', { className: 'h-text', children: text }),
         imp && jsx(ImpostorChip, { imp }),
+        (m.reactions || []).length > 0 && jsx(ReactionChips, { reactions: m.reactions, onToggle: (emoji, on) => react(emoji, on) }),
         m.delivery && jsx('div', { className: 'h-faint h-tiny', role: m.delivery === 'failed' ? 'alert' : undefined,
           children: m.delivery === 'pending' ? 'Not delivered yet. Ninsei will resend it when a relay is back.'
             : 'Not delivered. The relays turned it down or it waited too long.' })
-      ] })
+      ] }),
+      props.store && jsx(MessageBar, { m, picking, setPicking, mine: mineSet, onReply: props.onReply,
+        onPick: emoji => react(emoji, !mineSet.includes(emoji)) })
     ] })
+}
+
+// What you can do to a message, shown on hover and whenever focus is inside the message. Buttons are real
+// buttons, so the keyboard reaches them. Edit and Delete (your own messages) are added to `extra`.
+function MessageBar(props) {
+  const { m, picking, setPicking } = props
+  const trigger = useRef(null)
+  const close = () => { setPicking(false); trigger.current && trigger.current.focus && trigger.current.focus() }
+  return jsxs('div', { className: 'h-bar', role: 'toolbar', 'aria-label': 'Message actions', children: [
+    jsx(K.Tip, { label: 'Add a reaction', children: jsx('button', { type: 'button', className: 'h-bar-btn', ref: trigger, 'aria-label': 'Add a reaction',
+      'aria-haspopup': 'menu', 'aria-expanded': picking, onClick: () => setPicking(!picking), children: jsx(K.Icon, { name: 'smiley', size: 14 }) }) }),
+    props.onReply && jsx(K.Tip, { label: 'Reply', children: jsx('button', { type: 'button', className: 'h-bar-btn', 'aria-label': 'Reply to ' + m.name,
+      onClick: () => props.onReply(m), children: jsx(K.Icon, { name: 'reply', size: 14 }) }) }),
+    props.extra,
+    picking && jsx(ReactionPicker, { mine: props.mine, onClose: close, onPick: emoji => { props.onPick(emoji); close() } })
+  ] })
+}
+
+// The eight emoji in a row: arrows move, Enter or Space chooses, Escape closes. The ones you already
+// gave read as selected, and choosing one again takes it back.
+function ReactionPicker(props) {
+  const ref = useEnter(true)
+  const [idx, setIdx] = useState(0)
+  const items = useRef([])
+  useEffect(() => {
+    const el = items.current[idx]
+    if (el && el.focus) el.focus()
+  }, [idx])
+  useEffect(() => {
+    const away = e => { if (ref.current && !ref.current.contains(e.target)) props.onClose() }
+    const off = P.listen(document, 'pointerdown', away)
+    return () => off()
+  }, [])
+  const onKeyDown = e => {
+    const n = REACTION_LIST.length
+    if (e.key === 'ArrowRight' || e.key === 'ArrowDown') { e.preventDefault(); setIdx((idx + 1) % n) }
+    else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') { e.preventDefault(); setIdx((idx + n - 1) % n) }
+    else if (e.key === 'Home') { e.preventDefault(); setIdx(0) }
+    else if (e.key === 'End') { e.preventDefault(); setIdx(n - 1) }
+    else if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); props.onPick(REACTION_LIST[idx]) }
+    else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); props.onClose() }
+  }
+  return jsx('div', { className: 'h-picker', ref, role: 'menu', 'aria-label': 'Add a reaction', onKeyDown,
+    children: REACTION_LIST.map((emoji, i) => jsx('div', { role: 'menuitemradio', 'aria-checked': props.mine.includes(emoji), tabIndex: i === idx ? 0 : -1,
+      className: 'h-pick', 'aria-label': emoji, ref: el => { items.current[i] = el }, onClick: () => props.onPick(emoji), onMouseEnter: () => setIdx(i),
+      children: emoji }, emoji)) })
+}
+
+// Chips under a message. A chip you pressed is filled; pressing it again takes your reaction back. The count
+// settles on a spring when it changes, and the names (up to eight, from the room's own name book) are its label.
+function ReactionChips(props) {
+  return jsx('div', { className: 'h-reacts', role: 'group', 'aria-label': 'Reactions', children: props.reactions.map(r =>
+    jsx(ReactionChip, { r, onToggle: props.onToggle }, r.emoji)) })
+}
+
+function ReactionChip(props) {
+  const { r } = props
+  const ref = useRef(null)
+  const first = useRef(true)
+  useEffect(() => {
+    const el = ref.current
+    if (first.current) { first.current = false; return }
+    if (!el || motion.reduced()) return
+    const s = motion.spring({ from: 1.22, to: 1, k: SPRING.pop.k, c: SPRING.pop.c, onUpdate: x => { el.style.transform = Math.abs(x - 1) < 0.002 ? '' : 'scale(' + x.toFixed(3) + ')' } })
+    return () => s.stop()
+  }, [r.count, r.mine])
+  const more = r.count - (r.names || []).length
+  const who = (r.names || []).join(', ') + (more > 0 ? ' and ' + more + ' more' : '')
+  const label = r.emoji + ' ' + r.count + (who ? ': ' + who : '') + (r.mine ? '. Press to take yours back.' : '. Press to add yours.')
+  return jsxs('button', { type: 'button', className: 'h-react', ref, 'data-mine': r.mine, 'aria-pressed': r.mine, 'aria-label': label, title: who,
+    onClick: () => props.onToggle(r.emoji, !r.mine), children: [
+      jsx('span', { className: 'h-react-e', 'aria-hidden': true, children: r.emoji }),
+      jsx('span', { className: 'h-react-n', 'aria-hidden': true, children: r.count })
+    ] })
+}
+
+// The line above a reply: who and the start of what it answers. A click goes to the original when it is loaded.
+// A lookalike's message is quoted with the same flag the room shows on it, never under the real name.
+function QuoteLine(props) {
+  const q = props.quote
+  if (q.missing) return jsxs('div', { className: 'h-quote h-quote-gone', children: [jsx(K.Icon, { name: 'reply', size: 11 }), jsx('span', { children: 'Original message not available' })] })
+  return jsxs('div', { className: 'h-quote-row', children: [
+    jsxs('button', { type: 'button', className: 'h-quote', 'aria-label': 'Go to the message from ' + q.name + ': ' + q.text, onClick: () => props.onJump && props.onJump(q.id), children: [
+      jsx(K.Icon, { name: 'reply', size: 11 }),
+      jsx('b', { children: q.name }),
+      jsx('span', { className: 'h-quote-t', children: q.text })
+    ] }),
+    q.impostor && jsx(ImpostorChip, { imp: q.impostor })
+  ] })
 }
 
 // Message text with each '@name' of someone in the room drawn as a mention; yours stand out more.
@@ -3829,7 +3984,7 @@ function mentionCandidates(room) {
 }
 
 function Composer(props) {
-  const { store, room, gameOn } = props
+  const { store, room, gameOn, reply, onCancelReply } = props
   const [text, setText] = useState('')
   const [menu, setMenu] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -3857,7 +4012,8 @@ function Composer(props) {
     if (!t || busy) return
     setBusy(true)
     setText('')
-    try { await store.post('/post', { room: room.id, text: t }) } catch (_) { setText(t) }
+    const body = reply ? { room: room.id, text: t, reply: reply.id } : { room: room.id, text: t }
+    try { await store.post('/post', body); if (reply && onCancelReply) onCancelReply() } catch (_) { setText(t) }
     setBusy(false)
     ta.current && ta.current.focus()
   }
@@ -3868,7 +4024,10 @@ function Composer(props) {
     el.style.height = Math.min(160, el.scrollHeight) + 'px'
     if (caretTo.current != null) { el.focus(); el.setSelectionRange(caretTo.current, caretTo.current); caretTo.current = null }
   }, [text])
+  const replyId = reply ? reply.id : ''
+  useEffect(() => { if (replyId && ta.current && ta.current.focus) ta.current.focus() }, [replyId])  // Reply puts you in the box
   const onKey = e => {
+    if (e.key === 'Escape' && reply && !open && onCancelReply) { e.preventDefault(); onCancelReply(); return }
     if (open && !e.nativeEvent.isComposing) {
       if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
         e.preventDefault()
@@ -3885,6 +4044,11 @@ function Composer(props) {
     try { await store.post('/game/start', { room: room.id, mode }, gameName(mode) + ' is starting') } catch (_) { /* toasted */ }
   }
   return jsxs('div', { className: 'h-compose-box', style: { position: 'relative' }, children: [
+    reply && jsxs('div', { className: 'h-replying', children: [
+      jsx(K.Icon, { name: 'reply', size: 12 }),
+      jsx('span', { className: 'h-trunc', children: jsxs(Fragment, { children: ['Replying to ', jsx('b', { children: reply.name }), jsx('span', { className: 'h-faint', children: ' · ' + reply.text })] }) }),
+      jsx('button', { type: 'button', className: 'h-bar-btn', 'aria-label': 'Cancel reply', onClick: onCancelReply, children: jsx(K.Icon, { name: 'close', size: 12 }) })
+    ] }),
     open && jsx('div', { className: 'h-ac', id: listId, role: 'listbox', 'aria-label': 'Mention someone', children: opts.map((c, i) =>
       jsxs('div', { id: listId + '-' + i, role: 'option', className: 'h-ac-opt', 'aria-selected': i === sel,
         onMouseDown: e => { e.preventDefault(); choose(c) }, onMouseEnter: () => setPick(i), children: [
@@ -5259,7 +5423,8 @@ function StatusChip(props) {
     sparkle: 'M8 2.5l1.3 3.7 3.7 1.3-3.7 1.3L8 12.5l-1.3-3.7L3 7.5l3.7-1.3z',
     'eye-closed': 'M2 8c1.6-2.6 3.6-4 6-4s4.4 1.4 6 4c-1.6 2.6-3.6 4-6 4S3.6 10.6 2 8zM3 13L13 3',
     lock: 'M4.5 7.5h7v6h-7zM6 7.5V5.5a2 2 0 0 1 4 0v2',
-    reply: 'M6.5 4L3 7.5 6.5 11M3 7.5h6.5a3.5 3.5 0 0 1 3.5 3.5v1'
+    reply: 'M6.5 4L3 7.5 6.5 11M3 7.5h6.5a3.5 3.5 0 0 1 3.5 3.5v1',
+    smiley: 'M8 14A6 6 0 1 0 8 2a6 6 0 0 0 0 12zM5.6 9.6c.6.9 1.4 1.4 2.4 1.4s1.8-.5 2.4-1.4M6 6.4v.4M10 6.4v.4'
   }
 
   function Icon(props) {

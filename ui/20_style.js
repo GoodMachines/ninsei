@@ -87,6 +87,35 @@ const CSS = TOKENS + `
 .h-at{color:color-mix(in oklch,var(--h-accent) 75%,var(--h-fg));background:color-mix(in oklch,var(--h-accent) 14%,transparent);border-radius:4px;padding:0 2px;font-weight:500}
 .h-at[data-me=true]{color:var(--h-fg);background:color-mix(in oklch,var(--h-warn) 26%,transparent)}
 .h-msg[data-mentioned=true]{background:color-mix(in oklch,var(--h-warn) 7%,transparent);box-shadow:inset 2px 0 0 var(--h-warn);border-radius:0 6px 6px 0}
+.h-msg{position:relative}
+.h-msg::after{content:"";position:absolute;inset:0;border-radius:6px;background:var(--h-accent);opacity:calc(var(--h-flash,0)*.22);pointer-events:none}
+.h-msg[data-flash=true]{--h-flash:1}
+.h-bar{position:absolute;top:-14px;right:4px;z-index:5;display:flex;align-items:center;gap:2px;padding:2px;border:1px solid var(--h-line2);border-radius:8px;background:var(--h-card);box-shadow:0 6px 18px -8px var(--h-shadow);opacity:0;pointer-events:none}
+.h-msg:hover .h-bar,.h-msg:focus-within .h-bar,.h-msg[data-bar=true] .h-bar{opacity:1;pointer-events:auto}
+.h-bar-btn{display:grid;place-items:center;width:26px;height:24px;padding:0;border:0;border-radius:6px;background:transparent;color:var(--h-fg2);cursor:pointer}
+.h-bar-btn:hover,.h-bar-btn[aria-expanded=true]{background:var(--h-hover);color:var(--h-fg)}
+.h-bar-btn:focus-visible,.h-pick:focus-visible,.h-react:focus-visible,.h-quote:focus-visible{outline:2px solid var(--h-accent);outline-offset:1px}
+.h-picker{position:absolute;top:calc(100% + 4px);right:0;display:flex;gap:2px;padding:4px;border:1px solid var(--h-line2);border-radius:10px;background:var(--h-card);box-shadow:var(--h-shadow)}
+.h-pick{display:grid;place-items:center;width:30px;height:30px;border-radius:7px;font-size:17px;line-height:1;cursor:pointer;user-select:none}
+.h-pick:hover,.h-pick:focus-visible{background:var(--h-hover)}
+.h-pick[aria-checked=true]{background:color-mix(in oklch,var(--h-accent) 22%,transparent)}
+.h-reacts{display:flex;flex-wrap:wrap;gap:4px;margin-top:4px}
+.h-react{display:inline-flex;align-items:center;gap:5px;height:22px;padding:0 8px;border-radius:999px;border:1px solid var(--h-line2);background:var(--h-raise);color:var(--h-fg2);font:inherit;font-size:12px;cursor:pointer}
+.h-react:hover{border-color:var(--h-fg3)}
+.h-react[data-mine=true]{color:var(--h-fg);border-color:color-mix(in oklch,var(--h-accent) 60%,transparent);background:color-mix(in oklch,var(--h-accent) 18%,transparent)}
+.h-react-e{font-size:13px;line-height:1}
+.h-react-n{font-variant-numeric:tabular-nums;font-weight:600}
+.h-quote-row{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-bottom:2px}
+.h-quote{display:inline-flex;align-items:center;gap:6px;max-width:100%;min-width:0;padding:1px 8px 1px 6px;border:0;border-left:2px solid var(--h-line2);border-radius:0 6px 6px 0;background:transparent;color:var(--h-fg3);font:inherit;font-size:12px;text-align:left;cursor:pointer}
+.h-quote:hover{background:var(--h-hover);color:var(--h-fg2)}
+.h-quote b{font-weight:600;color:var(--h-fg2);flex:none}
+.h-quote-t{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.h-quote-gone{cursor:default;font-style:italic;margin-bottom:2px}
+.h-quote-gone:hover{background:transparent;color:var(--h-fg3)}
+.h-compose-box{flex-wrap:wrap}
+.h-replying{flex:0 0 100%;display:flex;align-items:center;gap:6px;min-width:0;margin:-2px 0 2px -6px;padding:2px 4px 4px 6px;border-bottom:1px solid var(--h-line);color:var(--h-fg3);font-size:12px}
+.h-replying .h-trunc{flex:1;min-width:0}
+.h-replying b{color:var(--h-fg2);font-weight:600}
 .h-navrow .h-mentions{flex:none;min-width:18px;height:16px;padding:0 5px;border-radius:999px;display:grid;place-items:center;font-size:10.5px;font-weight:700;line-height:1;color:var(--h-bg);background:var(--h-warn)}
 .h-ac{position:absolute;left:0;right:0;bottom:calc(100% + 6px);z-index:30;max-height:240px;overflow:auto;padding:4px;border:1px solid var(--h-line2);border-radius:10px;background:var(--h-card);box-shadow:var(--h-shadow)}
 .h-ac-opt{display:flex;align-items:center;gap:8px;min-width:0;padding:5px 8px;border-radius:7px;cursor:pointer}

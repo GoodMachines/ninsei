@@ -86,6 +86,11 @@ MAX_NAMES = 2000           # name holders remembered per room; when full, unknow
 NAMES_PER_KEY = 3          # names one key can hold in a room, so one stranger can't fill the registry
 MAX_ARRIVED = 5000
 CONTESTED = "?"            # a name registry value: two keys used the name before anyone showed it live
+REACTIONS = ("👍", "❤️", "😂", "😮", "🎉", "👀", "🔥", "🙏")  # the only reactions; anything else is ignored on receipt
+MAX_REACT_BYTES = 1024     # a reaction event is tiny; a bigger one is junk and never stored
+MAX_REACT_NAMES = 8        # names listed under one reaction chip
+CLICKS_PER_MIN = 20        # events one click can publish (reactions, later edits) per install per minute
+QUOTE_CHARS = 120          # how much of the replied-to message a quote carries
 ROOM_HISTORY_LIMIT = 300   # history events asked of the relays per room, and per room, not across all rooms
 HISTORY_FILTERS_PER_SUB = 8  # filters in one REQ, of any kind (relays cap the filters in a request)
 NAME_IDLE_EVICT = 3 * 86400  # when the registry is full, holders not seen for this long make room
@@ -272,6 +277,14 @@ def skeleton(name) -> str:
     s = s.translate(_CONFUSABLE_CAPS).casefold().translate(_CONFUSABLES)
     s = re.sub(r"[_.\-'’`\"]", "", s)
     return s.replace("rn", "m").replace("vv", "w")
+
+
+def valid_reaction(c: dict) -> bool:
+    """A well-formed `react` content: a message id, one of the fixed emoji, and a real boolean. Anything else
+    (wrong types, other emoji, other spellings of the same emoji) is ignored on receipt."""
+    target, emoji = c.get("target"), c.get("emoji")
+    return (isinstance(target, str) and re.fullmatch(r"[0-9a-f]{64}", target) is not None
+            and isinstance(emoji, str) and emoji in REACTIONS and isinstance(c.get("on"), bool))
 
 
 def at_mentions(text: str, name: str, max_ats: int = 20) -> bool:
@@ -892,6 +905,8 @@ class Engine:
         if ev["id"] in self._trimmed.get(room, ()):
             return  # a trim already let this one go: a history pull can't put it back
         c = self._content(ev)
+        if c.get("t") == "react" and (len(ev["content"]) > MAX_REACT_BYTES or not valid_reaction(c)):
+            return  # a reaction is one fixed-size fact; junk is never stored, so it can't fill the room
         self.events[room][ev["id"]] = ev
         # When it reached us, kept with the event: after a restart the ranking of games (and of who got a
         # name first) must still go by arrival, not by the author's date. A history pull has no real arrival.
@@ -907,16 +922,16 @@ class Engine:
         # Backfill: a history pull, or anything dated before the live window (a relay replaying the room, or a
         # backdated post). Its order is the relay's or the author's, so it can't decide who held a name first.
         backfill = _src == "history" or created < now - FRESH_WINDOW
-        if c.get("t") != "join":  # only saying something claims a name; a bare join reserves nothing
+        if c.get("t") not in ("join", "react"):  # only saying something claims a name; a bare join or reaction reserves nothing
             self._register_name(room, ev["pubkey"], c.get("name"), agent=self.owner_of(ev) is not None,
                                 backfill=backfill)
-        if self.owner_of(ev) and _src != "history":
+        if self.owner_of(ev) and _src != "history" and c.get("t") != "react":
             self._note_agent_name(room, ev["pubkey"], c.get("name"))
         # Wide enough for a peer whose clock is a few minutes off; dedupe by id stops replays.
         fresh = created >= now - FRESH_WINDOW and _src != "history"
         self._bump()
-        if fresh and ev["pubkey"] != self._identity()["agent_pk"]:
-            self._spawn(self._react(room, ev, c))
+        if fresh and ev["pubkey"] != self._identity()["agent_pk"] and c.get("t") != "react":
+            self._spawn(self._react(room, ev, c))  # a reaction never wakes an agent
 
     def _trim_room(self, room: str) -> None:
         """Keep a room's in-memory events to MAX_ROOM_EVENTS, so a flood can't grow memory or the cost of every
@@ -1045,8 +1060,8 @@ class Engine:
                 self._migrate_names(room, reg)
                 # then seed what's still unclaimed from history in created_at order (first use of a room)
                 for e in self._sorted(room):
-                    if self._content(e).get("t") == "join":
-                        continue  # a bare join claims no name (see _on_event)
+                    if self._content(e).get("t") in ("join", "react"):
+                        continue  # a bare join or reaction claims no name (see _on_event)
                     self._register_name(room, e["pubkey"], self._content(e).get("name"),
                                         agent=self.owner_of(e) is not None, save=False, backfill=True)
                 self.store.set(f"{NAMES_KV}:{room}", reg)
@@ -1228,7 +1243,7 @@ class Engine:
         agent: dict[str, str] = {}
         for e in (self._sorted(room) if evs is None else evs):
             n = _name_ok(self._content(e).get("name"), "")
-            if not n:
+            if not n or self._content(e).get("t") == "react":  # a reaction names nobody
                 continue
             if self.owner_of(e):
                 agent[e["pubkey"]] = n
@@ -1326,9 +1341,21 @@ class Engine:
             if hot and self.settings()["offers"]:
                 await self._maybe_offer(room, hot[0])
 
+    def _replied_agent(self, room: str, ev: dict) -> Optional[str]:
+        """The key of the agent whose message this event replies to (its first `e` tag), when the event is a
+        person's: replying to an agent's message addresses that agent, exactly like naming it. An agent's
+        own reply never addresses anyone, so agents can't keep each other talking."""
+        if self.owner_of(ev):
+            return None
+        for i in nostr.tag_values(ev, "e")[:1]:
+            t = self.events.get(room, {}).get(i) if isinstance(i, str) else None
+            if t is not None and self.owner_of(t) and self._content(t).get("t") == "msg":
+                return t["pubkey"]
+        return None
+
     def _addressed(self, room: str, ev: dict, c: dict) -> bool:
         me = self._identity()["agent_pk"]
-        if me in _as_list(c.get("mentions")):  # a string here would make `in` a substring test
+        if me in _as_list(c.get("mentions")) or self._replied_agent(room, ev) == me:  # a string would make `in` a substring test
             return True
         return self._mentions(str(c.get("text", "")), self.persona()["name"])
 
@@ -1376,7 +1403,7 @@ class Engine:
         if p:
             return p["name"]
         for e in self.events.get(room, {}).values():
-            if e["pubkey"] == pk:
+            if e["pubkey"] == pk and self._content(e).get("t") != "react":
                 return _name_ok(self._content(e).get("name"), "")
         return ""
 
@@ -1398,8 +1425,8 @@ class Engine:
             return 20
         tc = self._content(tev)
         if claimed == 100:
-            if pk in _as_list(tc.get("mentions")):
-                return 100
+            if pk in _as_list(tc.get("mentions")) or self._replied_agent(room, tev) == pk:
+                return 100  # named, or a person replied to this agent's own message
             # The name must have been this agent's before the trigger reached us: an agent can't rename
             # itself after the fact to a word in the message and so count as addressed.
             name = self._agent_name(room, pk, who)
@@ -2990,16 +3017,43 @@ class Engine:
     # ============================================================================================
     # owner actions from the UI
     # ============================================================================================
-    async def post(self, room: str, text: str) -> dict:
+    async def post(self, room: str, text: str, reply: Optional[str] = None) -> dict:
         text = (text or "").strip()[:1200]
         if not text:
             raise ValueError("empty message")
-        mentions = []
-        for pk, p in self.presence.get(room, {}).items():
-            if self._mentions(text, p["name"]):
-                mentions.append(pk)
-        ev = await self._publish_room(room, False, {"t": "msg", "text": text, "mentions": mentions})
+        content: dict = {"t": "msg", "text": text}
+        tags = None
+        if reply:  # a reply names a message that is here; the `e` tag is what other clients (and agents) read
+            target = self.events.get(room, {}).get(reply) if isinstance(reply, str) else None
+            if target is None or self._content(target).get("t") != "msg":
+                raise ValueError("that message isn't here any more")
+            content["reply"] = reply
+            tags = [["e", reply, "", "reply"]]
+        content["mentions"] = [pk for pk, p in self.presence.get(room, {}).items() if self._mentions(text, p["name"])]
+        ev = await self._publish_room(room, False, content, tags)
         self.store.mark_read(room, ev["created_at"])
+        return {"id": ev["id"]}
+
+    def _pace_click(self) -> None:
+        """Anything one click can publish (a reaction, later an edit) shares one local pace, so a held key or a
+        script can't spend the relays' per-IP allowance. Raises a message the UI shows as a toast."""
+        if not self._rate_ok("clicks", CLICKS_PER_MIN, 60):
+            raise ValueError(f"Slow down: Ninsei sends at most {CLICKS_PER_MIN} reactions and edits a minute.")
+
+    async def react(self, room: str, target: str, emoji: str, on: bool = True) -> dict:
+        """Add or take back one of my reactions to a message here. Nothing is sent when it already is as asked."""
+        if room not in self.events:
+            raise ValueError("you aren't in that room")
+        if emoji not in REACTIONS:
+            raise ValueError("that reaction isn't one of the eight")
+        te = self.events[room].get(target) if isinstance(target, str) else None
+        if te is None or self._content(te).get("t") != "msg":
+            raise ValueError("that message isn't here any more")
+        on = bool(on)
+        if self._reaction_states(self._sorted(room)).get((self._identity()["person_pk"], target, emoji), False) == on:
+            return {"ok": True, "unchanged": True}
+        self._pace_click()
+        ev = await self._publish_room(room, False, {"t": "react", "target": target, "emoji": emoji, "on": on})
         return {"id": ev["id"]}
 
     # ============================================================================================
@@ -3018,6 +3072,8 @@ class Engine:
             owner = self.owner_of(e)
             if self._hidden and (e["pubkey"] in self._hidden or (owner or "") in self._hidden):
                 continue  # events from hidden people are dropped on arrival; this keeps the counts clean regardless
+            if c.get("t") == "react":
+                continue  # a reaction makes nobody a member and counts as no post
             st = seen.setdefault(e["pubkey"], [e["created_at"], 0])
             st[0] = min(st[0], e["created_at"])
             if c.get("t") == "msg":
@@ -3079,6 +3135,71 @@ class Engine:
         out.sort(key=lambda p: (not p["you"], not p["online"], p["name"].lower()))
         return out
 
+    def _reaction_states(self, evs: list[dict]) -> dict:
+        """(pubkey, target, emoji) -> on, from the latest event for each (the room's order: created_at, the
+        author's `at` within the second, then id, which every client computes the same way). `evs` is sorted, so
+        the last one written wins. Hidden people and malformed events count for nothing."""
+        state: dict[tuple, bool] = {}
+        for e in evs:
+            c = self._content(e)
+            if c.get("t") == "react" and valid_reaction(c) and not (self._hidden and self._is_hidden(e)):
+                state[(e["pubkey"], c["target"], c["emoji"])] = c["on"]
+        return state
+
+    def _reactions_by_target(self, evs: list[dict], who: dict, msg_ids: set) -> dict[str, list]:
+        """target -> [{emoji, count, mine, names}] in the fixed emoji order, for messages that are in the room.
+        Agents and people count alike. Each key has at most one state per emoji, so eight emoji per target is
+        the most one key can ever add."""
+        ident = who["ident"]
+        mine_keys = (ident["person_pk"], ident["agent_pk"])
+        by: dict[str, dict[str, list]] = {}
+        for (pk, target, emoji), on in self._reaction_states(evs).items():
+            if on and target in msg_ids:
+                by.setdefault(target, {}).setdefault(emoji, []).append(pk)
+        out = {}
+        for target, per in by.items():
+            out[target] = [{"emoji": em, "count": len(per[em]), "mine": any(pk in mine_keys for pk in per[em]),
+                            "names": [self._reactor_name(who, pk) for pk in per[em][:MAX_REACT_NAMES]]}
+                           for em in REACTIONS if em in per]
+        return out
+
+    def _reactor_name(self, who: dict, pk: str) -> str:
+        """Who reacted, named the way the room names them: a name someone else holds shows as a short key."""
+        if pk in who["agent"]:
+            n = who["agent"][pk]
+            return n if self._holder(who, n, agent=True) in (None, pk) else _short(pk)
+        n, ok = self._owner_label(who, pk)
+        return n if ok else _short(pk)
+
+    def _flag(self, who: dict, pk: str, name: str, owner: Optional[str], owner_name: str, owner_ok: bool) -> Optional[dict]:
+        """The impostor flag the room shows on a sender: someone else holds the name (look-alikes included), or
+        an agent whose owner key doesn't hold its owner's name."""
+        holder = self._holder(who, name, agent=bool(owner))
+        if holder not in (None, pk):
+            return {"claimed": name, "real": None if holder == CONTESTED else holder}
+        if owner and not owner_ok:
+            real = self._holder(who, owner_name)
+            return {"claimed": owner_name, "real": None if real == CONTESTED else real, "owner": True}
+        return None
+
+    def _quote(self, room: str, target_id: str, who: dict) -> dict:
+        """The line a reply carries: who, what (first QUOTE_CHARS), and the same flag the room would put on that
+        message, so a lookalike is never quoted under the real name. A message we don't hold (hidden people's
+        are dropped on hiding), or anything but a chat message, is just `missing`."""
+        te = self.events.get(room, {}).get(target_id) if isinstance(target_id, str) else None
+        c = self._content(te) if te is not None else {}
+        if te is None or c.get("t") != "msg":
+            return {"missing": True}
+        owner = self.owner_of(te)
+        name = _name_ok(c.get("name"), _short(te["pubkey"]))
+        owner_name, owner_ok = self._owner_label(who, owner) if owner else ("", True)
+        q = {"id": target_id, "name": name, "text": str(c.get("text", ""))[:QUOTE_CHARS],
+             "role": "agent" if owner else "person"}
+        flag = self._flag(who, te["pubkey"], name, owner, owner_name, owner_ok)
+        if flag:
+            q["impostor"] = flag
+        return q
+
     def messages(self, room: str, limit: int = 120) -> list[dict]:
         ident = self._identity()
         evs = self._sorted(room)
@@ -3123,6 +3244,7 @@ class Engine:
             if c.get("t") == "share" and not self.owner_of(e) and offer_owner.get(str(c.get("offer"))) == e["pubkey"]:
                 offer_state[str(c.get("offer"))] = "shared"
         my_agent_name = self.persona()["name"]
+        reactions = self._reactions_by_target(evs, who, {e["id"] for e in evs if self._content(e).get("t") == "msg"})
         out = []
         for e in evs:
             c = self._content(e)
@@ -3143,21 +3265,24 @@ class Engine:
                     "reply_to": (nostr.tag_values(e, "e") or [None])[0]}
             if t == "msg" and not item["mine"] and self._mentions_me(item["text"]):
                 item["mentions_me"] = True
-            holder = self._holder(who, name, agent=bool(owner))
-            if holder not in (None, e["pubkey"]):
+            if t == "msg":
+                item["reactions"] = reactions.get(e["id"], [])
+                if isinstance(item["reply_to"], str):
+                    item["quote"] = self._quote(room, item["reply_to"], who)
+            flag = self._flag(who, e["pubkey"], name, owner, owner_name, owner_ok)
+            if flag and not flag.get("owner"):
                 # someone else holds this name (compared as skeletons, so look-alikes count)
-                item["impostor"] = {"claimed": name, "real": None if holder == CONTESTED else holder}
-                if not owner:
+                holder = flag["real"]  # None when contested: then nobody's agent can match below
+                item["impostor"] = flag
+                if not owner and holder is not None:
                     # an impostor addressing an agent whose owner carries the claimed name: make it explicit
                     for pk, p in self.presence.get(room, {}).items():
                         if p["owner"] == holder and self._mentions(item["text"], p["name"]):
                             item["impostor"]["agent"] = p["name"]
                     if holder == ident["person_pk"] and self._mentions(item["text"], my_agent_name):
                         item["impostor"]["agent"] = my_agent_name
-            elif owner and not owner_ok:
-                # "agent of Justin" from an owner key that doesn't hold the name Justin
-                real = self._holder(who, owner_name)
-                item["impostor"] = {"claimed": owner_name, "real": None if real == CONTESTED else real, "owner": True}
+            elif flag:
+                item["impostor"] = flag  # "agent of Justin" from an owner key that doesn't hold the name Justin
             if t == "join" and item.get("impostor"):
                 continue  # a silent lookalike's join: nothing it says yet, so no line (its messages stay flagged)
             if c.get("system") == "budget" and owner:
