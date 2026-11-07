@@ -48,6 +48,8 @@ _BUSY_STATUS = re.compile(r"HTTP (?:429|503)\b")
 # NIP-42 says the reason starts "auth-required: "; relay.damus.io says "ERROR: auth-required: requested filter ..."
 # (found against the live relay), so look for the word near the start rather than at it.
 _AUTH_REQUIRED = re.compile(r"\bauth-required\b", re.I)
+AUTH_MAX = 3                # NIP-42 logins answered per relay per AUTH_WINDOW_S; past that, its DM request waits
+AUTH_WINDOW_S = 600.0
 _TRANSIENT = re.compile(r"^\s*rate-limited\b|rate[\s-]*limit|slow\s*down|try again later", re.I)
 
 
@@ -135,6 +137,8 @@ class RelayPool:
         self._challenge: dict[str, str] = {}   # url -> the relay's latest NIP-42 challenge on this connection
         self._authed: dict[str, str] = {}      # url -> the challenge we already answered (one try per challenge)
         self._auth_wait: dict[str, set] = {}   # url -> subs the relay closed before it had sent a challenge
+        self._auth_times: dict[str, list] = {}  # url -> monotonic times of our logins there (kept across reconnects)
+        self._auth_resume: set[str] = set()    # urls waiting out the login window before asking again
         if self._store is not None:
             try:
                 keep = max(self._outbox_ttl, getattr(self._store, "event_history_days", 3) * 86400, FAILED_KEEP_S)
@@ -200,6 +204,9 @@ class RelayPool:
                     self._authed.pop(url, None)
                     self._auth_wait.pop(url, None)
                     for sub in list(self._subs.values()):
+                        if sub.needs_auth and self._auth_paused(url):
+                            self._auth_resume_later(url)   # logins used up there: ask again when the window passes
+                            continue
                         await self._send_req(url, ws, sub)
                     self._spawn_flush(url, ws)
                     async for raw in ws:
@@ -336,7 +343,14 @@ class RelayPool:
         if self._authed.get(url) == challenge:
             st.last_error = "relay still wants a login after ours"
             return
+        if self._auth_paused(url):
+            # A relay that sends a fresh challenge before every refusal (or drops and reconnects) would otherwise
+            # get a signature each round. Leave the subscription closed there until the window passes.
+            st.last_error = "relay keeps asking for a login: private messages paused there for a while"
+            self._auth_resume_later(url)
+            return
         self._authed[url] = challenge
+        self._auth_times.setdefault(url, []).append(time.monotonic())
         try:
             ev = self._auth_signer(url, challenge)
             if not isinstance(ev, dict) or ev.get("kind") != 22242 or not isinstance(ev.get("id"), str):
@@ -360,6 +374,37 @@ class RelayPool:
             return
         if self._ws.get(url) is ws and self._subs.get(sub_id) is sub:
             await self._send_req(url, ws, sub)
+
+    def _auth_paused(self, url: str) -> bool:
+        """True while this relay has had AUTH_MAX logins in the last AUTH_WINDOW_S seconds."""
+        now = time.monotonic()
+        times = [t for t in self._auth_times.get(url, []) if now - t < AUTH_WINDOW_S]
+        self._auth_times[url] = times
+        return len(times) >= AUTH_MAX
+
+    def _auth_resume_later(self, url: str) -> None:
+        """Once the login window has passed, ask that relay again for the subscriptions that want a login (it will
+        refuse them with auth-required and the login runs, within the budget again). One wait per relay."""
+        if url in self._auth_resume or self._stopped:
+            return
+        times = self._auth_times.get(url) or [time.monotonic()]
+        wait = max(0.0, AUTH_WINDOW_S - (time.monotonic() - times[0])) + 0.1
+
+        async def later():
+            try:
+                await asyncio.sleep(wait)
+                ws = self._ws.get(url)
+                if ws is not None and not self._stopped:
+                    for sub in list(self._subs.values()):
+                        if sub.needs_auth:
+                            await self._send_req(url, ws, sub)
+            finally:
+                self._auth_resume.discard(url)
+
+        self._auth_resume.add(url)
+        t = asyncio.ensure_future(later())
+        self._flush_tasks.add(t)
+        t.add_done_callback(self._flush_tasks.discard)
 
     def _verify(self, url: str, ev: dict) -> bool:
         """Full check, but the signature (the slow part) only once per id. A repeat still has its id
@@ -466,6 +511,42 @@ class RelayPool:
     def eose_count(self, sub_id: str) -> int:
         sub = self._subs.get(sub_id)
         return len(sub.eose) if sub else 0
+
+    def eosed(self, sub_id: str, url: str) -> bool:
+        """True once `url` has answered this subscription's stored events (EOSE)."""
+        sub = self._subs.get(sub_id)
+        return bool(sub and url in sub.eose)
+
+    async def query_relay(self, url: str, filters: list[dict], *, timeout: float = 8.0,
+                          needs_auth: bool = False) -> tuple[list[dict], bool]:
+        """One-shot fetch from ONE relay: (events, complete). `complete` is True only when the relay sent EOSE, so a
+        caller paging through history knows whether it saw the whole page. `needs_auth` lets the NIP-42 login run
+        for it like for the private-message subscription (and stays off while that relay's logins are paused)."""
+        ws = self._ws.get(url)
+        if ws is None or (needs_auth and self._auth_paused(url)):
+            return [], False
+        got: dict[str, dict] = {}
+
+        def collect(ev, from_url):
+            if from_url == url:
+                got[ev["id"]] = ev
+
+        sub_id = "q" + format(random.getrandbits(40), "x")
+        sub = Subscription(sub_id, filters, collect, dedupe=False, seen_ids=set(), needs_auth=needs_auth)
+        self._subs[sub_id] = sub
+        try:
+            await self._send_req(url, ws, sub)
+            end = time.monotonic() + timeout
+            while time.monotonic() < end and url not in sub.eose and self._ws.get(url) is ws:
+                await asyncio.sleep(0.05)
+        finally:
+            done = url in sub.eose
+            self._subs.pop(sub_id, None)
+            try:
+                await ws.send(json.dumps(["CLOSE", sub_id]))
+            except Exception:
+                pass
+        return sorted(got.values(), key=lambda e: -e["created_at"]), done
 
     # --- publish --------------------------------------------------------------------------------
     async def publish(self, ev: dict, *, wait: float = 4.0) -> dict[str, tuple[bool, str]]:

@@ -105,14 +105,19 @@ QUOTE_CHARS = 120          # how much of the replied-to message a quote carries
 ROOM_HISTORY_LIMIT = 300   # history events asked of the relays per room, and per room, not across all rooms
 HISTORY_FILTERS_PER_SUB = 8  # filters in one REQ, of any kind (relays cap the filters in a request)
 DM_QUEUE_MAX = 400         # gift wraps waiting to be opened; more than this are dropped unread (a flood)
-DM_HISTORY_LIMIT = 400     # gift wraps asked of each relay when subscribing (the newest)
+DM_HISTORY_LIMIT = 400     # gift wraps asked of one relay per page of history
+DM_PAGES = 10              # pages of history (going back with `until`) asked of one relay per pass
+DM_PAGE_TIMEOUT = 8.0      # seconds one page may take before the pass on that relay gives up (it is asked again later)
+DM_REPASS_GAP = 600        # seconds between history passes started by an overflow, a reconnect or a new friend
+DM_SELF_COPY_DELAY = (5, 90)  # seconds (scaled by timescale) before my own copy of a wrap goes out, chosen at random
+DM_FUTURE_SKEW = 600       # a message dated further ahead than this is dropped (it would claim to come after a yes)
+DM_CLOCK_SLACK = 60        # seconds two installs' clocks may differ when history is checked against a friendship's start
+DM_DEFER_MAX = 200        # non-friends' wraps from a history pass kept (sealed, in memory) until that pass ends
 DM_SINCE_MARGIN = 3 * 86400  # wraps are dated up to 2 days before they were sent: ask this far before "last online"
 DM_PACE_S = 0.05           # between wraps the worker opens: a flood of them costs a fraction of one core
 DM_SEND_PER_MIN = 10       # private messages one install sends a minute (each is two wraps)
 DM_SNIPPET = 60            # how much of a new private message the sidebar carries, for the alert
 DM_THREAD_MESSAGES = 200   # messages of one conversation the UI loads
-DM_HOLD_PER_PEER = 20      # wraps of private messages from a non-friend kept (sealed, in memory) in case a friend event follows
-DM_HOLD_TOTAL = 100
 DM_SEEN_MEMORY = 4000      # wrap ids remembered in memory, for the ones not recorded on disk (hidden senders)
 # Typing indicators (ephemeral kind 21042 `typing`, people only) and pictures/faces of people (replaceable kind 30078).
 TYPING_GAP = 5             # seconds between my typing signals into one room while I type
@@ -596,8 +601,16 @@ class Engine:
         self._dm_queued: set[str] = set()        # wrap ids in the queue or being opened
         self._dm_seen: dict[str, None] = {}      # wrap ids already handled this run (bounded)
         self._dm_rev = 0                         # moves whenever a private message or conversation changes
-        self._dm_hold: dict[str, list] = {}      # non-friends' wraps, by sender, until a friend event for them arrives
-        self._dm_dropped = False                 # the queue overflowed: don't move `dm_since` this run
+        self._dm_defer: list[tuple[str, dict]] = []   # (sender, wrap) of non-friends' messages from a history pass,
+                                                      # looked at again when it ends
+        self._dm_passes = 0                      # history passes running
+        self._dm_reached: dict[str, float] = {}  # relay url -> its `retry_at` when a pass on it last reached `since`
+        self._dm_repass_at = 0.0                 # when the last extra history pass started
+        self._dm_dropped = False                 # the queue overflowed: no relay's `since` moves until a pass re-reads
+        self._dm_drop_count = 0
+        self._dm_later: set = set()              # my own copies of wraps, waiting out their random delay
+        self._dm_waiting: dict[str, list] = {}   # peer -> wrap ids of history messages read before they were a friend
+        self._dm_pass_again = False              # a friendship began during a pass: run one more when it ends
         self._dm_busy = False
         # people's pictures and faces: {pk: {"avatar": meta, "face": meta}} (meta: id, created_at, and mime/size or
         # the face dict; an empty one is a removal). The picture bytes stay in the store until asked for.
@@ -930,15 +943,98 @@ class Engine:
     async def _resubscribe_dm(self) -> None:
         """The private-message subscription: gift wraps addressed to my person key. A REQ of its own, never
         chunked in with the rooms' filters: a relay that closes it with "auth-required" (damus) must not take
-        a room's history down with it, and it never has more than the one filter. Only once set up."""
+        a room's history down with it, and it never has more than the one filter. Only once set up.
+
+        The live subscription asks for no history (limit 1): history comes from `_dm_pass`, which pages back
+        through each relay with `until` down to that relay's own `since`, so a pile of junk wraps dated "now"
+        can't push real ones (dated up to two days back) out of a single capped reply."""
         if not self.settings()["onboarded"]:
             await self.pool.unsubscribe("dm")
             return
-        flt: dict = {"kinds": [dm.KIND_WRAP], "#p": [self._identity()["person_pk"]], "limit": DM_HISTORY_LIMIT}
-        since = self.store.get("dm_since")
-        if isinstance(since, (int, float)) and not isinstance(since, bool) and since > 0:
-            flt["since"] = max(0, int(since) - DM_SINCE_MARGIN)
+        flt: dict = {"kinds": [dm.KIND_WRAP], "#p": [self._identity()["person_pk"]], "limit": 1}
         await self.pool.subscribe("dm", [flt], self._on_dm_wrap, resume=False, needs_auth=True)
+        if not self._dm_repass_at and self._dm_queue is not None:
+            self._dm_repass_at = time.time()
+            self._spawn(self._dm_pass())
+
+    def _dm_since(self, url: str) -> Optional[int]:
+        """Where history for this relay starts: the last time a pass on it had read everything, less the margin.
+        None (all of it, as far as the pages go) for a relay never read to the end."""
+        per = self.store.get("dm_since_relays")
+        since = per.get(url) if isinstance(per, dict) else None
+        if since is None:
+            since = self.store.get("dm_since")   # one value for every relay, from before it was kept per relay
+        if isinstance(since, (int, float)) and not isinstance(since, bool) and since > 0:
+            return max(0, int(since) - DM_SINCE_MARGIN)
+        return None
+
+    async def _dm_pass(self, full: bool = False) -> None:
+        """Read the gift wraps every relay holds for me, page by page (newest first, `until` moving back), down to
+        that relay's `since` (or, `full`, as far as DM_PAGES go). A relay whose pages reached the end is marked
+        reached; only then may `_dm_touch` move its `since`. Wraps wait for room in the queue rather than being
+        dropped, and non-friends' messages from the pass are looked at again once it has ended (history comes in
+        no order, so a friend event may follow the messages it lets in)."""
+        if self.pool is None or self._dm_queue is None or not self.settings()["onboarded"]:
+            return
+        self._dm_passes += 1
+        drops = self._dm_drop_count
+        started = {}
+        try:
+            urls = list(getattr(self.pool, "urls", []) or [])
+            got = await asyncio.gather(*(self._dm_pass_relay(u, None if full else self._dm_since(u)) for u in urls),
+                                       return_exceptions=True)
+            st = getattr(self.pool, "status", {}) or {}
+            for u, ok in zip(urls, got):
+                if ok is True and u in st:
+                    started[u] = st[u].retry_at
+            while self._dm_queue.qsize() or self._dm_busy:
+                await asyncio.sleep(DM_PACE_S)
+            if self._dm_passes == 1:
+                deferred, self._dm_defer = self._dm_defer, []
+                for _peer, ev in deferred:
+                    self._dm_seen.pop(ev["id"], None)
+                    await self._dm_process(ev, "final")
+            self._dm_reached.update(started)
+            if self._dm_drop_count == drops:
+                self._dm_dropped = False      # whatever the queue dropped before this pass, the pass has read again
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("ninsei: could not read private messages from the relays")
+        finally:
+            self._dm_passes -= 1
+        if self._dm_pass_again and not self._dm_passes:
+            self._dm_pass_again = False
+            self._spawn(self._dm_pass())
+
+    async def _dm_pass_relay(self, url: str, since: Optional[int]) -> bool:
+        """Page back through one relay. True when its history was read down to `since` (or to its end)."""
+        pk = self._identity()["person_pk"]
+        end = time.monotonic() + DM_PAGE_TIMEOUT
+        while not self.pool.eosed("dm", url):   # the live request is answered (a login, if wanted, is done)
+            if time.monotonic() > end:
+                return False
+            await asyncio.sleep(0.05)
+        until: Optional[int] = None
+        ids: set = set()
+        for _ in range(DM_PAGES):
+            flt: dict = {"kinds": [dm.KIND_WRAP], "#p": [pk], "limit": DM_HISTORY_LIMIT}
+            if since is not None:
+                flt["since"] = since
+            if until is not None:
+                flt["until"] = until
+            evs, done = await self.pool.query_relay(url, [flt], timeout=DM_PAGE_TIMEOUT, needs_auth=True)
+            if not done:
+                return False
+            new = [ev for ev in evs if isinstance(ev, dict) and ev.get("id") not in ids]
+            if not new:
+                return True                   # nothing older than what we have: the end, or `since`
+            for ev in new:
+                ids.add(ev.get("id"))
+                await self._dm_enqueue(ev, "history")
+            oldest = min(ev["created_at"] for ev in new if isinstance(ev.get("created_at"), int))
+            until = oldest if until is None or oldest < until else until - 1
+        return False                          # pages ran out first: `since` stays where it was
 
     async def _resubscribe(self) -> None:
         await self._resubscribe_dm()
@@ -3159,7 +3255,8 @@ class Engine:
                 pres.pop(apk, None)
         self.lobby = {**self.lobby, "people": [p for p in self.lobby.get("people", []) if p["pk"] != pk]}
         self.store.dm_forget(pk)   # their private messages go too, and new ones are dropped unopened
-        self._dm_hold.pop(pk, None)
+        self._dm_defer = [(p, w) for p, w in self._dm_defer if p != pk]
+        self._dm_waiting.pop(pk, None)
         self.store.friend_forget(pk)   # and the friendship, any request, and any memory of an ignore
         self._dm_rev += 1
         self._art_forget(pk)       # and their picture and face
@@ -3182,12 +3279,7 @@ class Engine:
                 await self._on_event(ev, "history")
         if self.settings()["onboarded"]:   # what they sent while hidden was never opened or recorded: ask again
             self._dm_seen.clear()
-            try:
-                for ev in await self.pool.query([{"kinds": [dm.KIND_WRAP], "#p": [self._identity()["person_pk"]],
-                                                  "limit": DM_HISTORY_LIMIT}], timeout=4):
-                    await self._on_dm_wrap(ev, "history")
-            except Exception:
-                log.exception("ninsei: could not ask the relays for private messages")
+            self._spawn(self._dm_pass(full=True))   # paged like any history pass, in the background
         self._bump()
         return {"hidden": len(h)}
 
@@ -3946,33 +4038,48 @@ class Engine:
     # besides the routes that show them to the owner. Wraps arrive on their own subscription, wait in a
     # bounded queue, and one worker opens them (see dm.py for every check).
     # ============================================================================================
-    async def _on_dm_wrap(self, ev: dict, _src: str) -> None:
+    async def _on_dm_wrap(self, ev: dict, src: str) -> None:
         """A gift wrap from a relay. Only cheap checks here (shape, size, already handled); the crypto runs in
-        the worker, at its own pace, so a flood of wraps can't stall the relay connection or the engine."""
+        the worker, at its own pace, so a flood of wraps can't stall the relay connection or the engine. A live
+        wrap that finds the queue full is dropped unread: the relays are read again by a history pass."""
         if self._dm_queue is None or not dm.wrap_shape_ok(ev):
             return
         wid = ev["id"]
         if wid in self._dm_seen or wid in self._dm_queued or self.store.dm_wrap_seen(wid):
             return
+        eosed = getattr(self.pool, "eosed", None)
+        if eosed is not None and isinstance(src, str) and src.startswith(("ws://", "wss://")) and not eosed("dm", src):
+            src = "history"           # stored, not live: what that relay held before it said EOSE
         try:
-            self._dm_queue.put_nowait(ev)
+            self._dm_queue.put_nowait((ev, src))
         except asyncio.QueueFull:
-            self._dm_dropped = True   # unread and unrecorded: a restart asks the relays again
+            self._dm_dropped = True   # unread and unrecorded: `_dm_touch` starts a pass that reads it again
+            self._dm_drop_count += 1
             return
         self._dm_queued.add(wid)
 
+    async def _dm_enqueue(self, ev: Any, src: str) -> None:
+        """Like `_on_dm_wrap`, for a history pass: it waits for room in the queue instead of dropping."""
+        if self._dm_queue is None or not dm.wrap_shape_ok(ev):
+            return
+        wid = ev["id"]
+        if wid in self._dm_seen or wid in self._dm_queued or self.store.dm_wrap_seen(wid):
+            return
+        self._dm_queued.add(wid)
+        await self._dm_queue.put((ev, src))
+
     async def _dm_worker(self) -> None:
         while True:
-            ev = await self._dm_queue.get()
+            ev, src = await self._dm_queue.get()
             self._dm_busy = True
             try:
-                await self._dm_process(ev)
+                await self._dm_process(ev, src)
             except asyncio.CancelledError:
                 raise
             except Exception:
                 log.exception("ninsei: a private message could not be handled")
             finally:
-                self._dm_queued.discard(ev.get("id"))
+                self._dm_queued.discard(ev.get("id") if isinstance(ev, dict) else None)
                 self._dm_busy = bool(self._dm_queue.qsize())
             await asyncio.sleep(DM_PACE_S)
 
@@ -3987,8 +4094,10 @@ class Engine:
         while len(self._dm_seen) > DM_SEEN_MEMORY:
             self._dm_seen.pop(next(iter(self._dm_seen)))
 
-    async def _dm_process(self, ev: Any) -> str:
-        """Open one gift wrap and file what is in it. Returns the verdict (dm.OK or why it was dropped)."""
+    async def _dm_process(self, ev: Any, src: str = "relay") -> str:
+        """Open one gift wrap and file what is in it. Returns the verdict (dm.OK or why it was dropped). `src` is
+        "history" for a wrap a history pass read, "final" when that pass has ended and looks at it again, anything
+        else (the relay's url) for a live one."""
         wid = ev.get("id") if isinstance(ev, dict) else None
         ident = self._identity()
         hidden = frozenset(self._hidden)
@@ -4007,17 +4116,39 @@ class Engine:
         now = time.time()
         created = max(0, min(msg["created_at"], int(now)))   # a date ahead of us would pin it to the bottom
         if msg["type"] != dm.TEXT:
-            return self._friend_inbound(wid, msg["type"], peer, mine, created, now)
-        # Friends only. A private message from anyone else is dropped here, before it is stored: nothing of it is
-        # kept but the sealed wrap, in a small bounded memory-only holding area, because relays hand history back in
-        # no order and a friend event can arrive after the messages it makes welcome (a second install restoring).
-        # A friend event for that sender puts these through the worker again; otherwise they are never stored. My own copy, from my
-        # other install, is stored for anyone not hidden: only my key can make one, and a restore reads history in
-        # no particular order, so it can arrive before the friend event it follows.
-        if not mine and self.store.friend_rel(peer, now) != "friend":
-            self._dm_hold_add(peer, ev)
-            self._dm_handled(wid, record=False)
-            return dm.NOT_FRIEND
+            # A friend event may be a second or so ahead (two actions in one second are dated now and now + 1, to
+            # keep their order), so it is clamped a little ahead of now rather than at now.
+            at = max(0, min(msg["created_at"], int(now) + DM_CLOCK_SLACK))
+            return self._friend_inbound(wid, msg["type"], peer, mine, at, now)
+        # Friends only, and only what they wrote once both of us had said yes: a request carries no words, so
+        # anything a requester wrote before that is dropped, never held, and accepting starts an empty conversation.
+        # A message dated far ahead of now is dropped too (it would claim to come after a yes). My own copy, from my
+        # other install, is stored for anyone not hidden: only my key can make one.
+        if not mine:
+            row = self.store.friend_get(peer)
+            if msg["created_at"] > now + DM_FUTURE_SKEW:
+                self._dm_handled(wid)
+                return dm.NOT_FRIEND
+            if not row or not (row["mine"] and row["theirs"]):
+                if src == "history" and self._dm_passes and len(self._dm_defer) < DM_DEFER_MAX:
+                    # history arrives in no order: the friend event may still be on its way in this same pass
+                    self._dm_defer.append((peer, ev))
+                    self._dm_handled(wid, record=False)
+                    return dm.NOT_FRIEND
+                if src in ("history", "final"):
+                    # Read back from history, and no friendship (yet): not recorded on disk, so a later pass (one
+                    # starts when a friendship begins) can look again; the date check below keeps out what was
+                    # written before the yes.
+                    self._dm_handled(wid, record=False)
+                    self._dm_note_waiting(peer, wid)
+                    return dm.NOT_FRIEND
+                self._dm_handled(wid)
+                return dm.NOT_FRIEND
+            if src in ("history", "final") and msg["created_at"] < max(row["mine_at"], row["theirs_at"]) - DM_CLOCK_SLACK:
+                # Read back from history (a restart, a second install): dated before we were friends (this time),
+                # so a live install dropped it then. Live, the friend state at arrival decides, whatever the clocks say.
+                self._dm_handled(wid)
+                return dm.NOT_FRIEND
         res = self.store.dm_add(id=msg["id"], peer=peer, sender=sender, text=msg["text"], created_at=created,
                                 arrived_at=now)
         self._dm_handled(wid)
@@ -4033,8 +4164,13 @@ class Engine:
         if not mine and self._is_agent_key(peer):
             self._dm_handled(wid)
             return dm.DROPPED
+        evicted: list = []
         res = self.store.friend_event(peer, side="mine" if mine else "theirs",
-                                      action="remove" if kind == dm.FRIEND_REMOVE else "yes", at=at, now=now)
+                                      action="remove" if kind == dm.FRIEND_REMOVE else "yes", at=at, now=now,
+                                      wrap=wid if not mine else "", known=not mine and self._dm_known(peer),
+                                      evicted=evicted)
+        for w in evicted:            # a request that gave way can come back when a relay hands it over again
+            self._dm_seen.pop(w, None)
         if res == "limit":
             return dm.LIMIT          # no room: not recorded as handled, so it isn't lost for good
         self._dm_handled(wid)
@@ -4042,23 +4178,34 @@ class Engine:
             return dm.DROPPED
         self._dm_rev += 1
         self._bump()
-        self._dm_release(peer)
+        self._dm_friend_began(peer)
         return dm.OK
 
-    def _dm_release(self, peer: str) -> None:
-        """If `peer` is a friend now, the wraps held for them (see `_dm_process`) go through the worker again."""
-        if peer in self._dm_hold and self.store.friend_rel(peer) == "friend":
-            for w in self._dm_hold.pop(peer):
-                self._dm_seen.pop(w["id"], None)
-                self._dm_queued.discard(w["id"])
-                asyncio.ensure_future(self._on_dm_wrap(w, "held"))
+    def _dm_note_waiting(self, peer: str, wid: Any) -> None:
+        """Remember (in memory, bounded) a history message from someone who isn't a friend yet."""
+        if not isinstance(wid, str):
+            return
+        self._dm_waiting.setdefault(peer, []).append(wid)
+        while sum(len(v) for v in self._dm_waiting.values()) > DM_DEFER_MAX:
+            self._dm_waiting.pop(next(iter(self._dm_waiting)))
 
-    def _dm_hold_add(self, peer: str, ev: dict) -> None:
-        held = self._dm_hold.setdefault(peer, [])
-        if len(held) < DM_HOLD_PER_PEER and not any(w["id"] == ev["id"] for w in held):
-            held.append(ev)
-        while sum(len(v) for v in self._dm_hold.values()) > DM_HOLD_TOTAL:
-            self._dm_hold.pop(next(iter(self._dm_hold)))      # the longest-held sender gives way
+    def _dm_friend_began(self, peer: str) -> None:
+        """If `peer` just became a friend and history held messages of theirs this run, read the relays again so
+        those written after the yes come in (only my own yes can make a friend, so this can't be farmed)."""
+        if self.store.friend_rel(peer) != "friend" or peer not in self._dm_waiting:
+            return
+        for wid in self._dm_waiting.pop(peer):
+            self._dm_seen.pop(wid, None)
+        if self._dm_passes:
+            self._dm_pass_again = True
+        else:
+            self._spawn(self._dm_pass())
+
+    def _dm_known(self, pk: str) -> bool:
+        """True when this person has been seen in a room I'm in (a post, or an agent of theirs present)."""
+        if any(pk in hs for hs in self._holder_seen.values()):
+            return True
+        return any(p.get("owner") == pk for pres in self.presence.values() for p in pres.values())
 
     def _is_agent_key(self, pk: str) -> bool:
         """True for a key that is (or has been seen as) someone's agent: mine, a hidden person's, one with a
@@ -4070,14 +4217,29 @@ class Engine:
         return any(e["pubkey"] == pk and self.owner_of(e) for evs in self.events.values() for e in evs.values())
 
     def _dm_touch(self) -> None:
-        """Called every minute while the engine runs: if the private-message subscription is up and everything
-        it delivered has been opened, anything a relay holds for me older than now was handled, so the next start
-        may ask from here (less the margin). Never moved after the queue overflowed."""
-        if self._dm_dropped or self._dm_busy or self._dm_queue is None or self._dm_queue.qsize() or not self.pool:
+        """Called every minute while the engine runs. A relay whose last pass read everything, that has stayed
+        connected since (its `retry_at` hasn't moved) and whose live wraps have all been opened, has handed me
+        everything it holds up to now: its `since` moves to now. A relay that reconnected since its pass, or a queue
+        that overflowed, starts a new pass (at most one every DM_REPASS_GAP), and no `since` moves until it has
+        read again. A relay that is down keeps its old `since`, so what only it holds is still asked for."""
+        if self._dm_queue is None or not self.pool or not self.settings()["onboarded"]:
             return
-        if not self.settings()["onboarded"] or self.pool.eose_count("dm") < 1:
+        now = time.time()
+        st = getattr(self.pool, "status", {}) or {}
+        moved = [u for u, at in self._dm_reached.items() if u not in st or st[u].retry_at != at]
+        for u in moved:
+            self._dm_reached.pop(u, None)
+        if (moved or self._dm_dropped) and not self._dm_passes and now - self._dm_repass_at >= DM_REPASS_GAP:
+            self._dm_repass_at = now
+            self._spawn(self._dm_pass())
+        if self._dm_dropped or self._dm_busy or self._dm_queue.qsize() or self._dm_passes or not self._dm_reached:
             return
-        self.store.set("dm_since", int(time.time()))
+        per = self.store.get("dm_since_relays")
+        per = dict(per) if isinstance(per, dict) else {}
+        for u in self._dm_reached:
+            if st[u].state == "open":
+                per[u] = int(now)
+        self.store.set("dm_since_relays", per)
 
     def _dm_book(self, pks: set) -> dict[str, dict]:
         """What rooms say about these people: {pk: {"name", "flag"}}. `flag` is the impostor flag the room would
@@ -4099,6 +4261,10 @@ class Engine:
                 if p.get("owner") in pks:
                     latest.setdefault(p["owner"], (0, room))
         whos: dict[str, dict] = {}
+        friends = self.store.friend_names()          # the names rooms last showed for my friends
+        ident = self._identity()
+        mine_sk = skeleton(self.settings()["display_name"])
+        taken = {skeleton(n): f for f, n in friends.items() if skeleton(n)}
         for pk in pks:
             name, flag = "", None
             if pk in latest:
@@ -4106,6 +4272,18 @@ class Engine:
                 who = whos.get(room) or whos.setdefault(room, self._who(room))
                 name = who["person"].get(pk, "")
                 flag = self._flag(who, pk, name, None, "", True) if name else None
+            if not name and pk in friends:
+                name = friends[pk]                   # a friend who hasn't spoken in my rooms lately keeps their name
+            if name and not flag and pk not in friends:
+                # Someone who isn't my friend, using my name or one of my friends' names (look-alikes included),
+                # wherever they last spoke: flagged like a lookalike in a room.
+                sk = skeleton(name)
+                if not sk or sk in COMMON_WORDS:
+                    pass
+                elif sk == mine_sk:
+                    flag = {"claimed": name, "real": ident["person_pk"]}
+                elif sk in taken and taken[sk] != pk:
+                    flag = {"claimed": name, "real": taken[sk]}
             out[pk] = {"name": name, "flag": flag}
         return out
 
@@ -4123,10 +4301,13 @@ class Engine:
         lists = self.store.friend_lists()
         pend = lists["requests"][:FRIEND_REQUESTS]
         book = self._dm_book({t["peer"] for t in threads} | {r["peer"] for r in pend})
+        remembered = self.store.friend_names()
         rows, unread = [], 0
         for t in threads:
             pk = t["peer"]
             info = book.get(pk) or {"name": "", "flag": None}
+            if t["friend"] and info["name"] and not info["flag"] and remembered.get(pk) != info["name"]:
+                self.store.friend_name_set(pk, info["name"])   # so a lookalike can be told apart while they're quiet
             row = {"pk": pk, "name": self._dm_label(pk, info), "impostor": bool(info["flag"]), "friend": t["friend"],
                    "unread": t["unread"], "ts": t["last_ts"]}
             if t["unread"]:
@@ -4201,8 +4382,11 @@ class Engine:
         return {"id": mid, "delivery": "sending"}
 
     async def dm_discard(self, pk: str, mid: str) -> dict:
-        """Take back an undelivered private message: gone from this computer, never sent. (The copy wrapped to
-        myself for my other installs is not tracked by message, so if it had gone out they would keep it.)"""
+        """Stop an undelivered private message: gone from this computer, and it won't be sent again. That is all it
+        can promise: "pending" or "failed" only means no relay said OK, so a relay that didn't answer may still hold
+        the sealed copy (which only the friend can open), and a wrap can't be retracted, because it is signed by a
+        one-time key that isn't kept. (The copy wrapped to myself for my other installs is not tracked by message,
+        so if it had gone out they would keep it.)"""
         row = self._own_dm_undelivered(pk, mid)
         if not self.pool.discard(row["wrap"]):
             raise ValueError("that message was delivered")
@@ -4230,17 +4414,14 @@ class Engine:
             raise ValueError("empty message")
         if not self._rate_ok("dm_send", DM_SEND_PER_MIN, 60):
             raise ValueError(f"Slow down: Ninsei sends at most {DM_SEND_PER_MIN} private messages a minute.")
-        now = int(time.time())
+        now = max(int(time.time()), self.store.dm_deleted_before(pk) + 1)   # after a delete, never under it
         rumor = dm.make_rumor(ident["person_pk"], pk, text, now)
         to_them = dm.wrap_for(ident["person_sk"], pk, rumor)
         to_me = dm.wrap_for(ident["person_sk"], ident["person_pk"], rumor)
         # Stored before it is sent, like any durable event.
         self.store.dm_add(id=rumor["id"], peer=pk, sender=ident["person_pk"], text=text, created_at=now,
                           arrived_at=time.time(), wrap=to_them["id"])
-        for w in (to_them, to_me):
-            self._dm_handled(w["id"])   # my own wraps coming back from a relay are not opened again
-            self._queue_event(w)
-            self._spawn(self.pool.publish(w))
+        self._dm_publish(to_them, to_me)
         self.store.dm_mark_read(pk)
         self._dm_rev += 1
         self._bump()
@@ -4259,21 +4440,42 @@ class Engine:
         """Wrap a friend event for them and for me (my other installs read the copy) and send both. No text, ever."""
         ident = self._identity()
         rumor = dm.make_rumor(ident["person_pk"], pk, "", at, friend=kind)
-        for w in (dm.wrap_for(ident["person_sk"], pk, rumor), dm.wrap_for(ident["person_sk"], ident["person_pk"], rumor)):
-            self._dm_handled(w["id"])
+        self._dm_publish(dm.wrap_for(ident["person_sk"], pk, rumor), dm.wrap_for(ident["person_sk"], ident["person_pk"], rumor))
+
+    def _dm_publish(self, to_them: dict, to_me: dict) -> None:
+        """Send a wrap to the other person now and my own copy after a random delay (DM_SELF_COPY_DELAY), so a
+        relay doesn't see two keys get a wrap in the same instant and pair them up. Both are in the outbox at once,
+        so a quit before the delay is up still sends my copy on the next start."""
+        for w in (to_them, to_me):
+            self._dm_handled(w["id"])   # my own wraps coming back from a relay are not opened again
             self._queue_event(w)
-            self._spawn(self.pool.publish(w))
+        self._spawn(self.pool.publish(to_them))
+        lo, hi = DM_SELF_COPY_DELAY
+        # Not one of `_tasks` (which "everything spawned has finished" waits on): a quit cancels it like any task,
+        # and the outbox row sends the copy on the next start.
+        t = asyncio.ensure_future(self._publish_later(to_me, (lo + secrets.randbelow(hi - lo + 1)) * self.ts))
+        self._dm_later.add(t)
+        t.add_done_callback(self._dm_later.discard)
+
+    async def _publish_later(self, ev: dict, delay: float) -> None:
+        await asyncio.sleep(delay)
+        await self.pool.publish(ev)
+
+    def _mine_next(self, pk: str) -> int:
+        """The date for my next friend event to `pk`: now, but always after my last one, so two actions in the same
+        second (Cancel, then Add friend) keep their order on every install."""
+        row = self.store.friend_get(pk)
+        return max(int(time.time()), (row["mine_at"] + 1) if row else 0)
 
     def _friend_yes(self, pk: str, kind: str) -> dict:
         """My "yes": a request (they haven't asked me) or an accept (they have). Recorded first, then sent."""
         if not self._rate_ok("dm_send", DM_SEND_PER_MIN, 60):
             raise ValueError(f"Slow down: Ninsei sends at most {DM_SEND_PER_MIN} private messages a minute.")
-        row = self.store.friend_get(pk)
-        at = max(int(time.time()), row["mine_at"] if row else 0)
+        at = self._mine_next(pk)
         if self.store.friend_event(pk, side="mine", action="yes", at=at) != "applied":
             raise ValueError("Your friend list is full. Remove someone, or cancel a request, first.")
         self._friend_say(pk, kind, at)
-        self._dm_release(pk)
+        self._dm_friend_began(pk)
         self._dm_rev += 1
         self._bump()
         return {"rel": self.store.friend_rel(pk)}
@@ -4317,8 +4519,7 @@ class Engine:
             raise ValueError("you aren't friends")
         if not self._rate_ok("dm_send", DM_SEND_PER_MIN, 60):
             raise ValueError(f"Slow down: Ninsei sends at most {DM_SEND_PER_MIN} private messages a minute.")
-        row = self.store.friend_get(pk)
-        at = max(int(time.time()), row["mine_at"] if row else 0)
+        at = self._mine_next(pk)
         self.store.friend_event(pk, side="mine", action="remove", at=at)
         self._friend_say(pk, dm.FRIEND_REMOVE, at)
         self._dm_rev += 1

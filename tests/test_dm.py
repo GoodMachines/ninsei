@@ -17,9 +17,18 @@ from ninsei_engine import dm, nip44, nostr, store as store_mod
 from ninsei_engine.engine import COMMONS_ID, DM_SEND_PER_MIN, KIND_ROOM, Engine
 from local_relay import LocalRelay
 from test_engine import StubLLM, read, run, setup_room, wait_for, world  # noqa: F401  (fixture re-export)
-from test_hostile import FakePool, Key, ROOM, bare, settle  # noqa: F401  (fixture re-export)
+from test_hostile import FakePool, Key, ROOM, bare  # noqa: F401  (fixture re-export)
+from test_hostile import settle as settle_tasks
 
 ROOT = Path(__file__).resolve().parent.parent
+
+
+async def settle(e, timeout=30.0):
+    """Everything the engine spawned has finished, and so have my own copies of wraps, which go out after a random
+    delay (DM_SELF_COPY_DELAY, scaled by the engine's timescale) and aren't among its tasks."""
+    await settle_tasks(e, timeout)
+    if e._dm_later:
+        await asyncio.wait_for(asyncio.gather(*list(e._dm_later), return_exceptions=True), timeout)
 NIPS = ROOT / "tests" / "data"
 
 ME = hashlib.sha256(b"dm-me").hexdigest()
@@ -284,39 +293,23 @@ async def test_a_message_from_a_friend_lands_in_the_list_and_one_from_anyone_els
     assert s["rel"] == {friend.ppk: "friend"}
 
 
-async def test_a_message_that_arrives_before_the_friend_event_is_opened_again_once_it_does(bare):
-    """A second install restoring from relays gets history in no order: the message first, the accept after."""
+async def test_words_before_a_yes_are_dropped_never_held_and_accepting_starts_empty(bare):
+    """Review finding 7: a stranger's messages sent before you accept used to be held and shown on accept."""
     e, _ = bare()
-    k = Key("early")
-    e._dm_queue = asyncio.Queue(maxsize=10)
-    worker = asyncio.ensure_future(e._dm_worker())
-    try:
-        early = wrap_to(e, k, "sent just after you accepted")
-        assert await e._dm_process(early) == dm.NOT_FRIEND and e.store.dm_counts()["messages"] == 0
-        await e._dm_process(friend_wrap(e, k, dm.FRIEND_REQUEST))
-        assert e.store.dm_counts()["messages"] == 0                       # a request alone doesn't let it in
-        await e.friend_accept(k.ppk)
-        assert await wait_for(lambda: [m["text"] for m in e.store.dm_messages(k.ppk)] == ["sent just after you accepted"])
-    finally:
-        worker.cancel()
-        await asyncio.gather(worker, return_exceptions=True)
-
-
-async def test_the_holding_area_is_small_and_forgets_a_hidden_person(bare, monkeypatch):
-    from ninsei_engine import engine as eng
-    e, _ = bare()
-    e.pool = RecPool()
-    monkeypatch.setattr(eng, "DM_HOLD_PER_PEER", 2)
-    monkeypatch.setattr(eng, "DM_HOLD_TOTAL", 5)
-    keys = [Key(f"hold{i}") for i in range(4)]
-    for k in keys:
-        for i in range(4):
-            await e._dm_process(wrap_to(e, k, f"m{i}"))
-    assert all(len(v) <= 2 for v in e._dm_hold.values()) and sum(map(len, e._dm_hold.values())) <= 5
-    pest = keys[-1]
-    assert pest.ppk in e._dm_hold
-    await e.hide_person(pest.ppk, "Pest")
-    assert pest.ppk not in e._dm_hold
+    k = Key("pushy")
+    early = [wrap_to(e, k, f"buy my thing {i}") for i in range(5)]
+    for w in early:
+        assert await e._dm_process(w, "wss://relay.example") == dm.NOT_FRIEND
+        assert e.store.dm_wrap_seen(w["id"])                                  # dropped for good, not held
+    await e._dm_process(friend_wrap(e, k, dm.FRIEND_REQUEST))
+    await e.friend_accept(k.ppk)
+    await settle(e)
+    assert e.store.dm_messages(k.ppk) == [] and e.dm_thread(k.ppk)["messages"] == []
+    for w in early:                                                           # a relay replaying them changes nothing
+        await e._on_dm_wrap(w, "wss://relay.example")
+    assert e.store.dm_messages(k.ppk) == []
+    assert await e._dm_process(wrap_to(e, k, "hello, friend"), "wss://relay.example") == dm.OK
+    assert [m["text"] for m in e.store.dm_messages(k.ppk)] == ["hello, friend"]
 
 
 async def test_a_commons_only_poster_is_not_known_and_needs_a_friend_request(bare):
@@ -501,7 +494,7 @@ async def test_no_model_and_no_agent_ever_sees_a_private_message(bare):
     await e._dm_process(wrap_to(e, k, secret))
     snap_dm = json.dumps(e.dm_summary())
     await e.dm_send(k.ppk, "reply with SECRETDM456")
-    await settle(e)
+    await settle_tasks(e)                                                     # (my own copy waits up to 90 s here)
     assert llm.calls == [] and e.pool.sent and all(w["kind"] == 1059 for w in e.pool.sent)
     haystack = json.dumps([e.snapshot(ROOM), e.messages(ROOM), [ln.__dict__ for ln in e._transcript(ROOM)],
                            e.search(ROOM, "SECRETDM"), list(e.events[ROOM].values()), e.members(ROOM)], default=str)
@@ -552,7 +545,8 @@ async def test_the_queue_drops_a_flood_unread_and_the_worker_opens_the_rest(bare
         assert not e.store.dm_wrap_seen(w["id"])                             # dropped ones are not recorded: a restart asks again
     e.pool = type("P", (FakePool,), {"eose_count": lambda self, sid: 1})()
     e._dm_touch()
-    assert e.store.get("dm_since") is None                                   # an overflow stops "last online" moving
+    assert e.store.get("dm_since_relays") is None                            # an overflow stops "last online" moving
+    # (and starts a history pass that reads them again: test_dm_review.py)
 
 
 async def test_hostile_wraps_through_the_handler_store_nothing_and_never_raise(bare):
@@ -715,12 +709,14 @@ async def test_remove_is_local_tells_them_and_closes_the_thread(bare):
         await e.friend_remove(k.ppk)                                                       # nothing to remove twice
 
 
-async def test_their_removal_closes_the_thread_and_a_stranger_cannot_make_rows_with_one(bare):
+async def test_their_removal_closes_the_thread_and_a_strangers_removal_is_only_a_tombstone(bare):
     e, _ = bare()
     k, nobody = Key("gone"), Key("nobody")
     befriend(e, k)
     assert await e._dm_process(friend_wrap(e, nobody, dm.FRIEND_REMOVE)) == dm.DROPPED
-    assert e.store.friend_get(nobody.ppk) is None                                          # a removal makes no row
+    row = e.store.friend_get(nobody.ppk)                                   # only a dated tombstone, with no word of
+    assert row and not row["mine"] and not row["theirs"] and row["mine_at"] == 0   # mine: evictable like any stranger's
+    assert e.store.friend_rel(nobody.ppk) == ""
     assert await e._dm_process(friend_wrap(e, k, dm.FRIEND_REMOVE)) == dm.OK
     assert e.dm_summary()["rel"] == {} and await e._dm_process(wrap_to(e, k, "x")) == dm.NOT_FRIEND
     # a pending request withdrawn by its sender goes away
@@ -872,7 +868,7 @@ class RecPool(FakePool):
         return []
 
 
-async def test_the_dm_filter_is_its_own_request_with_since_from_last_online(bare):
+async def test_the_dm_filter_is_its_own_live_request(bare):
     e, _ = bare()
     e.pool = RecPool()
     e.save_settings({"onboarded": False})
@@ -882,16 +878,10 @@ async def test_the_dm_filter_is_its_own_request_with_since_from_last_online(bare
     await e._resubscribe()
     sid, filters, kw = next(x for x in e.pool.subs if x[0] == "dm")
     pk = e._identity()["person_pk"]
-    assert filters == [{"kinds": [1059], "#p": [pk], "limit": 400}] and kw == {"resume": False, "needs_auth": True}
+    # live only: history comes from paged passes, per relay (test_dm_review.py), so junk can't crowd it out
+    assert filters == [{"kinds": [1059], "#p": [pk], "limit": 1}] and kw == {"resume": False, "needs_auth": True}
     for sid, fl, _ in e.pool.subs:
         assert len(fl) <= 8
-    e._dm_queue = asyncio.Queue()
-    e._dm_touch()
-    stamp = e.store.get("dm_since")
-    assert abs(stamp - time.time()) < 5
-    e.pool.subs.clear()
-    await e._resubscribe_dm()
-    assert e.pool.subs[0][1][0]["since"] == stamp - 3 * 86400                  # wraps are dated up to 2 days back
 
 
 async def test_a_conversation_is_in_every_snapshot_without_its_text(bare):
@@ -1023,7 +1013,11 @@ async def test_every_request_a_relay_sees_has_at_most_eight_filters(tmp_path):
             dm_reqs = [fl for sid, fl in relay.req_log if sid == "dm"]
             assert dm_reqs and all(len(fl) == 1 and fl[0]["kinds"] == [1059] and fl[0]["#p"] == [e._identity()["person_pk"]]
                                    for fl in dm_reqs)
-            assert not any(1059 in f.get("kinds", []) for sid, fl in relay.req_log if sid != "dm" for f in fl)
+            # gift wraps are never asked for in a room's request: only by the live "dm" one and the history pages,
+            # each a request of its own with one filter
+            for sid, fl in relay.req_log:
+                if any(1059 in f.get("kinds", []) for f in fl):
+                    assert len(fl) == 1 and fl[0]["kinds"] == [1059] and fl[0]["#p"] == [e._identity()["person_pk"]]
         finally:
             await asyncio.to_thread(e.stop)
 
