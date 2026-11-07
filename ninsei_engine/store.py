@@ -44,10 +44,11 @@ CREATE TABLE IF NOT EXISTS dm_messages (
   id TEXT PRIMARY KEY, peer TEXT NOT NULL, sender TEXT NOT NULL, text TEXT NOT NULL,
   created_at INTEGER NOT NULL, arrived_at REAL NOT NULL, wrap TEXT);
 CREATE INDEX IF NOT EXISTS dm_messages_peer ON dm_messages(peer, created_at);
--- A conversation partner. `accepted` is unused since friends-only DMs (it is always 1); who may write to me lives
--- in dm_friends. `last_read` is an arrival time: what came after it, from the peer, is unread.
+-- Where I had read up to in a conversation; who may write to me lives in dm_friends alone. `last_read` is an
+-- arrival time: what came after it, from the peer, is unread. (An older file may still carry an `accepted`
+-- column from before friends-only DMs; nothing reads it, so it never makes anyone a friend.)
 CREATE TABLE IF NOT EXISTS dm_peers (
-  peer TEXT PRIMARY KEY, accepted INTEGER NOT NULL DEFAULT 0, first_at REAL NOT NULL, last_read REAL NOT NULL DEFAULT 0);
+  peer TEXT PRIMARY KEY, first_at REAL NOT NULL, last_read REAL NOT NULL DEFAULT 0);
 -- Friends. Each side's latest word: `mine` / `theirs` is 1 after that person sent a friend request or accept,
 -- 0 after a removal; `*_at` is that event's own date (a stale event is dropped). Friends = both 1. A request I
 -- have not answered = theirs 1, mine 0. `ignored_at` is when I ignored their request (local; remembered 30 days).
@@ -131,7 +132,6 @@ class Store:
             if f.exists():
                 os.chmod(f, 0o600)
         self._db.executescript(SCHEMA)
-        self._migrate_friends()
         cols = {r[1] for r in self._db.execute("PRAGMA table_info(events)")}
         if "arrived_at" not in cols:  # databases from before arrival times were kept
             try:
@@ -144,22 +144,6 @@ class Store:
         self._adds = 0
         self._dm_wrap_adds = 0
         self.prune_events()
-
-    def _migrate_friends(self) -> None:
-        """Once: conversations I had accepted (written to first, accepted, or met in a room: the old, too easy
-        "known" rule) become friends; every other conversation, a stranger's request, is dropped with its
-        messages. Nothing but the engine's own `friend_*` calls creates a friend after this."""
-        with self._lock:
-            if self._db.execute("SELECT 1 FROM kv WHERE k='dm_friends_v1'").fetchone():
-                return
-            now = time.time()
-            self._db.execute(
-                "INSERT OR IGNORE INTO dm_friends(peer, mine, mine_at, theirs, theirs_at, first_at, since) "
-                "SELECT peer, 1, ?, 1, ?, first_at, ? FROM dm_peers WHERE accepted=1", (int(now), int(now), now))
-            self._db.execute("DELETE FROM dm_messages WHERE peer NOT IN (SELECT peer FROM dm_friends)")
-            self._db.execute("DELETE FROM dm_peers WHERE peer NOT IN (SELECT peer FROM dm_friends)")
-            self._db.execute("INSERT OR REPLACE INTO kv(k, v) VALUES('dm_friends_v1', '1')")
-            self._db.commit()
 
     def close(self) -> None:
         with self._lock:
@@ -556,7 +540,7 @@ class Store:
             if self._db.execute("SELECT 1 FROM dm_messages WHERE id=?", (id,)).fetchone():
                 return "duplicate"
             if self._db.execute("SELECT 1 FROM dm_peers WHERE peer=?", (peer,)).fetchone() is None:
-                self._db.execute("INSERT INTO dm_peers(peer, accepted, first_at, last_read) VALUES(?,1,?,?)",
+                self._db.execute("INSERT INTO dm_peers(peer, first_at, last_read) VALUES(?,?,?)",
                                  (peer, arrived_at, arrived_at if sender != peer else 0))
             self._db.execute("INSERT INTO dm_messages(id, peer, sender, text, created_at, arrived_at, wrap) "
                              "VALUES(?,?,?,?,?,?,?)", (id, peer, sender, text, created_at, arrived_at, wrap))

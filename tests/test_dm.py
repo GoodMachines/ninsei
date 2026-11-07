@@ -828,27 +828,27 @@ async def test_my_own_copy_from_another_install_is_applied_and_my_removal_copy_r
     assert e.dm_summary()["rel"] == {}
 
 
-def test_friends_migrate_from_the_old_accepted_rows_and_requests_are_dropped(tmp_path):
+def test_an_old_accepted_row_never_makes_anyone_a_friend(tmp_path):
+    """No install ever ran the pre-friends DM code, so there is nothing to migrate: a dm_peers table from that
+    era (with its `accepted` column) is simply ignored, and friendship comes only from friend events."""
     path = tmp_path / "old" / "ninsei.db"
-    st = store_mod.Store(path)
-    a, b, c = "a" * 64, "b" * 64, "c" * 64
-    with st._lock:
-        for peer, acc in ((a, 1), (b, 0), (c, 1)):
-            st._db.execute("INSERT INTO dm_peers(peer, accepted, first_at, last_read) VALUES(?,?,?,0)", (peer, acc, 100.0))
-            st._db.execute("INSERT INTO dm_messages(id, peer, sender, text, created_at, arrived_at) VALUES(?,?,?,?,1,1)",
-                           (peer[:2] + "id", peer, peer, "hello from " + peer[:1]))
-        st._db.execute("DELETE FROM kv WHERE k='dm_friends_v1'")
-        st._db.execute("DELETE FROM dm_friends")
-        st._db.commit()
-    st.close()
-    st = store_mod.Store(path)                                                  # an upgrade opens the old file
-    assert {p: st.friend_rel(p) for p in (a, b, c)} == {a: "friend", b: "", c: "friend"}
-    assert [m["text"] for m in st.dm_messages(a)] == ["hello from a"] and st.dm_messages(b) == []
-    assert {t["peer"] for t in st.dm_threads()} == {a, c} and st.dm_counts() == {"messages": 2, "peers": 2}
-    st.friend_event(b, side="theirs", action="yes", at=5)                       # and it does not run twice
-    st.close()
-    st = store_mod.Store(path)
-    assert st.friend_rel(b) == "request"
+    a, b = "a" * 64, "b" * 64
+    import sqlite3
+    path.parent.mkdir()
+    db = sqlite3.connect(str(path))
+    db.execute("CREATE TABLE dm_peers (peer TEXT PRIMARY KEY, accepted INTEGER NOT NULL DEFAULT 0, "
+               "first_at REAL NOT NULL, last_read REAL NOT NULL DEFAULT 0)")
+    for peer, acc in ((a, 1), (b, 0)):
+        db.execute("INSERT INTO dm_peers(peer, accepted, first_at, last_read) VALUES(?,?,?,0)", (peer, acc, 100.0))
+    db.commit()
+    db.close()
+    st = store_mod.Store(path)                                                  # opens the old file
+    assert {p: st.friend_rel(p) for p in (a, b)} == {a: "", b: ""}
+    assert st.friend_lists() == {"friends": [], "sent": [], "requests": []} and st.dm_threads() == []
+    st.dm_add(id="x" * 64, peer=a, sender=a, text="late", created_at=1, arrived_at=2.0)   # writing into the old table works
+    assert st.friend_rel(a) == "" and [t["friend"] for t in st.dm_threads()] == [False]
+    st.friend_event(a, side="theirs", action="yes", at=5)                       # only a friend event changes it
+    assert st.friend_rel(a) == "request"
     st.close()
 
 
