@@ -6,6 +6,7 @@
 
 const NO_MSGS = []  // a stable empty list, so a conversation that hasn't loaded doesn't look like a new snapshot each render
 const DM_REQUESTS = 'requests'  // store.dm() value that opens the Requests list instead of one conversation
+const DM_POLL_MS = 2000  // how often an open conversation re-asks while a message of mine is still on its way
 
 // The sidebar's "Direct messages": your friends (and any old conversation), then Requests (if any) as one row.
 function DmRail(props) {
@@ -36,6 +37,8 @@ function DmRail(props) {
 
 // One conversation, loaded from /dm. It reloads when the summary's `rev` moves (a message arrived or went), and
 // when the window regains focus, so a conversation that came in while you were away is marked read when you look.
+// A relay's OK doesn't move `rev`, so while a message of mine is still sending or pending it reloads every
+// DM_POLL_MS, and stops once every one has settled (sent, or failed with Retry / Discard).
 function useDmThread(store, pk, rev) {
   const [data, setData] = useState(null)
   const [err, setErr] = useState('')
@@ -46,6 +49,12 @@ function useDmThread(store, pk, rev) {
   }, [pk])
   useEffect(() => { load() }, [pk, rev])
   useEffect(() => P.listen(window, 'focus', load), [pk])
+  const unsettled = !!(data && (data.messages || []).some(m => m.mine && (m.delivery === 'sending' || m.delivery === 'pending')))
+  useEffect(() => {
+    if (!unsettled) return undefined
+    const t = setTimeout(load, DM_POLL_MS)
+    return () => clearTimeout(t)
+  }, [data, unsettled])
   return { data, err, load }
 }
 
@@ -208,7 +217,8 @@ function DmAbout() {
   ] })
   return jsxs('div', { className: 'h-col', style: { gap: 10 }, children: [
     jsx('div', { className: 'h-sec', style: { padding: '0 4px' }, children: 'What is private' }),
-    row('Encrypted in transit', 'Relays carry a sealed message. They can’t read it or tell who sent it, but they can see that some key received one.'),
+    row('Encrypted in transit', 'Relays carry a sealed message they can’t read, and the sealed note doesn’t say who sent it.'),
+    row('What a relay can see', 'Your key, because Ninsei asks it for the messages addressed to you, and when each one arrives. From that timing a relay, or someone watching it, may guess who is writing to whom. Your copy of what you send goes out a little later to make that harder, not impossible.'),
     row('Friends only', 'Only people you are friends with can message you. A friend request carries no words, only who is asking, and it is sealed the same way.'),
     row('Stored on this computer', 'Readable here, unencrypted, by anyone who can open your account, like your keys. Delete a conversation to remove it.'),
     row('Never your agent', 'Your agent can’t send, read or be shown a private message, and no model is ever asked about one.')

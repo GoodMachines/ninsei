@@ -71,11 +71,11 @@ People only: pictures and typing. Typing: one ephemeral event per room per 5 s (
 
 ## Friends and private messages
 
-People only (NIP-17): a kind 14 rumor in a kind 13 seal in a kind 1059 wrap, NIP-44 each time, dates random up to 2 days back, a wrap each for peer and me. `dm.py` is pure: `unwrap` bounds sizes before crypto, needs my `p` tag; the rumor's key must equal the seal's.
+People only (NIP-17): kind 14 rumor, kind 13 seal, kind 1059 wrap, NIP-44 each, dates random up to 2 days back. `dm.py` is pure: `unwrap` bounds sizes before crypto; rumor key = seal key. My own copy goes out 5–90 s after the peer's (`_dm_publish`); both are outboxed at once.
 
-**Friends only.** A request, accept or removal is a rumor tagged `["ninsei", "friend_request" | "friend_accept" | "friend_remove"]` with no text (`unwrap` returns `""` whatever a client adds). `dm_friends` keeps each side's latest word and date (request and accept "yes", removal "no"; friends: both yes), so arrival order doesn't matter. A text from a non-friend is dropped before storage. Rooms, Commons posts and names grant nothing. Pending requests: 50; the oldest gives way, an older one gets `limit` and is **never recorded as handled**. Ignore is local (30 days).
+**Friends only.** Friend events are rumors tagged `["ninsei", "friend_request" | "friend_accept" | "friend_remove"]`, no text. `dm_friends` keeps each side's latest word and date (friends: both yes). A removal with no row still stores its date, and rows carrying my word (`mine_at` > 0) are never evicted, so a replayed old yes loses. My actions date `max(now, mine_at + 1)`. Non-friends' texts are dropped, never held. 50 pending requests: strangers', then the oldest, give way, their wraps un-marked.
 
-The `dm` subscription is its own REQ (damus closes it for `auth-required`). Text lives in `dm_messages`, read only by `dm_*` and `friend_*` methods, never `_transcript`, the gateway or a model (`tests/test_dm.py` fences it).
+**History** comes from `_dm_pass`: per relay, pages of 400 back with `until` to that relay's own `since`; `since` moves only after a pass reached it (`_dm_touch`). The live `dm` REQ asks `limit: 1`. At most 3 logins per relay per 10 minutes. Text lives in `dm_messages`, never reaching a model (`tests/test_dm.py`).
 
 ## Room settings, links, narrow pages
 

@@ -747,17 +747,26 @@ function mentionAlerts(store) {
       const title = t.impostor ? 'Someone not verified (' + who + ') sent you a private message' : who + ' sent you a private message'
       const snippet = cleanSnippet(lu.text, 60)
       P.toast('info', snippet ? title + ': "' + snippet + '"' : title)
-      if (P.osNotify) P.osNotify({ title, body: snippet || 'Open Ninsei to see it.', onActivate: () => { store.setDm(t.pk); nav().set('dm') } })
+      // The OS keeps its notifications in a history of its own: only who wrote, never what they wrote.
+      const osTitle = t.impostor ? 'New message from someone not verified (' + who + ')' : 'New message from ' + who
+      if (P.osNotify) P.osNotify({ title: osTitle, body: '', onActivate: () => { store.setDm(t.pk); nav().set('dm') } })
     }
     // A friend request is announced once per person, by name alone (a request has no words), worded like the
-    // others: a name someone else holds in a room arrives from the engine as a short key with the flag.
+    // others: a name someone else holds in a room arrives from the engine as a short key with the flag. Several in
+    // one snapshot (a crowd of throwaway keys) make one toast and one OS notification, not one each.
     const rnext = {}
+    const fresh = []
     for (const r of (snap.dms && snap.dms.pending) || []) {
       rnext[r.pk] = 1
       if (reqSeen === null || r.pk in reqSeen || reqTold[r.pk]) continue
       reqTold[r.pk] = 1
+      fresh.push(r)
+    }
+    if (fresh.length) {
+      const r = fresh[0]
       const who = cleanSnippet(r.name, 32)
-      const title = r.impostor ? 'Someone not verified (' + who + ') wants to be friends' : who + ' wants to be friends'
+      const title = fresh.length > 1 ? fresh.length + ' friend requests'
+        : r.impostor ? 'Someone not verified (' + who + ') wants to be friends' : who + ' wants to be friends'
       P.toast('info', title)
       if (P.osNotify) P.osNotify({ title, body: 'Open Ninsei to answer.', onActivate: () => { store.setDm('requests'); nav().set('dm') } })
     }

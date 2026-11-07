@@ -39,7 +39,7 @@ function DayLine() {}
 
 def dm_js(body: str) -> str:
     return EXTRA + DM_HOOKS + fn(CORE, "cleanSnippet") + fn(CORE, "mentionAlerts") + fn(DM, "DmRail") + fn(DM, "useDmThread") + fn(DM, "DmView") \
-        + fn(DM, "DmItem") + fn(DM, "DmRequests") + fn(CARD, "FriendAction") + "const DM_REQUESTS = 'requests'\n" + body
+        + fn(DM, "DmItem") + fn(DM, "DmRequests") + fn(CARD, "FriendAction") + "const DM_REQUESTS = 'requests'\nconst DM_POLL_MS = 20\n" + body
 
 
 THREADS = [{"pk": "a" * 64, "name": "Sam", "impostor": False, "friend": True, "unread": 2, "ts": 5},
@@ -278,3 +278,57 @@ def test_the_composer_in_dm_mode_has_no_games_no_mentions_and_the_room_composer_
     assert "const dm = props.dm" in comp and "!dm && jsxs('div', { style: { position: 'relative' }, children: [" in comp
     assert "cands = useMemo(() => dm ? [] : mentionCandidates(room)" in comp and "if (dm) dm.onSend(t)" in comp
     assert "props.onSubmit(t, reply)" in comp and "store.post('/post', reply ? { room: room.id, text: t, reply: reply.id } : { room: room.id, text: t })" in comp
+
+
+@needs_node
+def test_a_crowd_of_new_requests_makes_one_toast_and_one_os_notification():
+    """Review finding 4: each throwaway key used to raise a toast and an OS notification of its own."""
+    js = fn(CORE, "cleanSnippet") + fn(CORE, "mentionAlerts") + ALERT + """
+listener(snap([], []))
+listener(snap([], [req('a', 'A'), req('b', 'B'), req('c', 'C')]))
+listener(snap([], [req('a', 'A'), req('b', 'B'), req('c', 'C'), req('d', 'Dee')]))
+off()
+out({ toasts, os: os.map(o => o.title) })
+"""
+    r = run(js)
+    assert r["toasts"] == ["3 friend requests", "Dee wants to be friends"] and r["os"] == r["toasts"]
+
+
+@needs_node
+def test_an_os_notification_for_a_private_message_has_the_name_and_never_the_text():
+    """Review finding 11: the OS keeps notifications in its own history, so the text stays in the page's toast."""
+    js = fn(CORE, "cleanSnippet") + fn(CORE, "mentionAlerts") + ALERT + """
+listener(snap([t('s1', 'Sam', 0)]))
+listener(snap([t('s1', 'Sam', 1), t('s2', 'npub1fake…', 1, { impostor: true })]))
+off()
+out({ toasts, os: os.map(o => [o.title, o.body]) })
+"""
+    r = run(js)
+    assert r["os"] == [["New message from Sam", ""], ["New message from someone not verified (npub1fake…)", ""]]
+    assert "hi there" in r["toasts"][0] and not any("hi there" in a + b for a, b in r["os"])
+
+
+@needs_node
+def test_a_sent_message_stops_being_faint_once_delivered_without_a_new_rev():
+    """Item 12 of the review fixes: a relay's OK doesn't move dms.rev, so the view re-asks while a message of mine
+    is sending or pending, and stops once it has settled."""
+    js = dm_js("""
+const pk = 'a'.repeat(64)
+let n = 0
+globalThis.window = { }
+const msg = d => ({ id: 'm1', ts: 1, t: 'msg', pk: 'me', mine: true, name: 'Maya', text: 'hi', ...(d ? { delivery: d } : {}) })
+const states = ['sending', 'pending', null]
+globalThis.P = { rest: async () => ({ pk, name: 'Sam', impostor: false, friend: true, rel: 'friend', messages: [msg(states[Math.min(n++, 2)])] }),
+  listen: () => () => {} }
+const store = { dm: () => pk, setDm() {}, showing: () => () => {}, isShowing: () => true, post: async () => ({}) }
+const root = mount(DmView, { store, snap: { dms: { rev: 1 } }, pk })
+for (let i = 0; i < 40 && n < 3; i++) await new Promise(r => setTimeout(r, 10))
+await settle()
+const after = n
+await new Promise(r => setTimeout(r, 120))
+await settle()
+const item = find(root.tree, x => x.type === DmItem && x.props.it && x.props.it.m)
+out({ after, later: n, delivery: item ? (item.props.it.m.delivery || null) : 'missing' })
+""")
+    r = run(js)
+    assert r["after"] == 3 and r["later"] == 3 and r["delivery"] is None                 # settled: no more polling
