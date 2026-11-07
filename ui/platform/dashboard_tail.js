@@ -110,7 +110,7 @@
   function Dialog(props) {
     return jsx(C.Dialog, { open: !!props.open, onOpenChange: v => { if (!v) props.onClose() }, children:
       jsx(C.DialogContent, { style: props.wide ? { maxWidth: 680, width: 'calc(100vw - 32px)' } : { width: 'calc(100vw - 32px)', maxWidth: 460 },
-        children: jsxs('div', { className: 'hx h-col', style: { gap: 14, padding: 20 }, children: [
+        children: jsxs('div', { className: 'hx h-col', 'data-ninsei-view': '', style: { gap: 14, padding: 20 }, children: [
           jsxs(C.DialogHeader, { style: { padding: 0 }, children: [
             jsx(C.DialogTitle, { children: props.title }),
             props.description && jsx(C.DialogDescription, { children: props.description })

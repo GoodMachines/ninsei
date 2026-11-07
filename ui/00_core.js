@@ -718,11 +718,14 @@ function cleanSnippet(s, n) {
   return out.replace(/ +/g, ' ').trim().slice(0, n)
 }
 
-// Tell the engine this page is open, so it can say Present, Idle or Away for you. While a Ninsei view is mounted and the
-// document is visible: one POST /here right away, again whenever focus or visibility changes or you type, click or
-// scroll, and every 30 s. At most one call per HERE_MIN_MS (a trailing one carries the rest). `focused` is true only
-// for a focused window you touched in the last HERE_ACTIVE_MS: a window left open and untouched reports open, not
-// focused, so it goes from Present to Idle instead of staying Present all day. Returns the function that stops it.
+// Tell the engine this page is open, so it can say Present, Idle or Away for you. Started when a Ninsei view (the page, or
+// the Ninsei tab) mounts and stopped when the last one unmounts; it reports only while one of them is on screen and the
+// document is visible: one POST /here right away, again when focus or visibility changes, when you type, click or scroll
+// inside a Ninsei view (events anywhere else in Hermes are not use of Ninsei), and every 30 s. At most one call per
+// HERE_MIN_MS (a trailing one carries the rest). `focused` is true only for a focused window you touched inside Ninsei in
+// the last HERE_ACTIVE_MS: a view left open and untouched reports open, not focused, so it goes from Present to Idle
+// instead of staying Present all day. Returns the function that stops it.
+const NINSEI_VIEW = '[data-ninsei-view]'   // on the page, the sidebar tab, and the dialogs they open
 const HERE_EVERY_MS = 30000
 const HERE_MIN_MS = 10000
 const HERE_ACTIVE_MS = 150000
@@ -735,10 +738,18 @@ function hereSignals(store) {
   let trailing = null
   let beat = null
   const visible = () => doc.visibilityState !== 'hidden'
+  // Is a Ninsei view on screen (a docked tab that is hidden has no layout boxes)? A bare document (no DOM) says yes.
+  const shown = () => {
+    if (typeof doc.querySelectorAll !== 'function') return true
+    for (const el of doc.querySelectorAll(NINSEI_VIEW)) if (el.getClientRects().length) return true
+    return false
+  }
+  // An event inside a Ninsei view's DOM. (Called with no event, as the timers and tests do: counts.)
+  const inside = e => !e || !!(e.target && typeof e.target.closest === 'function' && e.target.closest(NINSEI_VIEW))
   const winFocused = () => typeof doc.hasFocus !== 'function' || doc.hasFocus()
   const send = () => {
     trailing = null
-    if (stopped || !visible()) return
+    if (stopped || !visible() || !shown()) return
     lastSent = Date.now()
     P.rest('/here', { method: 'POST', body: { focused: winFocused() && Date.now() - active < HERE_ACTIVE_MS } })
       .then(() => {}, () => {})   // a missed call costs a few seconds of accuracy, never an error toast
@@ -749,11 +760,10 @@ function hereSignals(store) {
     if (wait <= 0) send()
     else trailing = P.setTimeout(send, wait)
   }
-  const touch = () => { active = Date.now(); poke() }
-  const change = () => { if (visible()) touch() }
+  const touch = e => { if (!inside(e)) return; active = Date.now(); poke() }
   const offs = [
-    P.listen(doc, 'visibilitychange', change),
-    typeof window !== 'undefined' && P.listen(window, 'focus', touch),
+    P.listen(doc, 'visibilitychange', poke),
+    typeof window !== 'undefined' && P.listen(window, 'focus', poke),
     typeof window !== 'undefined' && P.listen(window, 'blur', poke),
     P.listen(doc, 'keydown', touch),
     P.listen(doc, 'pointerdown', touch),

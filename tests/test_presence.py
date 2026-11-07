@@ -357,8 +357,8 @@ async def _table(bare, ts=0.02):
     return host, sam
 
 
-@pytest.mark.parametrize("mode,fakes", [("named", 1), ("quiet", 0)])
-async def test_game_turns_named_plays_quiet_does_not(bare, monkeypatch, mode, fakes):
+@pytest.mark.parametrize("mode,fakes", [("chat", 1), ("quiet", 0)])
+async def test_game_turns_chat_plays_quiet_does_not(bare, monkeypatch, mode, fakes):
     from ninsei_engine import game
     monkeypatch.setattr(game, "FAKE_SECONDS", 2400)
     monkeypatch.setattr(game, "VOTE_SECONDS", 2400)

@@ -52,7 +52,8 @@ out(['present', 'idle', 'dnd', 'away'].map(s => { const d = dot({ status: s }); 
     assert ".h-presence[data-s=idle]" in STYLE and ".h-presence[data-s=dnd]" in STYLE
 
 
-HERE_JS = "".join(f"const {n} = {v}\n" for n, v in (("HERE_EVERY_MS", 30000), ("HERE_MIN_MS", 10000), ("HERE_ACTIVE_MS", 150000)))
+HERE_JS = "const NINSEI_VIEW = '[data-ninsei-view]'\n" + "".join(
+    f"const {n} = {v}\n" for n, v in (("HERE_EVERY_MS", 30000), ("HERE_MIN_MS", 10000), ("HERE_ACTIVE_MS", 150000)))
 
 
 def here_harness():
@@ -72,7 +73,7 @@ globalThis.P = {
   setTimeout: (fn, ms) => { const x = { at: t + ms, fn, live: true }; timers.push(x); return () => { x.live = false } }
 }
 const advance = ms => { const end = t + ms; for (;;) { const nxt = timers.filter(x => x.live).sort((a, b) => a.at - b.at)[0]; if (!nxt || nxt.at > end) break; t = nxt.at; nxt.live = false; nxt.fn() } t = end }
-const fire = (k) => (listeners[k] || []).forEach(f => f())
+const fire = (k, e) => (listeners[k] || []).forEach(f => f(e))
 """
 
 
@@ -142,6 +143,59 @@ out({ first: calls[0][3], quietMin, touched, blurred })
     assert r["first"] is True                                              # opening it counts as a touch
     assert r["quietMin"] is False                                          # over HERE_ACTIVE_MS untouched: open, not focused
     assert r["touched"] is True and r["blurred"] is False
+
+
+@needs_node
+def test_only_use_inside_a_ninsei_view_counts_and_a_view_that_is_not_on_screen_reports_nothing():
+    r = run(here_harness() + """
+const view = { getClientRects: () => [{}] }
+doc.querySelectorAll = sel => sel === NINSEI_VIEW ? [view] : []
+const inNinsei = { target: { closest: sel => sel === NINSEI_VIEW ? view : null } }
+const elsewhere = { target: { closest: () => null } }
+const stop = hereSignals({})
+advance(31000); advance(31000); advance(31000); advance(31000); advance(31000); advance(31000)   // untouched: open, not focused
+const quiet = calls[calls.length - 1][3]
+fire('doc:keydown', elsewhere); fire('doc:pointerdown', elsewhere); fire('doc:scroll', { target: doc })   // the rest of Hermes
+advance(11000)
+const afterElsewhere = calls[calls.length - 1][3]
+fire('doc:pointerdown', inNinsei)
+advance(11000)
+const afterInside = calls[calls.length - 1][3]
+const n = calls.length
+view.getClientRects = () => []                   // the docked tab is hidden, or another tab is in front
+advance(120000)
+const whileHidden = calls.length - n
+view.getClientRects = () => [{}]
+advance(31000)
+stop()
+out({ quiet, afterElsewhere, afterInside, whileHidden, resumed: calls.length > n })
+""")
+    assert r["quiet"] is False and r["afterElsewhere"] is False       # typing elsewhere in Hermes is not use of Ninsei
+    assert r["afterInside"] is True
+    assert r["whileHidden"] == 0 and r["resumed"] is True             # nothing is sent while no Ninsei view is on screen
+
+
+@needs_node
+def test_desktop_reports_only_while_a_view_is_mounted_and_not_from_plugin_start():
+    tail = src("platform/desktop_tail.js")
+    assert "ctx.onDispose(hereSignals(store))" not in tail and "viewMounted(store)" in tail
+    assert "P.viewMounted ? P.viewMounted(store)" in APP
+    r = run("let started = 0, stopped = 0\nconst hereSignals = () => { started++; return () => { stopped++ } }\n"
+            + tail[tail.index("let hereViews"):tail.index("function makePlatform")]
+            + "const P = { " + tail[tail.index("    viewMounted(store) {"):tail.index("    // the profile Desktop")].rstrip().rstrip(",") + " }\n"
+            + """
+const none = [started, stopped]
+const page = P.viewMounted({}), dock = P.viewMounted({})        // the page and the docked tab, both up
+const both = [started, stopped]
+page()
+const one = [started, stopped]
+dock()
+const zero = [started, stopped]
+const again = P.viewMounted({}); again()
+out({ none, both, one, zero, final: [started, stopped] })
+""")
+    assert r["none"] == [0, 0] and r["both"] == [1, 0]
+    assert r["one"] == [1, 0] and r["zero"] == [1, 1] and r["final"] == [2, 2]
 
 
 def test_here_is_installed_on_both_platforms():

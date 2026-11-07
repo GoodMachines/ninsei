@@ -230,7 +230,7 @@ class Brain:
         llm = self._llm()
         if llm is None:
             raise RuntimeError("model access is not available in this process")
-        est = sum(est_tokens(m["content"]) for m in messages) + max_tokens
+        est = self.estimate(messages, max_tokens)
         ticket = self._reserve(category, est)
         if ticket is None:
             raise BudgetExhausted()
@@ -260,9 +260,7 @@ class Brain:
             self._settle(ticket, used)
 
     async def _json(self, category: str, system: str, user: str, max_tokens: int, purpose: str) -> Optional[dict]:
-        text = await self._complete(category, [
-            {"role": "system", "content": system + "\nAnswer with one JSON object only, no prose, no code fence."},
-            {"role": "user", "content": user}], max_tokens, purpose)
+        text = await self._complete(category, self._json_messages(system, user), max_tokens, purpose)
         m = re.search(r"\{.*\}", text, re.S)
         if not m:
             return None
@@ -273,17 +271,31 @@ class Brain:
         return val if isinstance(val, dict) else None
 
     # --- chat -------------------------------------------------------------------------------------
-    async def reply(self, persona: dict, owner_name: str, lines: list[Line], to: Line) -> str:
+    @staticmethod
+    def estimate(messages: list[dict], max_tokens: int) -> int:
+        """What `_complete` reserves for a call: the one place the number is computed."""
+        return sum(est_tokens(m["content"]) for m in messages) + max_tokens
+
+    @staticmethod
+    def _reply_request(persona: dict, owner_name: str, lines: list[Line], to: Line) -> tuple[list[dict], int]:
         user = (render_transcript(lines) +
                 f"\n\nWrite your next message in the room, responding to {_name(to.name)}'s latest message. "
                 "Stay in character.")
-        text = await self._complete("chat", [
-            {"role": "system", "content": persona_system(persona, owner_name)},
-            {"role": "user", "content": user}], 160, "reply")
+        return [{"role": "system", "content": persona_system(persona, owner_name)},
+                {"role": "user", "content": user}], 160
+
+    def reply_estimate(self, persona: dict, owner_name: str, lines: list[Line], to: Line) -> int:
+        """The tokens a `reply` call would reserve, so a caller can ask whether it fits before it claims anything."""
+        return self.estimate(*self._reply_request(persona, owner_name, lines, to))
+
+    async def reply(self, persona: dict, owner_name: str, lines: list[Line], to: Line) -> str:
+        messages, max_tokens = self._reply_request(persona, owner_name, lines, to)
+        text = await self._complete("chat", messages, max_tokens, "reply")
         return _tidy(text, persona.get("name", ""))
 
     # --- proactive offers -------------------------------------------------------------------------
-    async def offer(self, persona: dict, owner_name: str, lines: list[Line], topic: str) -> Optional[dict]:
+    @staticmethod
+    def _offer_request(persona: dict, owner_name: str, lines: list[Line], topic: str) -> tuple[str, str, int]:
         system = persona_system(persona, owner_name) + (
             "\nPeople in the room keep coming back to one topic. You may offer to build a tiny, harmless, "
             "self-contained web toy (one HTML file, no network, no external code) about it, which your owner "
@@ -293,7 +305,21 @@ class Brain:
                 '"pitch" (one friendly sentence to the room offering to build it, mention the topic), '
                 '"title" (3-6 words), "task" (2-4 sentences describing the toy to build, concrete, '
                 "playable in a browser). If nothing sensible can be built, return {\"skip\": true}.")
-        data = await self._json("offers", system, user, 300, "offer")
+        return system, user, 300
+
+    def offer_estimate(self, persona: dict, owner_name: str, lines: list[Line], topic: str) -> int:
+        """The tokens an `offer` call would reserve (see reply_estimate)."""
+        system, user, max_tokens = self._offer_request(persona, owner_name, lines, topic)
+        return self.estimate(self._json_messages(system, user), max_tokens)
+
+    @staticmethod
+    def _json_messages(system: str, user: str) -> list[dict]:
+        return [{"role": "system", "content": system + "\nAnswer with one JSON object only, no prose, no code fence."},
+                {"role": "user", "content": user}]
+
+    async def offer(self, persona: dict, owner_name: str, lines: list[Line], topic: str) -> Optional[dict]:
+        system, user, max_tokens = self._offer_request(persona, owner_name, lines, topic)
+        data = await self._json("offers", system, user, max_tokens, "offer")
         if not data or data.get("skip"):
             return None
         pitch, title, task = (str(data.get(k, "")).strip() for k in ("pitch", "title", "task"))

@@ -23,6 +23,7 @@ function App(props) {
   const store = props.store
   const st = useStore(store)
   useEffect(() => store.view(), [store])
+  useEffect(() => (P.viewMounted ? P.viewMounted(store) : undefined), [store])   // Desktop: presence reports while a view is up
   const view = useNav()
   // The People drawer (narrow layouts): closed whenever the view or room changes, by Escape, by a click
   // outside it, or by its own Close button; focus goes back to the button that opened it.
@@ -160,7 +161,7 @@ function App(props) {
       ] })
     ] }) }) }) }) })
   }
-  return jsxs('div', { className: 'hx h-page', ref: rootRef, 'data-platform': P.kind, children: [
+  return jsxs('div', { className: 'hx h-page', ref: rootRef, 'data-platform': P.kind, 'data-ninsei-view': '', children: [
     P.inlineStyle && jsx('style', { children: CSS }),
     inner,
     snap && snap.settings.onboarded && switching && jsx(QuickSwitcher, { snap, onPick: pick, onClose: () => setSwitching(false) }),
@@ -173,6 +174,7 @@ function App(props) {
 function SideTab(props) {
   const { store, onOpen } = props
   const st = useStore(store)
+  useEffect(() => (P.viewMounted ? P.viewMounted(store) : undefined), [store])
   const view = useNav()
   const snap = st.snap
   let body
@@ -190,7 +192,7 @@ function SideTab(props) {
   } else {
     body = jsx(Rail, { store, snap, view, roomId: view === 'room' ? store.room() : '', go: onOpen })
   }
-  return jsxs('nav', { className: 'hx h-tab', 'data-platform': P.kind, 'aria-label': 'Ninsei rooms', children: [
+  return jsxs('nav', { className: 'hx h-tab', 'data-platform': P.kind, 'data-ninsei-view': '', 'aria-label': 'Ninsei rooms', children: [
     P.inlineStyle && jsx('style', { children: CSS }),
     body
   ] })

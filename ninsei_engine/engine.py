@@ -7,6 +7,7 @@ routes in `dashboard/plugin_api.py` talk to it through `Engine.call()`.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import contextvars
 import fcntl
 import functools
@@ -57,6 +58,9 @@ LIVE_MAX_AGE = 60          # seconds: an older presence beat or claim is a repla
 FRESH_WINDOW = 300         # seconds: how old a live room event may be and still get a reaction (clock skew)
 GAME_STALE = 60            # seconds past a phase's end with nothing from the host: the game is over
 MAX_INFLIGHT = 2           # model calls that room events can have running at once
+PACE_LIMIT = 8             # posts my agent makes per PACE_WINDOW, in all rooms (relays limit per IP)
+PACE_WINDOW = 300
+PACE_OWNER_RESERVE = 2     # of those, posts only my own owner's messages may use
 STRANGER_REPLIES = 4       # replies one other team can trigger from my agent per STRANGER_WINDOW
 STRANGER_WINDOW = 300
 ROOM_STRANGER_CALLS = 12   # model calls ALL other teams together can trigger per room per STRANGER_WINDOW
@@ -165,7 +169,17 @@ AWAY_MODES = ("chat", "named", "quiet")
 STRANGER_SHARES = (0.25, 0.5, 0.75)   # of budget_daily (and msgs_daily) that calls others trigger may use
 # Who triggered the model call being made: "stranger" (anyone but the owner) or "owner". Set around each
 # brain call; `_reserve` reads it, so Brain needs no extra argument and every call site names its trigger.
-_TRIGGER = contextvars.ContextVar("ninsei_trigger", default="owner")
+# The default is the safe side: a call site that forgets to say counts against others' share.
+_TRIGGER = contextvars.ContextVar("ninsei_trigger", default="stranger")
+
+
+@contextlib.contextmanager
+def _triggered(kind: str):
+    token = _TRIGGER.set(kind)
+    try:
+        yield
+    finally:
+        _TRIGGER.reset(token)
 MAX_ROOM_PREFS = 200  # rooms with a per-room setting (mute, chattiness); far more than anyone joins
 FACE_SHAPES = ["round", "soft", "tall", "wide", "drop", "bean"]
 # The rest of a face. Every list starts with its default, and ui/00_core.js keeps the same lists
@@ -305,6 +319,11 @@ def _build_claim(b: Any) -> Optional[dict]:
 def _person_claim(v: Any) -> Optional[str]:
     """A peer's published status, parsed strictly: one of PERSON_STATUSES, else nothing (an older client, or junk)."""
     return v if isinstance(v, str) and v in PERSON_STATUSES else None
+
+
+def _plays_claim(v: Any) -> Optional[bool]:
+    """A peer's "I take game turns" flag, parsed strictly: a bool, else nothing (an older client, or junk)."""
+    return v if isinstance(v, bool) else None
 
 
 def _share_ok(v: Any) -> float:
@@ -583,7 +602,12 @@ class Engine:
         self._beat_waiting = False
         self._last_focused_at = 0.0          # the last `here` with focused=true, or a post (0: none since the engine started)
         self._last_open_at = 0.0             # the last `here` of any kind
-        self._person_pub: Optional[str] = None   # the status my last presence beat carried
+        self._person_pub: Optional[str] = None   # the status my last full presence beat carried
+        self._plays_pub: set[str] = set()    # rooms my last beat there said "plays: false" for
+        self._away_games: Optional[set] = None   # game ids running when my owner went away (None: not away)
+        self._born = time.time()
+        self._share_latch: Optional[tuple[str, int]] = None   # (day, others' limit) when a call was refused for it
+        self._inflight_strangers = 0         # of _inflight, the calls others triggered
         self._status_beat_at = 0.0           # when a status change last cost an extra beat
         self._status_beat_waiting = False
         self._refused = ""                   # why the last reservation was refused: "total" or "share" (others' part)
@@ -1421,7 +1445,7 @@ class Engine:
                 "state": str(c.get("state", "activity: idle"))[:32], "budget": _budget_share(c.get("budget")),
                 "at": time.time(), "owner": owner, "name": name, "face": _face_or(c.get("face"), None),
                 "build": _build_claim(c.get("build")), "gave_up": _gave_up_claim(c.get("gave_up")),
-                "person": _person_claim(c.get("person")),
+                "person": _person_claim(c.get("person")), "plays": _plays_claim(c.get("plays")),
                 "vibe": str(c.get("vibe"))[:200] if isinstance(c.get("vibe"), str) else "",
                 "model": _model_ok(c.get("model"))}
             self._seen_active(room, ev["pubkey"], time.time())
@@ -1873,10 +1897,12 @@ class Engine:
             return 20
         return claimed if owner and tev["pubkey"] == owner else 20
 
-    def _can_post(self, room: str) -> bool:
+    def _can_post(self, room: str, stranger: bool = False) -> bool:
+        """Pacing: PACE_LIMIT posts in PACE_WINDOW across all rooms (relays limit per IP), the last
+        PACE_OWNER_RESERVE of them only for my owner's messages, so others can't fill the window."""
         now = time.time()
-        self._recent_posts = [x for x in self._recent_posts if x > now - 300]
-        if len(self._recent_posts) >= 8:
+        self._recent_posts = [x for x in self._recent_posts if x > now - PACE_WINDOW]
+        if len(self._recent_posts) >= PACE_LIMIT - (PACE_OWNER_RESERVE if stranger else 0):
             return False
         return now - self._last_spoke.get(room, 0) >= 6 * self.ts
 
@@ -1924,7 +1950,7 @@ class Engine:
             return
         if not self.brain.available():
             return
-        if not self._can_post(room):
+        if not self._can_post(room, stranger):
             return
         # Budget-drain guards: a cap on replies any one other team can trigger, and on model calls
         # running at once. My own owner skips the per-team and per-room stranger caps, but still counts
@@ -1939,17 +1965,24 @@ class Engine:
             return
         if stranger and self._strangers_spent():
             return   # others' share of the day is used up: no claim, no notice, nothing in the room
+        if stranger:
+            # The call has to fit others' share whole (the same estimate _reserve will ask for), or the agent
+            # would claim the floor, win it, and then be refused with nothing said: silence for the room.
+            need = self.brain.reply_estimate(self.persona(), self.settings()["display_name"] or "your owner",
+                                             self._transcript(room), self._line(room, ev))
+            if need <= self._budget_left() and self._stranger_budget_left() < need:
+                return   # (when the total is what it won't fit, it goes on: the reservation says so, and addressed, the room is told)
         if team is not None and not self._rate_ok(f"claims:{room}", ROOM_STRANGER_CLAIMS, STRANGER_WINDOW):
             return  # floors lost to other agents cost no call, so claims have their own room-wide cap
         if not await self._win_floor(room, ev["id"], prio, always=addressed):
             return
         if team is not None and not self._stranger_call_ok(room, team, STRANGER_REPLIES):
             return
-        if self._inflight >= MAX_INFLIGHT:
+        if not self._slot_free(stranger):
             return
         if (self._msg_fx(room).get(ev["id"]) or {}).get("deleted") or ev["id"] not in self.events.get(room, {}):
             return  # its author took it back (or discarded it) while the floor was being decided: nothing to answer
-        self._inflight += 1
+        self._take_slot(stranger)
         trigger = _TRIGGER.set("stranger" if stranger else "owner")
         try:
             self._set_state("activity: working")
@@ -1957,6 +1990,7 @@ class Engine:
                                           self._transcript(room), self._line(room, ev))
         except BudgetExhausted:
             if stranger and self._refused == "share":   # only others' share is gone: say nothing in the room
+                self._latch_share()
                 self._set_state("activity: idle")
                 return
             await self._rest_notice(room, addressed)
@@ -1967,11 +2001,31 @@ class Engine:
             return
         finally:
             _TRIGGER.reset(trigger)
-            self._inflight -= 1
+            self._free_slot(stranger)
         if not text:
             self._set_state("activity: idle")
             return
         await self._say(room, text, reply_to=ev["id"], prio=prio, stranger=stranger)
+
+    def _slot_free(self, stranger: bool) -> bool:
+        """Is a model-call slot free for this trigger? Calls others trigger may hold at most MAX_INFLIGHT - 1,
+        so one is always left for my owner's own message."""
+        return self._inflight < MAX_INFLIGHT and not (stranger and self._inflight_strangers >= MAX_INFLIGHT - 1)
+
+    def _take_slot(self, stranger: bool) -> None:
+        self._inflight += 1
+        if stranger:
+            self._inflight_strangers += 1
+
+    def _free_slot(self, stranger: bool) -> None:
+        self._inflight -= 1
+        if stranger:
+            self._inflight_strangers -= 1
+
+    def _latch_share(self) -> None:
+        """A call was refused for others' share: they have used their part of today (until the day rolls over,
+        or the limit grows: a bigger budget or share, or my owner coming back)."""
+        self._share_latch = (today(), self._stranger_limit())
 
     def _away_allows(self, named_by_person: bool) -> bool:
         """What my agent may do for someone else while my owner is away: "chat" anything, "named" only a reply to
@@ -1986,20 +2040,33 @@ class Engine:
             self._set_state("system: waiting", "said enough for today")
             return
         if stranger and not system and self._stranger_msgs_left() <= 0:
-            return   # what others may use of the day's messages is spent: nothing said, nothing announced
+            self._set_state("activity: idle")   # (the caller set "working"): what others may use of the day is spent
+            return   # nothing said, nothing announced
+        # Take the message slot now, before the publish await, so two replies that both passed the check can't
+        # both count as the last one; it is given back if the publish does not happen.
+        if not system:
+            self._count_said(1, stranger)
         self._set_state("activity: speaking")
         tags = []
         if reply_to:
             tb = hashlib.sha256((self._identity()["agent_pk"] + reply_to).encode()).hexdigest()[:8]
             tags = [["e", reply_to, "", "reply"], ["prio", str(prio), tb]]
-        await self._publish_room(room, True, {"t": "msg", "text": text[:1200], **(extra or {})}, tags)
-        if not system:
-            self.store.set("said", {"day": today(), "n": self._said_today() + 1,
-                                    "ns": self._said_strangers() + (1 if stranger else 0)})
+        try:
+            await self._publish_room(room, True, {"t": "msg", "text": text[:1200], **(extra or {})}, tags)
+        except BaseException:
+            if not system:
+                self._count_said(-1, stranger)
+            if self.agent_state == "activity: speaking":
+                self._set_state("activity: idle")
+            raise
         self._last_spoke[room] = time.time()
         self._recent_posts.append(time.time())
         await asyncio.sleep(2.5 * self.ts)
         self._set_state("activity: idle")
+
+    def _count_said(self, delta: int, stranger: bool) -> None:
+        self.store.set("said", {"day": today(), "n": max(0, self._said_today() + delta),
+                                "ns": max(0, self._said_strangers() + (delta if stranger else 0))})
 
     async def _win_floor(self, room: str, trigger: str, prio: int, always: bool = False) -> bool:
         """Causal floor control: claim the message, wait for rival claims, the highest (prio, hash) wins.
@@ -2138,14 +2205,20 @@ class Engine:
         share = self.settings()["stranger_share"]
         return share / 2 if self.owner_away() else share
 
+    def _stranger_limit(self) -> int:
+        return int(int(self.settings()["budget_daily"]) * self._share_now())
+
     def _stranger_budget_left(self) -> int:
-        return int(int(self.settings()["budget_daily"]) * self._share_now()) - self.store.stranger_used()
+        return self._stranger_limit() - self.store.stranger_used()
 
     def _stranger_msgs_left(self) -> int:
         return int(int(self.settings()["msgs_daily"]) * self._share_now()) - self._said_strangers()
 
     def _strangers_spent(self) -> bool:
         """Has what others may use today run out (tokens or messages)? Then my agent stops answering them, silently."""
+        latch = self._share_latch
+        if latch and latch[0] == today() and self._stranger_limit() <= latch[1]:
+            return True   # a call was refused for it today and nothing has grown the limit since
         return self._stranger_budget_left() <= 0 or self._stranger_msgs_left() <= 0
 
     def _budget_left(self) -> int:
@@ -2228,13 +2301,17 @@ class Engine:
             return
         if not self._rate_ok(f"claims:{room}", ROOM_STRANGER_CLAIMS, STRANGER_WINDOW):
             return
+        need = self.brain.offer_estimate(self.persona(), self.settings()["display_name"] or "my owner",
+                                         self._transcript(room), topic)
+        if need <= self._budget_left() and self._stranger_budget_left() < need:
+            return   # it would not fit others' share: no claim for a call that will be refused
         tracker.mark_offered(topic)
         if not await self._win_floor(room, f"offer:{topic}", 30):
             return
-        if self._inflight >= MAX_INFLIGHT or not self._stranger_call_ok(room, None, 0):
+        if not self._slot_free(True) or not self._stranger_call_ok(room, None, 0):
             return
         self.store.set(f"offer_at:{room}", time.time())
-        self._inflight += 1
+        self._take_slot(True)
         trigger = _TRIGGER.set("stranger")
         try:
             self._set_state("activity: working")
@@ -2242,6 +2319,7 @@ class Engine:
                                            self._transcript(room), topic)
         except BudgetExhausted:
             if self._refused == "share":   # only others' share is gone
+                self._latch_share()
                 self._set_state("activity: idle")
             else:
                 self._set_state("system: waiting", "out of budget for today")
@@ -2251,7 +2329,7 @@ class Engine:
             return
         finally:
             _TRIGGER.reset(trigger)
-            self._inflight -= 1
+            self._free_slot(True)
         if not offer:
             self._set_state("activity: idle")
             return
@@ -2482,7 +2560,8 @@ class Engine:
             s = self.settings()
             topics = list(self.room_meta(room).get("interests", [])) + (s["interests"] if s["card_published_at"] else [])
             try:
-                qs = await self.brain.questions(self.persona(), list(dict.fromkeys(topics)), rounds)
+                with _triggered("owner"):   # my own game: my owner's budget, not others' share
+                    qs = await self.brain.questions(self.persona(), list(dict.fromkeys(topics)), rounds)
             except BudgetExhausted:
                 self._set_state("system: waiting", "out of budget for today")
                 raise ValueError("your agent is out of budget for today")
@@ -2548,6 +2627,16 @@ class Engine:
         people.add(self._identity()["person_pk"])
         agents.discard(host_pk)
         return people, agents
+
+    def _waiting_on(self, room: str, people: set, agents: set, agents_too: bool = True) -> set:
+        """Who a round waits for before it closes early: the present players, less agents that said "plays:
+        false" (and a person whose every present agent did: they are away, and nothing will come from them)."""
+        pres = self.presence.get(room, {})
+        off = {pk for pk in agents if (pres.get(pk) or {}).get("plays") is False}
+        playing_owners = {pres[pk]["owner"] for pk in agents - off if pk in pres}
+        off_owners = {pres[pk]["owner"] for pk in off} - playing_owners
+        waits = set(people) - off_owners
+        return waits | (set(agents) - off) if agents_too else waits
 
     @staticmethod
     def _seeded(seed: str, pk: str) -> str:
@@ -2714,7 +2803,7 @@ class Engine:
                                           "q": q["q"], "ends_at": ends, "secs": game.FAKE_SECONDS * self.ts})
                 mine = self._spawn(self._answer_as_host(g, n, q))  # my own agent plays too (sealed like any answer)
                 await self._wait_until(g, ends, lambda: mine.done()
-                                       and self._round_sealed(room, gid, n) >= (people | agents))
+                                       and self._round_sealed(room, gid, n) >= self._waiting_on(room, people, agents))
                 seed = f"{g['seed']}:{n}"
                 now_people, now_agents = self._present_players(room, me)
                 team = self._team_of(room)
@@ -2730,7 +2819,8 @@ class Engine:
                 await self._host_post(g, {"t": "tales_vote_open", "gid": gid, "n": n, "options": options,
                                           "claims": claims, "ends_at": ends, "secs": game.VOTE_SECONDS * self.ts})
                 voters_open = self._present_players(room, me)[0]  # who may vote: people present now...
-                await self._wait_until(g, ends, lambda: self._round_sealed(room, gid, n, "tales_vote") >= people)
+                await self._wait_until(g, ends, lambda: self._round_sealed(room, gid, n, "tales_vote")
+                                       >= self._waiting_on(room, people, agents, agents_too=False))
                 team = self._team_of(room)
                 votes = {}
                 ballots = self._round_votes(room, gid, n,  # ...or at close; sealed to me, like answers
@@ -2777,7 +2867,7 @@ class Engine:
         await self._host_post(g, {"t": "tales_round", "gid": gid, "n": n, "of": len(g["qs"]),
                                   "q": prompt, "ends_at": ends, "secs": game.FAKE_SECONDS * self.ts})
         self._spawn(self._answer_as_host(g, n, {"q": prompt, "a": ""}))
-        await self._wait_until(g, ends, lambda: self._round_sealed(room, gid, n) >= (people | agents))
+        await self._wait_until(g, ends, lambda: self._round_sealed(room, gid, n) >= self._waiting_on(room, people, agents))
         seed = f"{g['seed']}:{n}"
         now_people, now_agents = self._present_players(room, me)
         now_agents.add(me)
@@ -2792,7 +2882,8 @@ class Engine:
         await self._host_post(g, {"t": "tales_vote_open", "gid": gid, "n": n, "options": options,
                                   "claims": claims, "ends_at": ends, "secs": game.VOTE_SECONDS * self.ts})
         voters_open = self._present_players(room, me)[0]
-        await self._wait_until(g, ends, lambda: self._round_sealed(room, gid, n, "tales_vote") >= people)
+        await self._wait_until(g, ends, lambda: self._round_sealed(room, gid, n, "tales_vote")
+                                       >= self._waiting_on(room, people, agents, agents_too=False))
         team = self._team_of(room)
         is_agent = {oid: team.get(pk, pk) != pk for oid, pk in author_of.items()}
         flags = {}
@@ -2822,20 +2913,21 @@ class Engine:
         if tales and game.norm(text) == game.norm(q.get("a", "")):
             text = ""   # never keep a fake that is the truth: the host's own agent would score a free point
         if not text:
-            if self._inflight >= MAX_INFLIGHT:
+            if not self._slot_free(False):
                 return   # my own limit, not "no answer": nothing is announced for it
-            self._inflight += 1
+            self._take_slot(False)
             try:
                 if not tales:
                     await asyncio.sleep(random.uniform(3, 9) * self.ts)
                 owner_name = self.settings()["display_name"] or "my owner"
                 self._set_state("activity: working", "writing a tall tale" if tales else "trying to sound human")
-                if tales:
-                    text = await self.brain.fake(self.persona(), owner_name, str(q.get("q", "")))
-                    if game.norm(text) == game.norm(q.get("a", "")):
-                        text = ""
-                else:
-                    text = await self.brain.human_answer(self.persona(), owner_name, str(q.get("q", "")))
+                with _triggered("owner"):   # my own game: my owner's budget, not others' share
+                    if tales:
+                        text = await self.brain.fake(self.persona(), owner_name, str(q.get("q", "")))
+                        if game.norm(text) == game.norm(q.get("a", "")):
+                            text = ""
+                    else:
+                        text = await self.brain.human_answer(self.persona(), owner_name, str(q.get("q", "")))
             except BudgetExhausted:
                 self._set_state("system: waiting", "out of budget for today")   # the state says it; no gave_up
                 return
@@ -2843,7 +2935,7 @@ class Engine:
                 log.debug("ninsei: host answer failed: %s", e)
                 text = ""
             finally:
-                self._inflight -= 1
+                self._free_slot(False)
         if text and self._host_games.get(g["gid"]) is g:
             await self._publish_fake(g["room"], True, g["gid"], n, text, self._identity()["agent_pk"])
             self._set_state("activity: idle")
@@ -2895,8 +2987,12 @@ class Engine:
         key = f"{ev['pubkey']}:{c.get('gid')}:{c.get('n')}"
         if key in self._played:
             return
-        if self.owner_away() and self.settings()["away_mode"] == "quiet":
-            return   # no game turns while my owner is away, in "quiet" ("named" keeps playing: no offers, no chatter)
+        if not self._plays_in(room):
+            # While my owner is away: none in "quiet", and in "named" only games that were already running when
+            # they left. The room's host is told (a beat that says plays: false) so it doesn't wait for me.
+            if room not in self._plays_pub:
+                self._spawn(self._presence_once(only=room))
+            return
         if self._stranger_budget_left() <= 0:
             return   # others' share of the day is spent: my own limit, so nothing is announced (no gave_up)
         if not self._rate_ok(f"fake:{room}:{_team_key(ev['pubkey'], self.owner_of(ev))}", FAKES_PER_HOST, FAKES_WINDOW):
@@ -2911,9 +3007,9 @@ class Engine:
         await asyncio.sleep(random.uniform(0, FAKE_JITTER) * self.ts)
         if not self._round_playable(room, ev, c):
             return
-        if self._inflight >= MAX_INFLIGHT:
+        if not self._slot_free(True):
             return
-        self._inflight += 1
+        self._take_slot(True)
         trigger = _TRIGGER.set("stranger")
         try:
             owner_name = self.settings()["display_name"] or "my owner"
@@ -2927,6 +3023,7 @@ class Engine:
                                              retry_ok=lambda: self._stranger_retry_ok(room))
         except BudgetExhausted:
             if self._refused == "share":   # only others' share is gone
+                self._latch_share()
                 self._set_state("activity: idle")
             else:
                 self._set_state("system: waiting", "out of budget for today")
@@ -2937,7 +3034,7 @@ class Engine:
             return
         finally:
             _TRIGGER.reset(trigger)
-            self._inflight -= 1
+            self._free_slot(True)
         if fake:
             await self._publish_fake(room, True, c.get("gid"), c.get("n"), fake, ev["pubkey"])  # ev: the host's round
             self._set_state("activity: idle")
@@ -3595,6 +3692,7 @@ class Engine:
     def _touch(self, focused: bool) -> None:
         now = time.time()
         self._last_open_at = now
+        self._away_games = None   # back: the next time they leave, the games running then are the ones that count
         if focused:
             self._last_focused_at = now
 
@@ -3643,7 +3741,7 @@ class Engine:
         """If the status I would publish differs from the last beat's, send a beat soon: at most one extra per
         STATUS_BEAT_GAP overall (a later change waits for the gap and sends whatever is true then). The regular
         60 s beat covers the rest, and a status that drifts with the clock needs no extra."""
-        if not self.pool or self._person_pub is None or self.person_status() == self._person_pub:
+        if not self.pool or self._person_pub is None or not self._pub_stale():
             return   # (before the first beat, that beat says it)
         wait = self._status_beat_at + STATUS_BEAT_GAP * self.ts - time.time()
         if wait <= 0:
@@ -3659,10 +3757,60 @@ class Engine:
                 await asyncio.sleep(wait)
             finally:
                 self._status_beat_waiting = False
-            if self.person_status() != self._person_pub:
+            if self._pub_stale():
                 self._status_beat_at = time.time()
                 await self._presence_once()
         self._spawn(later())
+
+    def _pub_stale(self) -> bool:
+        """Do my last beats say something other than what is true now: my status, or where I play?"""
+        return self.person_status() != self._person_pub or self._plays_off() != self._plays_pub
+
+    def _game_started_at(self, room: str, gid: str) -> Optional[float]:
+        """When a game's start reached us (its author's date if we never saw it arrive): the earliest such start."""
+        best = None
+        for e in self.events.get(room, {}).values():
+            c = self._content(e)
+            if c.get("t") == "tales_start" and c.get("gid") == gid and self.owner_of(e):
+                at = self._arrived.get(e["id"])
+                t = e["created_at"] if at is None else max(e["created_at"], at)
+                best = t if best is None else min(best, t)
+        return best
+
+    def _note_away(self) -> None:
+        """The first time my owner is seen away, remember the games that were already running when they left
+        (their start reached us before IDLE_OPEN ran out). "named" plays those and nothing newer."""
+        if self.owner_around():
+            self._away_games = None
+            return
+        if self._away_games is not None:
+            return
+        since = (self._last_open_at + IDLE_OPEN) if self._last_open_at else self._born
+        games = set()
+        for room in self.store.rooms():
+            g = self.game_view(room)
+            if g and g["phase"] != "end":
+                started = self._game_started_at(room, g["gid"])
+                if started is not None and started <= since:
+                    games.add(g["gid"])
+        self._away_games = games
+
+    def _plays_in(self, room: str) -> bool:
+        """Will my agent take game turns in this room right now? Only while my owner is away does it ever not:
+        "quiet" never, "named" only games already running when they left."""
+        if self.owner_around():
+            return True
+        mode = self.settings()["away_mode"]
+        if mode != "named":
+            return mode == "chat"
+        self._note_away()
+        g = self.game_view(room)
+        return not g or g["phase"] == "end" or g["gid"] in (self._away_games or ())
+
+    def _plays_off(self) -> set:
+        if self.owner_around():
+            return set()
+        return {r for r in self.store.rooms() if not self._plays_in(r)}
 
     def _status_of(self, entries: list[dict], now: float) -> tuple[str, bool]:
         """(status, online by the old rule) of one person from their agents' presence entries: the newest fresh
@@ -3737,10 +3885,17 @@ class Engine:
             self.agent_state, self.agent_note = "system: waiting", why
         s = self.settings()
         bv = self.budget_view()
-        person = self._person_pub = self.person_status()   # my status rides in the beat that is already sent
+        person = self.person_status()   # my status rides in the beat that is already sent
+        if only is None:
+            self._person_pub = person   # a one-room beat is not "published": the other rooms haven't heard it
         for room in ([only] if only else list(self.store.rooms())):
             content = {"t": "presence", "state": self.agent_state,
                        "budget": round(bv["pct"], 2) if s["share_budget"] else None, "person": person}
+            if self._plays_in(room):
+                self._plays_pub.discard(room)
+            else:
+                content["plays"] = False   # a host leaves me out of the players it waits for
+                self._plays_pub.add(room)
             if self._gave_up and self._gave_up[2] == room:   # "couldn't answer" in the game panel, for this one round and room (checked on receipt)
                 content["gave_up"] = {"gid": self._gave_up[0], "n": self._gave_up[1]}
             if s["card_details"]:  # the owner chose to show these on the agent's card

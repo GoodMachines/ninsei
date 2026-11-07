@@ -754,11 +754,14 @@ function cleanSnippet(s, n) {
   return out.replace(/ +/g, ' ').trim().slice(0, n)
 }
 
-// Tell the engine this page is open, so it can say Present, Idle or Away for you. While a Ninsei view is mounted and the
-// document is visible: one POST /here right away, again whenever focus or visibility changes or you type, click or
-// scroll, and every 30 s. At most one call per HERE_MIN_MS (a trailing one carries the rest). `focused` is true only
-// for a focused window you touched in the last HERE_ACTIVE_MS: a window left open and untouched reports open, not
-// focused, so it goes from Present to Idle instead of staying Present all day. Returns the function that stops it.
+// Tell the engine this page is open, so it can say Present, Idle or Away for you. Started when a Ninsei view (the page, or
+// the Ninsei tab) mounts and stopped when the last one unmounts; it reports only while one of them is on screen and the
+// document is visible: one POST /here right away, again when focus or visibility changes, when you type, click or scroll
+// inside a Ninsei view (events anywhere else in Hermes are not use of Ninsei), and every 30 s. At most one call per
+// HERE_MIN_MS (a trailing one carries the rest). `focused` is true only for a focused window you touched inside Ninsei in
+// the last HERE_ACTIVE_MS: a view left open and untouched reports open, not focused, so it goes from Present to Idle
+// instead of staying Present all day. Returns the function that stops it.
+const NINSEI_VIEW = '[data-ninsei-view]'   // on the page, the sidebar tab, and the dialogs they open
 const HERE_EVERY_MS = 30000
 const HERE_MIN_MS = 10000
 const HERE_ACTIVE_MS = 150000
@@ -771,10 +774,18 @@ function hereSignals(store) {
   let trailing = null
   let beat = null
   const visible = () => doc.visibilityState !== 'hidden'
+  // Is a Ninsei view on screen (a docked tab that is hidden has no layout boxes)? A bare document (no DOM) says yes.
+  const shown = () => {
+    if (typeof doc.querySelectorAll !== 'function') return true
+    for (const el of doc.querySelectorAll(NINSEI_VIEW)) if (el.getClientRects().length) return true
+    return false
+  }
+  // An event inside a Ninsei view's DOM. (Called with no event, as the timers and tests do: counts.)
+  const inside = e => !e || !!(e.target && typeof e.target.closest === 'function' && e.target.closest(NINSEI_VIEW))
   const winFocused = () => typeof doc.hasFocus !== 'function' || doc.hasFocus()
   const send = () => {
     trailing = null
-    if (stopped || !visible()) return
+    if (stopped || !visible() || !shown()) return
     lastSent = Date.now()
     P.rest('/here', { method: 'POST', body: { focused: winFocused() && Date.now() - active < HERE_ACTIVE_MS } })
       .then(() => {}, () => {})   // a missed call costs a few seconds of accuracy, never an error toast
@@ -785,11 +796,10 @@ function hereSignals(store) {
     if (wait <= 0) send()
     else trailing = P.setTimeout(send, wait)
   }
-  const touch = () => { active = Date.now(); poke() }
-  const change = () => { if (visible()) touch() }
+  const touch = e => { if (!inside(e)) return; active = Date.now(); poke() }
   const offs = [
-    P.listen(doc, 'visibilitychange', change),
-    typeof window !== 'undefined' && P.listen(window, 'focus', touch),
+    P.listen(doc, 'visibilitychange', poke),
+    typeof window !== 'undefined' && P.listen(window, 'focus', poke),
     typeof window !== 'undefined' && P.listen(window, 'blur', poke),
     P.listen(doc, 'keydown', touch),
     P.listen(doc, 'pointerdown', touch),
@@ -3637,7 +3647,7 @@ function ProfileSheet(props) {
   }
   const saveBtn = jsx(K.Button, { variant: 'outline', size: 'sm', disabled: !!busy, onClick: save, children: [jsx(K.Icon, { name: 'save', size: 13 }, 'i'), 'Save image'] }, 'save')
   const copyBtn = canCopy ? jsx(K.Button, { variant: 'outline', size: 'sm', disabled: !!busy, onClick: copyImage, children: [jsx(K.Icon, { name: 'copy', size: 13 }, 'i'), 'Copy image'] }, 'copy') : null
-  return jsx('div', { className: 'hx h-profile-scrim', onClick: e => { if (e.target === e.currentTarget) props.onClose() }, children:
+  return jsx('div', { className: 'hx h-profile-scrim', 'data-ninsei-view': '', onClick: e => { if (e.target === e.currentTarget) props.onClose() }, children:
     jsxs('div', { className: 'h-profile', ref: sheet, role: 'dialog', 'aria-modal': true, 'aria-label': body.title, children: [
       jsxs('div', { className: 'h-profile-head', children: [
         jsx(K.Button, { variant: 'ghost', size: 'icon', 'aria-label': 'Flip card', 'aria-pressed': flipped, onClick: () => setFlipped(v => !v),
@@ -7511,6 +7521,7 @@ function App(props) {
   const store = props.store
   const st = useStore(store)
   useEffect(() => store.view(), [store])
+  useEffect(() => (P.viewMounted ? P.viewMounted(store) : undefined), [store])   // Desktop: presence reports while a view is up
   const view = useNav()
   // The People drawer (narrow layouts): closed whenever the view or room changes, by Escape, by a click
   // outside it, or by its own Close button; focus goes back to the button that opened it.
@@ -7648,7 +7659,7 @@ function App(props) {
       ] })
     ] }) }) }) }) })
   }
-  return jsxs('div', { className: 'hx h-page', ref: rootRef, 'data-platform': P.kind, children: [
+  return jsxs('div', { className: 'hx h-page', ref: rootRef, 'data-platform': P.kind, 'data-ninsei-view': '', children: [
     P.inlineStyle && jsx('style', { children: CSS }),
     inner,
     snap && snap.settings.onboarded && switching && jsx(QuickSwitcher, { snap, onPick: pick, onClose: () => setSwitching(false) }),
@@ -7661,6 +7672,7 @@ function App(props) {
 function SideTab(props) {
   const { store, onOpen } = props
   const st = useStore(store)
+  useEffect(() => (P.viewMounted ? P.viewMounted(store) : undefined), [store])
   const view = useNav()
   const snap = st.snap
   let body
@@ -7678,7 +7690,7 @@ function SideTab(props) {
   } else {
     body = jsx(Rail, { store, snap, view, roomId: view === 'room' ? store.room() : '', go: onOpen })
   }
-  return jsxs('nav', { className: 'hx h-tab', 'data-platform': P.kind, 'aria-label': 'Ninsei rooms', children: [
+  return jsxs('nav', { className: 'hx h-tab', 'data-platform': P.kind, 'data-ninsei-view': '', 'aria-label': 'Ninsei rooms', children: [
     P.inlineStyle && jsx('style', { children: CSS }),
     body
   ] })
@@ -7896,7 +7908,7 @@ const K = {
   Dialog(props) {
     return jsx(sdk.Dialog, { open: !!props.open, onOpenChange: v => { if (!v) props.onClose() }, children:
       jsx(sdk.DialogContent, { style: props.wide ? { maxWidth: 680, width: 'calc(100vw - 32px)' } : { maxWidth: 460, width: 'calc(100vw - 32px)' },
-        children: jsxs('div', { className: 'hx h-col', style: { gap: 14 }, children: [
+        children: jsxs('div', { className: 'hx h-col', 'data-ninsei-view': '', style: { gap: 14 }, children: [
           jsxs(sdk.DialogHeader, { children: [
             jsx(sdk.DialogTitle, { children: props.title }),
             props.description ? jsx(sdk.DialogDescription, { children: props.description }) : null
@@ -7923,9 +7935,19 @@ const K = {
   }
 }
 
+// Presence reporting (hereSignals) runs only while a Ninsei view is mounted: counted here, because the page and the
+// docked tab can both be up at once. Not at plugin start: Desktop being open says nothing about Ninsei.
+let hereViews = 0
+let hereStop = null
+
 function makePlatform(ctx) {
   return {
     kind: 'desktop',
+    // A Ninsei view (the page or the docked tab) calls this on mount; its return value on unmount.
+    viewMounted(store) {
+      if (hereViews++ === 0) hereStop = hereSignals(store)
+      return () => { if (--hereViews === 0 && hereStop) { hereStop(); hereStop = null } }
+    },
     inlineStyle: false,
     // the profile Desktop's gateway is routed to, for "Ninsei is off for the X profile"
     profileName() { try { return host.state && host.state.profile ? String(host.state.profile.get() || '') : '' } catch (_) { return '' } },
@@ -8070,7 +8092,7 @@ export default {
     store.start()
     ctx.onDispose(() => store.stop())
     ctx.onDispose(mentionAlerts(store))
-    ctx.onDispose(hereSignals(store))
+    ctx.onDispose(() => { hereViews = 0; if (hereStop) { hereStop(); hereStop = null } })
     // the backend pushes after every change; polling stays as the fallback
     ctx.onEvent('plugin.ninsei.changed', () => store.refresh())
 

@@ -426,7 +426,7 @@ function ProfileSheet(props) {
   }
   const saveBtn = jsx(K.Button, { variant: 'outline', size: 'sm', disabled: !!busy, onClick: save, children: [jsx(K.Icon, { name: 'save', size: 13 }, 'i'), 'Save image'] }, 'save')
   const copyBtn = canCopy ? jsx(K.Button, { variant: 'outline', size: 'sm', disabled: !!busy, onClick: copyImage, children: [jsx(K.Icon, { name: 'copy', size: 13 }, 'i'), 'Copy image'] }, 'copy') : null
-  return jsx('div', { className: 'hx h-profile-scrim', onClick: e => { if (e.target === e.currentTarget) props.onClose() }, children:
+  return jsx('div', { className: 'hx h-profile-scrim', 'data-ninsei-view': '', onClick: e => { if (e.target === e.currentTarget) props.onClose() }, children:
     jsxs('div', { className: 'h-profile', ref: sheet, role: 'dialog', 'aria-modal': true, 'aria-label': body.title, children: [
       jsxs('div', { className: 'h-profile-head', children: [
         jsx(K.Button, { variant: 'ghost', size: 'icon', 'aria-label': 'Flip card', 'aria-pressed': flipped, onClick: () => setFlipped(v => !v),

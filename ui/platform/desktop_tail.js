@@ -21,7 +21,7 @@ const K = {
   Dialog(props) {
     return jsx(sdk.Dialog, { open: !!props.open, onOpenChange: v => { if (!v) props.onClose() }, children:
       jsx(sdk.DialogContent, { style: props.wide ? { maxWidth: 680, width: 'calc(100vw - 32px)' } : { maxWidth: 460, width: 'calc(100vw - 32px)' },
-        children: jsxs('div', { className: 'hx h-col', style: { gap: 14 }, children: [
+        children: jsxs('div', { className: 'hx h-col', 'data-ninsei-view': '', style: { gap: 14 }, children: [
           jsxs(sdk.DialogHeader, { children: [
             jsx(sdk.DialogTitle, { children: props.title }),
             props.description ? jsx(sdk.DialogDescription, { children: props.description }) : null
@@ -48,9 +48,19 @@ const K = {
   }
 }
 
+// Presence reporting (hereSignals) runs only while a Ninsei view is mounted: counted here, because the page and the
+// docked tab can both be up at once. Not at plugin start: Desktop being open says nothing about Ninsei.
+let hereViews = 0
+let hereStop = null
+
 function makePlatform(ctx) {
   return {
     kind: 'desktop',
+    // A Ninsei view (the page or the docked tab) calls this on mount; its return value on unmount.
+    viewMounted(store) {
+      if (hereViews++ === 0) hereStop = hereSignals(store)
+      return () => { if (--hereViews === 0 && hereStop) { hereStop(); hereStop = null } }
+    },
     inlineStyle: false,
     // the profile Desktop's gateway is routed to, for "Ninsei is off for the X profile"
     profileName() { try { return host.state && host.state.profile ? String(host.state.profile.get() || '') : '' } catch (_) { return '' } },
@@ -195,7 +205,7 @@ export default {
     store.start()
     ctx.onDispose(() => store.stop())
     ctx.onDispose(mentionAlerts(store))
-    ctx.onDispose(hereSignals(store))
+    ctx.onDispose(() => { hereViews = 0; if (hereStop) { hereStop(); hereStop = null } })
     // the backend pushes after every change; polling stays as the fallback
     ctx.onEvent('plugin.ninsei.changed', () => store.refresh())
 
