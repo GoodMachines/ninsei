@@ -122,7 +122,7 @@ async def test_no_request_carries_more_than_the_filter_cap(bare):
     every = [f for fs in e.pool.subs.values() for f in fs]
     assert sum(f["kinds"] == [KIND_LIVE] for f in every) == 1
     assert any(f["kinds"] == [KIND_LIVE] for f in e.pool.subs["rooms"])
-    metas = [f for f in every if f["kinds"] == [KIND_META]]
+    metas = [f for f in every if f["kinds"] == [KIND_META] and "ninsei/avatar" not in f.get("#d", [])]   # not the pictures request
     assert {a for f in metas for a in f.get("authors", [])} == {f"{i + 1:064x}" for i in range(9)}
     assert sorted(f["#h"][0] for f in every if f["kinds"] == [KIND_ROOM]) == sorted([ROOM] + rooms)
 
@@ -202,7 +202,7 @@ def test_offer_cards_have_copy_for_expired_and_dropped():
 SETTINGS_JS = lambda: (fn(SETUP, "parseCount") + const(SETUP, "BUDGET_MAX") + const(SETUP, "MSGS_MAX")
                        + fn(SETUP, "limitError") + fn(SETUP, "SettingsForm") + """
 function Field() {}; function Seg() {}; function VibePresets() {}; function IdCard() {}; function FacePicker() {}; function BudgetRing() {}
-function InterestInput() {}; function Notice() {}
+function InterestInput() {}; function Notice() {}; function PersonLook() {}
 K.Toggle = function Toggle() {}
 const useFaceEditorFocus = () => {}
 const faceFor = f => f || {}

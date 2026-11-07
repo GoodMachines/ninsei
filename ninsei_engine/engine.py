@@ -24,7 +24,7 @@ import unicodedata
 from pathlib import Path
 from typing import Any, Callable, Iterable, Optional
 
-from . import dm, game, nip44, nostr
+from . import avatar, dm, game, nip44, nostr
 from .brain import Brain, BudgetExhausted, Line
 from .relays import RelayPool
 from .store import EVENT_ROOM_CAP, Store, today
@@ -107,6 +107,23 @@ DM_SEND_PER_MIN = 10       # private messages one install sends a minute (each i
 DM_SNIPPET = 60            # how much of a new private message the sidebar carries, for the alert
 DM_THREAD_MESSAGES = 200   # messages of one conversation the UI loads
 DM_SEEN_MEMORY = 4000      # wrap ids remembered in memory, for the ones not recorded on disk (hidden senders)
+# Typing indicators (ephemeral kind 21042 `typing`, people only) and pictures/faces of people (replaceable kind 30078).
+TYPING_GAP = 5             # seconds between my typing signals into one room while I type
+TYPING_PER_MIN = 12        # typing signals one install sends a minute, across all rooms (relays limit per IP)
+TYPING_SHOW = 7            # seconds someone is shown as typing after their last signal
+TYPING_FRESH = 15          # a typing signal older than this when it arrives is a replay
+MAX_TYPING = 32            # people tracked as typing per room
+ART_AVATAR_D = "ninsei/avatar"   # d-tags of a person's picture and face events
+ART_FACE_D = "ninsei/face"
+ART_KINDS = {ART_AVATAR_D: "avatar", ART_FACE_D: "face"}
+ART_POW = 12               # bits of proof of work, like cards
+ART_FACE_BYTES = 1024      # content of a face event (a real one is about 120 bytes)
+ART_AUTHORS = 200          # people whose pictures and faces are asked for, newest activity first
+ART_AUTHORS_PER_FILTER = 50
+ART_SETTLE = 3             # seconds to gather new people before asking the relays again
+ART_REQ_GAP = 30           # at least this long between two such requests
+ART_PUBLISH_PER_10MIN = 5  # picture or face changes I publish in ten minutes
+ART_BATCH = 8              # pictures one /avatars call returns
 NAME_IDLE_EVICT = 3 * 86400  # when the registry is full, holders not seen for this long make room
 # An agent whose name is a short or everyday word would "be named" in every other message, which
 # would silence every other agent (they skip messages that name someone else's agent).
@@ -531,6 +548,15 @@ class Engine:
         self._dm_rev = 0                         # moves whenever a private message or conversation changes
         self._dm_dropped = False                 # the queue overflowed: don't move `dm_since` this run
         self._dm_busy = False
+        # people's pictures and faces: {pk: {"avatar": meta, "face": meta}} (meta: id, created_at, and mime/size or
+        # the face dict; an empty one is a removal). The picture bytes stay in the store until asked for.
+        self._art: dict[str, dict[str, dict]] = {}
+        self._art_ok: set[str] = set()           # person keys seen in a room I'm in: the only ones whose art is taken
+        self._art_waiting = False
+        self._art_last = 0.0
+        self._art_sent: Optional[tuple] = None   # the author list the last request went out with
+        self.typing: dict[str, dict[str, float]] = {}   # room -> person pk -> when their last signal arrived
+        self._typing_at: dict[str, float] = {}          # room -> when I last signaled typing
 
     # ============================================================================================
     # lifecycle and thread bridge
@@ -686,8 +712,11 @@ class Engine:
             "agent_name": "", "vibe": "warm, curious, a little playful", "face": None,
             "budget_daily": 40000, "msgs_daily": MSGS_DAILY, "chattiness": "normal", "offers": True, "share_budget": False,
             "card_details": False, "relays": DEFAULT_RELAYS, "card_published_at": 0,
+            "person_face": None, "show_avatars": "everyone",
         }
         out = {**defaults, **s}
+        out["person_face"] = clean_face(out["person_face"]) if isinstance(out.get("person_face"), dict) and out["person_face"] else None
+        out["show_avatars"] = "nobody" if out.get("show_avatars") == "nobody" else "everyone"
         # a face saved before a key existed (the card style, say) gains its default here
         out["face"] = clean_face(out["face"]) if out.get("face") else self._default_face()
         return out
@@ -700,7 +729,9 @@ class Engine:
     def save_settings(self, patch: dict) -> dict:
         cur = self.settings()
         allowed = {"onboarded", "display_name", "interests", "line", "agent_name", "vibe", "face",
-                   "budget_daily", "msgs_daily", "chattiness", "offers", "share_budget", "card_details", "relays"}
+                   "budget_daily", "msgs_daily", "chattiness", "offers", "share_budget", "card_details", "relays",
+                   "person_face", "show_avatars"}
+        before = cur["show_avatars"]
         for k, v in patch.items():
             if k not in allowed:
                 continue
@@ -719,12 +750,18 @@ class Engine:
                 v = v if v in CHATTINESS else "normal"
             elif k == "face":
                 v = clean_face(v)
+            elif k == "person_face":  # the person's own built face; an empty one means "use my initial"
+                v = clean_face(v) if isinstance(v, dict) and v else None
+            elif k == "show_avatars":
+                v = "nobody" if v == "nobody" else "everyone"
             elif k == "relays":
                 v = _clean_relays(v)
             elif k in ("offers", "share_budget", "card_details", "onboarded"):
                 v = bool(v)
             cur[k] = v
         self.store.set("settings", cur)
+        if cur["show_avatars"] != before:
+            self._art_shown_changed(cur["show_avatars"])
         return cur
 
     def relays(self) -> list[str]:
@@ -756,6 +793,7 @@ class Engine:
             for e in self.events[room].values():
                 hs[e["pubkey"]] = max(hs.get(e["pubkey"], 0), e["created_at"])
             self.topics[room] = TopicTracker()
+        self._art_load()
         self.pool = self._new_pool()
         self.pool.start()
         self._dm_queue = asyncio.Queue(maxsize=DM_QUEUE_MAX)
@@ -819,9 +857,10 @@ class Engine:
         joined = self.store.rooms()
         rooms = list(joined)
         if not rooms:
-            for sid in list(self._room_subs | {"rooms"}):
+            for sid in list(self._room_subs | {"rooms", "art"}):
                 await self.pool.unsubscribe(sid)
             self._room_subs.clear()
+            self._art_sent = None
             return
         since = _now() - HISTORY_DAYS * 86400
         # Every filter counts toward a relay's per-request limit, not only the history ones: the live filter,
@@ -842,6 +881,8 @@ class Engine:
         for sid in self._room_subs - wanted:
             await self.pool.unsubscribe(sid)
         self._room_subs = wanted
+        self._art_sent = None   # a new pool or room list: ask for pictures and faces again
+        await self._art_subscribe()
 
     async def reconnect(self) -> None:
         if self.pool:
@@ -931,7 +972,10 @@ class Engine:
 
     async def _on_event(self, ev: dict, _src: str) -> None:
         if ev.get("kind") == KIND_META:
-            self._on_room_meta(ev)
+            if (nostr.tag_values(ev, "d") or [""])[0] in ART_KINDS:
+                self._take_art(ev)   # a picture or a face: never room metadata
+            else:
+                self._on_room_meta(ev)
             return
         rooms = nostr.tag_values(ev, "h")
         if not rooms:
@@ -986,6 +1030,10 @@ class Engine:
             if ev["id"] not in self.events[room]:
                 return  # this one was let go of at once (its author already has the most here)
         self._seen_active(room, ev["pubkey"], min(created, now))
+        if c.get("t") not in SILENT_TYPES and not self.owner_of(ev):
+            self._art_see(ev["pubkey"])   # a person in a room I'm in: their picture and face may be asked for
+        if c.get("t") == "msg" and not self.owner_of(ev):
+            self.typing.get(room, {}).pop(ev["pubkey"], None)   # they sent it: no longer typing
         # Backfill: a history pull, or anything dated before the live window (a relay replaying the room, or a
         # backdated post). Its order is the relay's or the author's, so it can't decide who held a name first.
         backfill = _src == "history" or created < now - FRESH_WINDOW
@@ -1092,6 +1140,20 @@ class Engine:
             self._seen_active(room, ev["pubkey"], time.time())
             self._register_name(room, ev["pubkey"], name, agent=True)
             self._note_agent_name(room, ev["pubkey"], name)
+            self._art_see(owner)
+            self._bump()
+        elif t == "typing" and not owner:
+            # A person is typing: remembered for a few seconds, shown by `typing_view`. Nothing else: no name is
+            # registered, nobody becomes a member, no agent wakes and no model is called.
+            if ev["pubkey"] == self._identity()["person_pk"] or time.time() - ev["created_at"] > TYPING_FRESH:
+                return
+            tp = self.typing.setdefault(room, {})
+            if ev["pubkey"] not in tp and len(tp) >= MAX_TYPING:
+                for pk in [pk for pk, at in tp.items() if time.time() - at > TYPING_SHOW]:
+                    tp.pop(pk, None)
+                if len(tp) >= MAX_TYPING:
+                    return
+            tp[ev["pubkey"]] = time.time()
             self._bump()
         elif t == "claim" and owner:
             trig = str(c.get("trigger", ""))[:80]
@@ -2867,6 +2929,7 @@ class Engine:
         self.lobby = {**self.lobby, "people": [p for p in self.lobby.get("people", []) if p["pk"] != pk]}
         self.store.dm_forget(pk)   # their private messages go too, and new ones are dropped unopened
         self._dm_rev += 1
+        self._art_forget(pk)       # and their picture and face
         self._bump()
         return {"hidden": len(h)}
 
@@ -3177,6 +3240,306 @@ class Engine:
         self._queue_event(req)
         self._spawn(self.pool.publish(req))
         return {"id": ev["id"]}
+
+    # ============================================================================================
+    # typing indicators, profile pictures and faces (people only; agents keep their built faces)
+    # ============================================================================================
+    async def typing_signal(self, room: str) -> dict:
+        """The owner is typing in `room`: tell it with one ephemeral `typing` event, at most one per TYPING_GAP
+        seconds per room and TYPING_PER_MIN across all rooms (relays limit per IP), and only while someone else
+        is here to see it. Never an error to the UI: a signal that isn't sent says why."""
+        if room not in self.events or not self.settings()["onboarded"]:
+            return {"sent": False, "why": "not in that room"}
+        now = time.time()
+        if now - self._typing_at.get(room, 0.0) < TYPING_GAP:
+            return {"sent": False, "why": "just sent one"}
+        if not self._others_here(room):
+            return {"sent": False, "why": "nobody else is here"}
+        if not self._rate_ok("typing", TYPING_PER_MIN, 60):
+            return {"sent": False, "why": "too many signals this minute"}
+        self._typing_at[room] = now
+        await self._publish_room(room, False, {"t": "typing"}, kind=KIND_LIVE)
+        return {"sent": True}
+
+    def typing_view(self, room: str, who: Optional[dict] = None) -> list[dict]:
+        """Who is typing in this room right now: people only, hidden people never, named from the room's own name
+        book (a key that has never said who it is is not shown) with the same impostor flag a message gets."""
+        tp = self.typing.get(room)
+        if not tp:
+            return []
+        now = time.time()
+        who = who or self._who(room)
+        out = []
+        for pk, at in sorted(tp.items(), key=lambda kv: kv[1]):
+            if now - at > TYPING_SHOW or pk in self._hidden:
+                continue
+            name = who["person"].get(pk)
+            if not name:
+                continue
+            out.append({"pk": pk, "name": name, "impostor": self._holder(who, name) not in (None, pk)})
+        return out[-8:]
+
+    def _art_see(self, pk: str) -> None:
+        """A person seen in a room I'm in: their picture and face are now worth asking for."""
+        if not isinstance(pk, str) or pk in self._art_ok or len(self._art_ok) >= 20000 or pk in self._hidden:
+            return
+        self._art_ok.add(pk)
+        if pk not in self._art:
+            self._art_soon()
+
+    def _art_load(self) -> None:
+        """At boot: who has been seen in my rooms, and what the store holds of their pictures and faces."""
+        for evs in self.events.values():
+            for e in evs.values():
+                if e["kind"] == KIND_ROOM and not self.owner_of(e) and self._content(e).get("t") not in SILENT_TYPES:
+                    self._art_ok.add(e["pubkey"])
+        for row in self.store.art_index():
+            if row["pk"] in self._hidden:
+                self.store.art_forget(row["pk"])
+                continue
+            meta = {"id": row["id"], "created_at": row["created_at"], "mime": row["mime"], "size": row["size"]}
+            if row["kind"] == "face":
+                try:
+                    f = json.loads(bytes(row["data"] or b"null"))
+                except (ValueError, TypeError):
+                    f = None
+                meta["face"] = clean_face(f) if isinstance(f, dict) and f else None
+            self._art.setdefault(row["pk"], {})[row["kind"]] = meta
+
+    def _take_art(self, ev: dict) -> bool:
+        """A picture or face event (replaceable kind 30078, d `ninsei/avatar` or `ninsei/face`). Every check is
+        here and every refusal is silent: only keys seen in a room I'm in, never a hidden person or an agent,
+        proof of work, size before parsing, the newest event per person and kind, and for a picture the whole of
+        avatar.check_avatar. Returns whether it was taken."""
+        try:
+            if ev.get("kind") != KIND_META or not isinstance(ev.get("content"), str):
+                return False
+            kind = ART_KINDS.get((nostr.tag_values(ev, "d") or [""])[0])
+            pk, eid, created = ev.get("pubkey"), ev.get("id"), ev.get("created_at")
+            if not kind or not isinstance(pk, str) or not isinstance(eid, str) or not isinstance(created, int) \
+                    or isinstance(created, bool) or created > _now() + FUTURE_SLACK:
+                return False
+            mine = pk == self._identity()["person_pk"]
+            if len(ev["content"]) > (avatar.MAX_URI + 64 if kind == "avatar" else ART_FACE_BYTES):
+                return False
+            if nostr.first_tag(ev, "owner") is not None or pk in self._hidden or pk in self._hidden_agents:
+                return False   # an agent keeps its built face; a hidden person's picture is dropped, not kept
+            if not mine and (pk not in self._art_ok or nostr.leading_zero_bits(eid) < ART_POW):
+                return False
+            if kind == "avatar" and not mine and self.settings()["show_avatars"] == "nobody":
+                return False   # a switch that says nobody also means no stranger's image bytes are kept
+            cur = (self._art.get(pk) or {}).get(kind)
+            if cur and (created < cur["created_at"] or (created == cur["created_at"] and eid >= cur["id"])):
+                return False   # newest wins; on a tie the lowest id, as NIP-01 says for replaceable events
+            try:
+                c = json.loads(ev["content"]) if ev["content"].strip() else {}
+            except ValueError:
+                return False
+            if not isinstance(c, dict):
+                return False
+            meta: dict = {"id": eid, "created_at": created, "mime": "", "size": 0}
+            data: Optional[bytes] = None
+            # Taking a picture or face away is an empty event: no content, `{}`, or the field set to ""/null/{}.
+            # Any other shape that isn't a valid picture or face is junk and changes nothing.
+            field = "img" if kind == "avatar" else "face"
+            val = c.get(field)
+            if val in ("", None, {}) and set(c) <= {field}:
+                meta["face"] = None
+            elif kind == "avatar":
+                got = avatar.check_avatar(val)
+                if got is None:
+                    return False
+                meta["mime"], data = got
+                meta["size"] = len(data)
+            else:
+                if not isinstance(val, dict):
+                    return False
+                meta["face"] = clean_face(val)
+                data = json.dumps(meta["face"]).encode()
+            gone = self.store.art_put(pk, kind, eid, created, meta["mime"], data, time.time(),
+                                      keep=self._identity()["person_pk"])
+            self._art.setdefault(pk, {})[kind] = meta
+            for gpk, gkind in gone:
+                (self._art.get(gpk) or {}).pop(gkind, None)
+            self._bump()
+            return True
+        except Exception:
+            log.exception("ninsei: a picture or face event failed")
+            return False
+
+    def _art_view(self, pk: str) -> dict:
+        """What the UI may draw for one person: {"face": {...}} and/or {"av": version}. Empty for a hidden
+        person. Pictures only while "Show profile pictures" is on (mine are always listed, for Settings)."""
+        if pk in self._hidden:
+            return {}
+        s = self.settings()
+        mine = pk == self._identity()["person_pk"]
+        have = self._art.get(pk) or {}
+        out: dict = {}
+        face = s["person_face"] if mine and s["person_face"] else (have.get("face") or {}).get("face")
+        if face:
+            out["face"] = face
+        av = have.get("avatar")
+        if av and av.get("mime") and (mine or s["show_avatars"] == "everyone"):
+            out["av"] = av["id"][:12]
+        return out
+
+    def people_art(self, pks: Iterable[str], flagged: Iterable[str] = ()) -> dict[str, dict]:
+        """{pk: art} for the people on screen. A lookalike (flagged: someone else holds the name) gets none, so a
+        copied picture never makes an impostor look like the real person."""
+        bad = set(flagged)
+        out = {}
+        for pk in pks:
+            if pk in bad:
+                continue
+            v = self._art_view(pk)
+            if v:
+                out[pk] = v
+        return out
+
+    def avatars(self, pks: Any) -> dict[str, dict]:
+        """The pictures of up to ART_BATCH people as {pk: {"v": version, "uri": data URI}}, built from the stored,
+        checked bytes. Nothing for a hidden person, for a key never seen in a room, or while pictures are off."""
+        out: dict[str, dict] = {}
+        me = self._identity()["person_pk"]
+        show = self.settings()["show_avatars"] == "everyone"
+        for pk in list(dict.fromkeys(x for x in _as_list(pks) if isinstance(x, str)))[:ART_BATCH]:
+            av = (self._art.get(pk) or {}).get("avatar")
+            if pk in self._hidden or not av or not av.get("mime") or not (show or pk == me):
+                continue
+            row = self.store.art_get(pk, "avatar")
+            if row and row["data"] and row["id"] == av["id"]:
+                out[pk] = {"v": av["id"][:12], "uri": avatar.data_uri(row["mime"], bytes(row["data"]))}
+        return out
+
+    def _art_forget(self, pk: str) -> None:
+        self._art.pop(pk, None)
+        self._art_ok.discard(pk)
+        self.typing = {r: {k: v for k, v in tp.items() if k != pk} for r, tp in self.typing.items()}
+        self.store.art_forget(pk)
+
+    def _art_shown_changed(self, mode: str) -> None:
+        """"Show profile pictures" was switched. Off: other people's pictures are deleted (not just hidden). On:
+        ask the relays again, since the ones that arrived while it was off were dropped."""
+        if mode == "nobody":
+            me = self._identity()["person_pk"]
+            self.store.art_forget_others("avatar", me)
+            for pk, have in self._art.items():
+                if pk != me:
+                    have.pop("avatar", None)
+        else:
+            self._art_sent = None
+            self._art_soon(now=True)
+
+    def _art_authors(self) -> list[str]:
+        """Whose pictures and faces to ask for: me, then the people of my rooms by latest activity, at most
+        ART_AUTHORS, never a hidden one."""
+        me = self._identity()["person_pk"]
+        last: dict[str, float] = {}
+        for room, evs in self.events.items():
+            for e in evs.values():
+                pk = e["pubkey"]
+                if pk in self._art_ok and pk != me and pk not in self._hidden:
+                    last[pk] = max(last.get(pk, 0), e["created_at"])
+            for p in self.presence.get(room, {}).values():
+                o = p.get("owner")
+                if o in self._art_ok and o != me and o not in self._hidden:
+                    last[o] = max(last.get(o, 0), p["at"])
+        ranked = sorted(last, key=lambda k: (-last[k], k))[:ART_AUTHORS - 1]
+        return [me, *ranked]
+
+    async def _art_subscribe(self) -> None:
+        """One REQ, `art`: the picture and face events of the people of my rooms (several filters of
+        ART_AUTHORS_PER_FILTER authors each, well under the 8 a request may hold). Sent again only when the list
+        of people changed, and no oftener than ART_REQ_GAP."""
+        self._art_last = time.time()
+        if not self.pool or not self.settings()["onboarded"] or not self.store.rooms():
+            return
+        authors = self._art_authors()
+        if self._art_sent == tuple(authors):
+            return
+        self._art_sent = tuple(authors)
+        n = ART_AUTHORS_PER_FILTER
+        filters = [{"kinds": [KIND_META], "authors": authors[i:i + n], "#d": [ART_AVATAR_D, ART_FACE_D],
+                    "limit": 2 * len(authors[i:i + n])} for i in range(0, len(authors), n)]
+        await self.pool.subscribe("art", filters, self._on_art)
+
+    async def _on_art(self, ev: dict, _src: str) -> None:
+        self._take_art(ev)
+
+    def _art_soon(self, now: bool = False) -> None:
+        """Ask for the new people's pictures and faces soon: gathered for ART_SETTLE seconds and spaced
+        ART_REQ_GAP apart, so a room filling up with strangers is one request, not one each."""
+        if self._art_waiting or not self.pool or self.loop is None:
+            return
+        self._art_waiting = True
+
+        async def later():
+            try:
+                gap = 0.0 if now else max(ART_SETTLE * self.ts, self._art_last + ART_REQ_GAP * self.ts - time.time())
+                await asyncio.sleep(gap)
+            finally:
+                self._art_waiting = False
+            await self._art_subscribe()
+        self._spawn(later())
+
+    async def set_avatar(self, img: str) -> dict:
+        """Publish my profile picture ("" takes it away): a replaceable kind 30078 `ninsei/avatar` event with the
+        same proof of work as cards. Public, and relays or other apps may keep older pictures for good. The picture
+        must pass the receiving checks and carry no metadata (the UI's canvas re-encode leaves none)."""
+        s = self.settings()
+        if not s["onboarded"]:
+            raise ValueError("finish setup first")
+        pk = self._identity()["person_pk"]
+        cur = (self._art.get(pk) or {}).get("avatar") or {}
+        if not isinstance(img, str):
+            raise ValueError("That picture can't be sent.")
+        if img:
+            got = avatar.check_avatar(img)
+            if got is None:
+                raise ValueError("That picture can't be sent: Ninsei takes a PNG, JPEG or WebP of at most 48 KB and 512 pixels.")
+            meta = avatar.find_metadata(got[1], got[0])
+            if meta:
+                raise ValueError(f"That picture still carries {meta}. Choose it again in Ninsei's picker, which re-encodes it and keeps only the pixels.")
+            row = self.store.art_get(pk, "avatar")
+            if row and row["data"] and bytes(row["data"]) == got[1]:
+                return {"ok": True, "unchanged": True}
+        elif not cur.get("mime"):
+            return {"ok": True, "unchanged": True}
+        if not self._rate_ok("art", ART_PUBLISH_PER_10MIN, 600):
+            raise ValueError("Slow down: you can change your picture or face a few times every ten minutes.")
+        # a second after my last one at least: two changes in one second would tie, and the lower id would win
+        ev = nostr.build_event(self._identity()["person_sk"], KIND_META, json.dumps({"img": img or ""}),
+                               [["d", ART_AVATAR_D]], pow_bits=ART_POW,   # no `t` tag: the lobby's query must not pull pictures
+                               created_at=max(_now(), int(cur.get("created_at") or 0) + 1))
+        self._take_art(ev)
+        self._queue_event(ev)
+        self._spawn(self.pool.publish(ev))
+        self._bump()
+        return {"id": ev["id"]}
+
+    async def publish_face(self) -> dict:
+        """Publish my built face ({"face": ...}, or {"face": null} to take it away) when it differs from what I last
+        published. A separate, tiny event from the picture, so changing one never re-sends the other, and both are
+        fetched with one filter."""
+        s = self.settings()
+        if not s["onboarded"] or not self.pool:
+            return {"sent": False}
+        want = json.dumps(s["person_face"], sort_keys=True) if s["person_face"] else ""
+        if (self.store.get("face_sent") or "") == want:
+            return {"sent": False, "unchanged": True}
+        if not self._rate_ok("art", ART_PUBLISH_PER_10MIN, 600):
+            raise ValueError("Slow down: you can change your picture or face a few times every ten minutes.")
+        pk = self._identity()["person_pk"]
+        cur = (self._art.get(pk) or {}).get("face") or {}
+        ev = nostr.build_event(self._identity()["person_sk"], KIND_META, json.dumps({"face": s["person_face"]}),
+                               [["d", ART_FACE_D]], pow_bits=ART_POW, created_at=max(_now(), int(cur.get("created_at") or 0) + 1))
+        self.store.set("face_sent", want)
+        self._take_art(ev)
+        self._queue_event(ev)
+        self._spawn(self.pool.publish(ev))
+        self._bump()
+        return {"sent": True, "id": ev["id"]}
 
     # ============================================================================================
     # private messages (NIP-17), person to person
@@ -3807,7 +4170,7 @@ class Engine:
                              "model": self.store.get("model_last") or ""}},
             "settings": {k: s[k] for k in ("onboarded", "display_name", "interests", "line", "agent_name", "vibe",
                                            "face", "budget_daily", "msgs_daily", "chattiness", "offers", "share_budget", "relays",
-                                           "card_details", "card_published_at")},
+                                           "card_details", "card_published_at", "person_face", "show_avatars")},
             "budget": self.budget_view(),
             "model": self.brain.available(),
             "rooms": rooms,
@@ -3824,9 +4187,27 @@ class Engine:
             "dms": self.dm_summary(),
             "commons": COMMONS_ID,
         }
+        members: list[dict] = []
         if room and room in self.events:
-            snap["room"] = {"id": room, **self.room_meta(room), "members": self.members(room),
-                            "messages": self.messages(room), "game": self.game_view(room)}
+            members = self.members(room)
+            snap["room"] = {"id": room, **self.room_meta(room), "members": members,
+                            "messages": self.messages(room), "game": self.game_view(room),
+                            "typing": self.typing_view(room)}
             if mark and snap["room"]["messages"]:  # mark=False: the room is loaded but not on screen
                 self.store.mark_read(room, snap["room"]["messages"][-1]["ts"])
+        snap["people"] = self._snapshot_art(ident["person_pk"], members, snap["dms"]["threads"], (self.lobby or {}).get("people", []))
         return snap
+
+    def _snapshot_art(self, me: str, members: list[dict], threads: list[dict], lobby: list[dict]) -> dict:
+        """What the UI draws for each person on screen: {pk: {"face"?, "av"?}} for me, the open room's members,
+        my private-message partners and the lobby's people. A lookalike (flagged in the room, or in a thread)
+        gets nothing; a lobby person is flagged by the same check the rooms use. Small: only people who have a
+        face or a picture appear, and the picture itself is fetched on its own (`avatars`)."""
+        flagged = {p["pk"] for p in members if p.get("impostor")} | {t["pk"] for t in threads if t.get("impostor")}
+        pks = [me] + [p["pk"] for p in members] + [t["pk"] for t in threads if not t.get("request")]
+        known = set(pks)
+        extra = [p["pk"] for p in lobby if p["pk"] not in known and self._art_view(p["pk"])]
+        if extra:
+            flagged |= {pk for pk, info in self._dm_book(set(extra)).items() if info["flag"]}
+            pks += extra
+        return self.people_art(pks, flagged)

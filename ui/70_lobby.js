@@ -114,7 +114,7 @@ function RoomActivity(props) {
 function LobbyPerson(props) {
   const p = props.p
   return jsxs('div', { className: 'h-item', children: [
-    jsx(Initial, { name: p.name }),
+    jsx(PersonMark, { pk: p.pk, name: p.name }),
     jsxs('div', { className: 'h-grow h-col', style: { gap: 4 }, children: [
       jsxs('div', { className: 'h-row', children: [
         jsx('b', { className: 'h-trunc', children: p.name }),

@@ -94,6 +94,112 @@ function joinNames(names) {
   return names.slice(0, -1).join(', ') + ' and ' + names[names.length - 1]
 }
 
+// ---- profile pictures ---------------------------------------------------------------------------------------
+// The picker draws the chosen photo onto a 256 pixel canvas and re-encodes it (WebP, else JPEG) under 48 KB. A canvas
+// keeps pixels only, so EXIF (GPS position, camera) is gone; the original file is never uploaded. The engine checks
+// the same limits on what it sends and on everything it receives (ninsei_engine/avatar.py).
+const AVATAR_PX = 256
+const AVATAR_BYTES = 48 * 1024
+const AVATAR_TYPES = ['image/webp', 'image/jpeg']
+const AVATAR_QUALITY = [0.92, 0.85, 0.78, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.1]
+
+// The decoded size of a base64 data URI, without decoding it.
+function dataUriBytes(uri) {
+  const s = String(uri || '')
+  const body = s.slice(s.indexOf(',') + 1)
+  return Math.floor(body.length * 3 / 4) - (body.endsWith('==') ? 2 : body.endsWith('=') ? 1 : 0)
+}
+
+// The square of the source to use: zoom 1 is the largest centred square; pan x and y run -1..1 across what is left.
+function avatarCrop(srcW, srcH, zoom, panX, panY) {
+  const z = clamp(Number(zoom) || 1, 1, 4)
+  const side = Math.max(1, Math.min(srcW, srcH) / z)
+  const px = clamp(Number(panX) || 0, -1, 1), py = clamp(Number(panY) || 0, -1, 1)
+  return { sx: (srcW - side) / 2 * (1 + px), sy: (srcH - side) / 2 * (1 + py), sw: side, sh: side }
+}
+
+// A data URI of at most `limit` bytes from a canvas: WebP first, lowering the quality until it fits, then JPEG. A browser
+// that can't make a type answers with a PNG instead (checked by the prefix), so that type is skipped. Null if nothing fits.
+function encodeAvatar(canvas, limit) {
+  for (const type of AVATAR_TYPES) {
+    for (const q of AVATAR_QUALITY) {
+      let uri = ''
+      try { uri = canvas.toDataURL(type, q) } catch (_) { break }
+      if (typeof uri !== 'string' || uri.indexOf('data:' + type + ';base64,') !== 0) break
+      if (dataUriBytes(uri) <= limit) return uri
+    }
+  }
+  return null
+}
+
+// Pictures arrive from the engine as data URIs, asked for in small batches and kept by person and version.
+const AVATAR_CACHE = new Map()
+const AVATAR_ASK = { keys: new Map(), timer: null, tries: new Map() }
+function avatarFlush() {
+  AVATAR_ASK.timer = null
+  const batch = Array.from(AVATAR_ASK.keys.entries()).slice(0, 8)
+  if (!batch.length) return
+  const pks = Array.from(new Set(batch.map(([k]) => k.split(':')[0])))
+  P.rest('/avatars?pks=' + pks.join(',')).then(r => {
+    const got = (r && r.avatars) || {}
+    for (const [k, subs] of batch) {
+      const [pk] = k.split(':')
+      const hit = got[pk]
+      if (hit && typeof hit.uri === 'string' && hit.uri.indexOf('data:image/') === 0) {
+        AVATAR_CACHE.set(pk + ':' + hit.v, hit.uri)
+        if (AVATAR_CACHE.size > 300) AVATAR_CACHE.delete(AVATAR_CACHE.keys().next().value)
+      } else AVATAR_CACHE.set(k, '')   // no picture any more (or hidden, or pictures are off): don't ask again for this version
+      AVATAR_ASK.keys.delete(k)
+      subs.forEach(fn => fn())
+    }
+    if (AVATAR_ASK.keys.size) AVATAR_ASK.timer = P.setTimeout(avatarFlush, 40)   // more people were waiting
+  }, () => {
+    for (const [k] of batch) {
+      const n = (AVATAR_ASK.tries.get(k) || 0) + 1
+      AVATAR_ASK.tries.set(k, n)
+      if (n >= 3) { AVATAR_ASK.keys.delete(k); AVATAR_CACHE.set(k, '') }
+    }
+  }).then(() => { if (AVATAR_ASK.keys.size && !AVATAR_ASK.timer) AVATAR_ASK.timer = P.setTimeout(avatarFlush, 1500) })
+}
+function avatarWant(pk, v, fn) {
+  const k = pk + ':' + v
+  const subs = AVATAR_ASK.keys.get(k) || new Set()
+  subs.add(fn)
+  AVATAR_ASK.keys.set(k, subs)
+  if (!AVATAR_ASK.timer) AVATAR_ASK.timer = P.setTimeout(avatarFlush, 40)
+  return () => { subs.delete(fn) }
+}
+
+// The data URI of a person's picture ('' while it loads, or when there is none). Pass '' to skip.
+function useAvatarUri(pk, v) {
+  const key = pk && v ? pk + ':' + v : ''
+  const [, tick] = useState(0)
+  useEffect(() => {
+    if (!key || AVATAR_CACHE.has(key)) return
+    return avatarWant(pk, v, () => tick(n => n + 1))
+  }, [key])
+  return key ? (AVATAR_CACHE.get(key) || '') : ''
+}
+
+// "Maya is typing…" for the people the engine lists (never agents; a lookalike carries a flag, never the real name).
+function typingText(list) {
+  const names = (list || []).map(t => String(t.name || 'Someone') + (t.impostor ? ' (not verified)' : ''))
+  if (!names.length) return ''
+  if (names.length > 3) return 'Several people are typing…'
+  return joinNames(names) + (names.length === 1 ? ' is' : ' are') + ' typing…'
+}
+
+// One typing signal per room per 5 s while the box has words in it (the engine enforces 12 a minute across rooms and
+// sends nothing when nobody else is here). Fire and forget: a failure is never shown.
+const TYPING_SENT = {}
+function typingPing(roomId, now) {
+  const t = now == null ? Date.now() : now
+  if (!roomId || t - (TYPING_SENT[roomId] || 0) < 5000) return false
+  TYPING_SENT[roomId] = t
+  Promise.resolve(P.rest('/typing', { method: 'POST', body: { room: roomId } })).catch(() => {})
+  return true
+}
+
 // The engine answers 400/409 with {detail}. Each platform's fetch wraps that differently, so
 // dig the human sentence out of whatever arrived.
 function errText(e) {
@@ -319,6 +425,7 @@ function createStore() {
   function period() {
     const g = state.snap && state.snap.room && state.snap.room.game
     if (g && g.phase !== 'end') return 1000
+    if (views > 0 && state.snap && state.snap.room && (state.snap.room.typing || []).length) return 1000   // typing is short-lived
     return views > 0 ? 2000 : 5000
   }
 

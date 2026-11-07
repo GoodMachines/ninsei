@@ -57,6 +57,9 @@ function App(props) {
   const openDm = pk => { store.setDm(pk); go('dm') }
   const embedded = !!props.embedded  // Desktop's room tab: the sidebar's Ninsei tab is the rail
   const snap = st.snap
+  // what each person looks like, for every PersonMark below (pictures only while "Show profile pictures" is on)
+  const looks = useMemo(() => ({ people: (snap && snap.people) || {}, show: !(snap && snap.settings && snap.settings.show_avatars === 'nobody') }),
+    [snap && snap.people, snap && snap.settings && snap.settings.show_avatars])
 
   let inner
   if (!snap) {
@@ -80,7 +83,7 @@ function App(props) {
     else center = jsx(Welcome, { store, snap, onLobby: () => go('lobby') })
 
     // ProfileLayer: a click on a name or face, in the room or the people column, opens that card
-    inner = jsx(RoomReactions, { snap, room: showRoom ? room : null, children: jsx(ProfileLayer, { room: showRoom ? room : null, snap, store, openSettings, openDm, children: jsxs('div', { className: 'h-grid', 'data-people': people ? 'open' : 'closed', 'data-embedded': embedded || undefined, children: [
+    inner = jsx(PeopleContext.Provider, { value: looks, children: jsx(RoomReactions, { snap, room: showRoom ? room : null, children: jsx(ProfileLayer, { room: showRoom ? room : null, snap, store, openSettings, openDm, children: jsxs('div', { className: 'h-grid', 'data-people': people ? 'open' : 'closed', 'data-embedded': embedded || undefined, children: [
       !embedded && jsx('nav', { className: 'h-left', 'aria-label': 'Ninsei rooms', children: jsx(Rail, { store, snap, view, go, roomId }) }),
       jsxs('main', { className: 'h-center', children: [
         st.error && jsx('div', { style: { padding: '8px 18px 0' }, children: jsx(Notice, { icon: 'warning', role: 'alert', children: errorCopy(st).title + '. Showing the last state we had.' }) }),
@@ -96,7 +99,7 @@ function App(props) {
           onClick: closePeople, children: jsx(K.Icon, { name: 'close', size: 14 }) }) }),
         view === 'hermes' ? jsx(LineAbout, { snap }) : view === 'dm' ? jsx(DmAbout, {}) : room && showRoom ? jsx(People, { room, snap, store }) : jsx(MyAgentCard, { snap })
       ] })
-    ] }) }) })
+    ] }) }) }) })
   }
   return jsxs('div', { className: 'hx h-page', 'data-platform': P.kind, children: [
     P.inlineStyle && jsx('style', { children: CSS }),

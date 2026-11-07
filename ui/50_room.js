@@ -126,6 +126,7 @@ function RoomView(props) {
         game && jsx(TallTales, { store, room, game, book, key: game.gid }),
         drafts.length > 0 && jsx(DraftTray, { store, drafts })
       ] }),
+      jsx(TypingLine, { list: room.typing }),
       jsx(Composer, { store, room, snap, gameOn: !!(game && game.phase !== 'end'), reply: replyTo, onCancelReply })
     ] })
   ] })
@@ -390,7 +391,7 @@ function Message(props) {
   return jsxs('div', { className: cx('h-msg', agent && 'h-agent'), 'data-role': m.role, 'data-first': props.first, 'data-mid': m.id, 'data-bar': picking,
     'data-impostor': !!imp, 'data-mentioned': !!m.mentions_me, style: agent ? { '--hue': f.hue } : undefined, children: [
       jsx('div', { className: 'h-gutter', children: props.first ? jsx(ProfileButton, { who, label: 'Show ' + m.name + '’s card',
-        children: agent ? jsx(Face, { face: m.face, pk: m.pk, state: 'activity: idle', size: 28, name: m.name }) : jsx(Initial, { name: m.name }) }) : null }),
+        children: agent ? jsx(Face, { face: m.face, pk: m.pk, state: 'activity: idle', size: 28, name: m.name }) : jsx(PersonMark, { pk: m.pk, name: m.name, flagged: !!imp }) }) : null }),
       jsxs('div', { style: { minWidth: 0 }, children: [
         props.first && jsxs('div', { className: 'h-meta', children: [
           jsx(ProfileButton, { who, label: 'Show ' + m.name + '’s card', children: jsx('b', { children: m.name }) }),
@@ -924,6 +925,23 @@ function Draft(props) {
 
 // ---- composer --------------------------------------------------------------------------------
 
+// "Maya is typing…": people only (agents show their own thinking dots), always in the page so the composer never jumps.
+// The row eases in on a spring when someone starts; the text is a status, so screen readers hear it once per change.
+function TypingLine(props) {
+  const list = props.list || []
+  const text = typingText(list)
+  return jsx('div', { className: 'h-typingline', role: 'status', 'aria-live': 'polite', children: text ? jsx(TypingRow, { list, text }, 'on') : null })
+}
+
+function TypingRow(props) {
+  const ref = useEnter(true)
+  return jsxs('div', { className: 'h-typingrow', ref, children: [
+    jsx('span', { className: 'h-row', style: { gap: 2 }, 'aria-hidden': true, children: props.list.slice(0, 3).map(t => jsx(PersonMark, { pk: t.pk, name: t.name, size: 16, flagged: !!t.impostor }, t.pk)) }),
+    jsx('span', { className: 'h-typing h-typing-s', 'aria-hidden': true, children: [0, 1, 2].map(i => jsx('i', { style: { animationDelay: (i * 0.16) + 's' } }, i)) }),
+    jsx('span', { className: 'h-trunc', children: props.text })
+  ] })
+}
+
 // Everyone you can @ in this room: your agent first, then who's here, then the rest. Never you, never a lookalike.
 function mentionCandidates(room) {
   const out = []
@@ -1010,14 +1028,15 @@ function Composer(props) {
     open && jsx('div', { className: 'h-ac', id: listId, role: 'listbox', 'aria-label': 'Mention someone', children: opts.map((c, i) =>
       jsxs('div', { id: listId + '-' + i, role: 'option', className: 'h-ac-opt', 'aria-selected': i === sel,
         onMouseDown: e => { e.preventDefault(); choose(c) }, onMouseEnter: () => setPick(i), children: [
-          c.kind === 'agent' ? jsx(Face, { face: c.face, pk: c.pk, state: 'activity: idle', size: 22, name: c.name }) : jsx(Initial, { name: c.name }),
+          c.kind === 'agent' ? jsx(Face, { face: c.face, pk: c.pk, state: 'activity: idle', size: 22, name: c.name }) : jsx(PersonMark, { pk: c.pk, name: c.name, size: 22 }),
           jsx('b', { className: 'h-trunc', children: c.name }),
           jsx('span', { className: 'h-ac-sub h-trunc', children: c.sub })
         ] }, c.pk)) }),
     jsx('textarea', { ref: ta, rows: 1, value: text, placeholder: dm ? dm.placeholder : 'Message ' + room.name + ' (type @ to mention someone)', 'aria-label': dm ? dm.placeholder : 'Message', maxLength: dm ? dm.max : undefined,
       role: dm ? undefined : 'combobox', 'aria-autocomplete': dm ? undefined : 'list', 'aria-expanded': dm ? undefined : open, 'aria-controls': open ? listId : undefined,
       'aria-activedescendant': open ? listId + '-' + sel : undefined,
-      onChange: e => { setText(e.target.value); track(e); setPick(0); if (!mentionQuery(e.target.value, e.target.selectionStart)) setShut(-1) }, onSelect: track, onClick: track, onKeyUp: e => { if (!open || !/Arrow(Up|Down)/.test(e.key)) track(e) },
+      onChange: e => { setText(e.target.value); track(e); setPick(0); if (!mentionQuery(e.target.value, e.target.selectionStart)) setShut(-1)
+        if (!dm && e.target.value.trim()) typingPing(room.id) }, onSelect: track, onClick: track, onKeyUp: e => { if (!open || !/Arrow(Up|Down)/.test(e.key)) track(e) },
       onKeyDown: onKey }),
     !dm && jsxs('div', { style: { position: 'relative' }, children: [
       jsx(K.Tip, { label: 'Games', children: jsx(K.Button, { variant: 'ghost', size: 'icon', 'aria-label': 'Games', 'aria-expanded': menu,
@@ -1068,6 +1087,8 @@ function Person(props) {
   return jsxs('div', { className: 'h-person', ref, children: [
     jsxs('div', { className: 'h-person-row', children: [
       jsx('span', { className: 'h-presence', 'data-on': !!p.online, role: 'img', 'aria-label': p.online ? 'online' : 'away' }),
+      jsx(ProfileButton, { who: { kind: 'person', pk: p.pk, name: p.name }, label: 'Show ' + p.name + '’s card',
+        children: jsx(PersonMark, { pk: p.pk, name: p.name, size: 22, flagged: !!p.impostor }) }),
       jsx(ProfileButton, { who: { kind: 'person', pk: p.pk, name: p.name }, className: 'h-trunc', label: 'Show ' + p.name + '’s card',
         children: jsx('span', { className: 'h-trunc h-namelink', style: { fontWeight: 600 }, children: p.name }) }),
       p.you && jsx('span', { className: 'h-faint h-tiny', children: 'you' }),

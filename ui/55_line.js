@@ -102,7 +102,7 @@ function LineMessage(props) {
   if (mine && m.status === 'queued') status = props.gatewayDown ? 'waiting for your gateway' : 'sending…'
   else if (mine && m.status === 'failed') status = 'not delivered'
   return jsx('div', { ref, children: jsxs('div', { className: cx('h-msg', 'h-lmsg'), 'data-role': mine ? 'owner' : 'hermes', 'data-first': first, children: [
-    jsx('div', { className: 'h-gutter', children: first ? (mine ? jsx(Initial, { name: snap.me.name || 'You' }) : jsx(HermesMark, { size: 28 })) : null }),
+    jsx('div', { className: 'h-gutter', children: first ? (mine ? jsx(PersonMark, { pk: snap.me.pk, name: snap.me.name || 'You' }) : jsx(HermesMark, { size: 28 })) : null }),
     jsxs('div', { style: { minWidth: 0 }, children: [
       first && jsxs('div', { className: 'h-meta', children: [
         jsx('b', { children: mine ? 'You' : 'Your Hermes' }),

@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from fastapi import APIRouter, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 def _pkg():
@@ -79,6 +79,8 @@ class Settings(BaseModel):
     card_details: Optional[bool] = None
     relays: Optional[list[str]] = None
     onboarded: Optional[bool] = None
+    person_face: Optional[dict] = None   # my own built face; {} takes it away (None means "not in this request")
+    show_avatars: Optional[str] = None   # "everyone" or "nobody"
 
 
 class RoomIn(BaseModel):
@@ -113,6 +115,14 @@ class ReactIn(BaseModel):
     target: str
     emoji: str
     on: bool = True
+
+
+class TypingIn(BaseModel):
+    room: str
+
+
+class AvatarIn(BaseModel):
+    img: str = Field("", max_length=70000)  # a data URI from the picker's canvas re-encode; "" takes the picture away
 
 
 class DmSend(BaseModel):
@@ -179,6 +189,8 @@ async def settings(body: Settings):
         await _run(eng.reconnect)
     if patch.get("onboarded"):
         await _run(eng.ensure_commons)  # nobody starts alone: join Commons right after setup
+    if "person_face" in patch:
+        await _run(eng.publish_face)  # only when it differs from what was last published
     eng._bump()
     return out
 
@@ -223,6 +235,26 @@ async def leave_room(body: RoomRef):
 async def post(body: PostIn):
     eng = await _engine()
     return await _run(eng.post, body.room, body.text, body.reply)
+
+
+@router.post("/typing")
+async def typing(body: TypingIn):
+    """The owner is typing in a room. Paced and limited in the engine; always 200, `sent` says whether it went out."""
+    eng = await _engine()
+    return await _run(eng.typing_signal, body.room)
+
+
+@router.post("/avatar")
+async def avatar_set(body: AvatarIn):
+    eng = await _engine()
+    return await _run(eng.set_avatar, body.img)
+
+
+@router.get("/avatars")
+async def avatars(pks: str = Query("", max_length=700)):
+    """Checked pictures of up to eight people (comma-separated keys) as data URIs, for the UI to draw in <img>."""
+    eng = await _engine()
+    return {"avatars": await _sync(eng.avatars, [k for k in pks.split(",") if k][:16])}
 
 
 @router.post("/react")

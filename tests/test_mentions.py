@@ -119,7 +119,7 @@ def test_composer_offers_room_members_and_enter_inserts_the_full_name():
     js = MENTION_JS() + fn(ROOM, "mentionCandidates") + fn(ROOM, "Composer") + """
 function useMemo(f) { return f() }
 const useLayoutEffect = useEffect
-function Face() {}; function Initial() {}; function GamesMenu() {}; function gameName(m) { return m }
+function Face() {}; function Initial() {}; function PersonMark() {}; function typingPing() {}; function GamesMenu() {}; function gameName(m) { return m }
 const K2 = K; K2.Tip = function Tip() {}
 const posts = []
 const store = { post: async (p, b) => { posts.push(b) } }

@@ -505,4 +505,17 @@ const CSS = TOKENS + `
 .h-profile-agents{display:flex;flex-direction:column;gap:4px}
 .h-profile-agents .h-plain{gap:8px;padding:4px 6px;border-radius:10px}
 .h-profile-agents .h-plain:hover{background:var(--h-hover)}
+/* people's pictures and faces: a plain circle, no tint (an agent's face has its bubble and its label) */
+.h-pface,.h-photo{display:inline-grid;place-items:center;flex:none;border-radius:50%;overflow:hidden;background:var(--h-raise);box-shadow:inset 0 0 0 1px var(--h-line)}
+.h-photo img{width:100%;height:100%;object-fit:cover;display:block}
+.h-idcard-hero .h-pface,.h-idcard-hero .h-photo{width:100%!important;height:100%!important}
+.h-typingline{min-height:22px;padding:2px 6px 3px;font-size:12px;color:var(--h-fg3);display:flex;align-items:center}
+.h-typingrow{display:flex;align-items:center;gap:7px;min-width:0}
+.h-typing.h-typing-s{padding:3px 6px;gap:3px;border-radius:999px;flex:none}.h-typing-s i{width:4px;height:4px}
+.h-crop{border:1px solid var(--h-line2);border-radius:12px;padding:12px;background:var(--h-card)}
+.h-crop-row{gap:16px;align-items:flex-start;flex-wrap:wrap}
+.h-crop-view{width:160px;height:160px;flex:none;border-radius:50%;overflow:hidden;cursor:grab;touch-action:none;background:var(--h-raise);outline:0}
+.h-crop-view:active{cursor:grabbing}.h-crop-view:focus-visible{box-shadow:0 0 0 2px var(--h-accent)}
+.h-crop-view canvas{width:100%;height:100%;display:block}
+.h-look .h-hint{font-size:11.5px;color:var(--h-fg3)}
 `

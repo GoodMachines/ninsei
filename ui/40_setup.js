@@ -29,7 +29,8 @@ function Onboarding(props) {
   const [form, setForm] = useState(() => ({
     display_name: s.display_name || '', agent_name: s.agent_name || '', vibe: s.vibe || '',
     face: faceFor(s.face && s.face.shape ? s.face : null, snap.me && snap.me.agent && snap.me.agent.pk),
-    interests: s.interests || [], budget_daily: BUDGET_PRESETS.includes(s.budget_daily) ? s.budget_daily : 40000
+    interests: s.interests || [], budget_daily: BUDGET_PRESETS.includes(s.budget_daily) ? s.budget_daily : 40000,
+    person_face: s.person_face || null, avatar: ''   // your own face and picture (optional); the picture waits here until setup is finished
   }))
   const [busy, setBusy] = useState(false)
   const set = patch => setForm(Object.assign({}, form, patch))
@@ -40,7 +41,10 @@ function Onboarding(props) {
     if (!ready || busy) return
     setBusy(true)
     try {
-      await store.post('/settings', Object.assign({}, form, { onboarded: true }))
+      const { avatar, person_face, ...rest } = form
+      await store.post('/settings', Object.assign({}, rest, { person_face: person_face || {}, onboarded: true }))
+      // the picture is published only now: until setup is finished nothing about you has been sent anywhere
+      if (avatar) { try { await store.post('/avatar', { img: avatar }) } catch (_) { /* toasted; it can be added in Settings */ } }
       nav().set('welcome')  // land on "Rooms for you", not an empty room view
     } catch (_) { /* toasted */ }
     setBusy(false)
@@ -70,6 +74,9 @@ function Onboarding(props) {
         fields: [['Owner', form.display_name || 'You'], ['Status', 'New']] }) }),
       jsx(FacePicker, { value: form.face, pk: agentPk, name: form.agent_name, noPreview: true, onChange: face => set({ face }) })
     ] }) }),
+    jsx(Field, { label: 'How you look (optional)', children: jsx(PersonLook, { pk: snap.me && snap.me.pk, name: form.display_name, stage: true,
+      face: form.person_face, onFace: person_face => set({ person_face }), staged: form.avatar, hasPicture: !!form.avatar, art: form.person_face ? { face: form.person_face } : null,
+      onPicture: avatar => set({ avatar }) }) }),
     jsx(Field, { label: 'What are you into?', id: 'h-on-int', hint: 'Used to find rooms and people. Your interest card is published only if you choose to in the Lobby.',
       children: jsx(InterestInput, { id: 'h-on-int', value: form.interests, onChange: interests => set({ interests }) }) }),
     jsx(Field, { label: 'Daily budget for room chatter', hint: 'Reserved before every model call, settled after. At the limit your agent rests until tomorrow.',
@@ -97,7 +104,7 @@ function SettingsForm(props) {
   const agentPk = snap.me && snap.me.agent && snap.me.agent.pk
   const initial = () => ({ display_name: s.display_name, line: s.line || '', agent_name: s.agent_name, vibe: s.vibe,
     face: faceFor(s.face, agentPk), interests: s.interests || [], budget_daily: s.budget_daily, msgs_daily: s.msgs_daily,
-    relays: (s.relays || []).join('\n') })
+    person_face: s.person_face || null, relays: (s.relays || []).join('\n') })
   const [form, setForm] = useState(initial)
   const [busy, setBusy] = useState(false)
   // An empty relay list means offline, so saving one takes a second press that says so.
@@ -109,6 +116,15 @@ function SettingsForm(props) {
   }
   const dirty = JSON.stringify(form) !== JSON.stringify(initial())
   const now = (patch) => store.post('/settings', patch).catch(() => {})
+  // your picture is published the moment you choose it (or take it away), apart from the Save button
+  const [picBusy, setPicBusy] = useState(false)
+  const mePk = snap.me && snap.me.pk
+  const myArt = (snap.people && snap.people[mePk]) || null
+  const setPicture = async img => {
+    setPicBusy(true)
+    try { await store.post('/avatar', { img }, img ? 'Picture published' : 'Picture removed') } catch (_) { /* toasted */ }
+    setPicBusy(false)
+  }
 
   const budgetErr = limitError(form.budget_daily, BUDGET_MAX, 'tokens', '40000')
   const msgsErr = limitError(form.msgs_daily, MSGS_MAX, 'messages', '60')
@@ -120,7 +136,7 @@ function SettingsForm(props) {
     if (goingOffline && !confirmOffline) { setConfirmOffline(true); return }
     setConfirmOffline(false)
     setBusy(true)
-    const body = Object.assign({}, form, { relays: relayList,
+    const body = Object.assign({}, form, { relays: relayList, person_face: form.person_face || {},
       budget_daily: parseCount(form.budget_daily), msgs_daily: parseCount(form.msgs_daily) })
     try { await store.post('/settings', body, 'Saved') } catch (_) { /* toasted */ }
     setBusy(false)
@@ -180,7 +196,13 @@ function SettingsForm(props) {
         jsx(Field, { label: 'Display name', id: 'h-s-name', children: jsx(K.Input, { id: 'h-s-name', value: form.display_name, maxLength: 32, onChange: e => set({ display_name: e.target.value }) }) }),
         jsx(Field, { label: 'One line about you', id: 'h-s-line', children: jsx(K.Input, { id: 'h-s-line', value: form.line, maxLength: 200, onChange: e => set({ line: e.target.value }) }) })
       ] }),
-      jsx(Field, { label: 'Interests', id: 'h-s-int', children: jsx(InterestInput, { id: 'h-s-int', value: form.interests, onChange: interests => set({ interests }) }) })
+      jsx(Field, { label: 'Interests', id: 'h-s-int', children: jsx(InterestInput, { id: 'h-s-int', value: form.interests, onChange: interests => set({ interests }) }) }),
+      jsx(Field, { label: 'Your picture and face', children: jsx(PersonLook, { pk: mePk, name: form.display_name, face: form.person_face, onFace: person_face => set({ person_face }),
+        art: myArt ? Object.assign({}, myArt, form.person_face ? { face: form.person_face } : { face: undefined }) : (form.person_face ? { face: form.person_face } : null),
+        hasPicture: !!(myArt && myArt.av), busy: picBusy, onPicture: setPicture }) }),
+      jsx(Field, { label: 'Show profile pictures', hint: 'Pictures are other people’s files, shown to you as small images. Nobody keeps only faces and initials on your screen, and Ninsei stops keeping their pictures. Your own is not affected.',
+        children: jsx(Seg, { label: 'Show profile pictures', value: s.show_avatars || 'everyone', onChange: v => now({ show_avatars: v }),
+          options: [{ id: 'everyone', label: 'Everyone in my rooms' }, { id: 'nobody', label: 'Nobody' }] }) })
     ] }),
     jsxs('section', { className: 'h-col', style: { gap: 10 }, children: [
       jsx('div', { className: 'h-sec', children: 'Hidden people' }),

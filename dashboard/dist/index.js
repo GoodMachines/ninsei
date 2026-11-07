@@ -147,6 +147,112 @@ function joinNames(names) {
   return names.slice(0, -1).join(', ') + ' and ' + names[names.length - 1]
 }
 
+// ---- profile pictures ---------------------------------------------------------------------------------------
+// The picker draws the chosen photo onto a 256 pixel canvas and re-encodes it (WebP, else JPEG) under 48 KB. A canvas
+// keeps pixels only, so EXIF (GPS position, camera) is gone; the original file is never uploaded. The engine checks
+// the same limits on what it sends and on everything it receives (ninsei_engine/avatar.py).
+const AVATAR_PX = 256
+const AVATAR_BYTES = 48 * 1024
+const AVATAR_TYPES = ['image/webp', 'image/jpeg']
+const AVATAR_QUALITY = [0.92, 0.85, 0.78, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.1]
+
+// The decoded size of a base64 data URI, without decoding it.
+function dataUriBytes(uri) {
+  const s = String(uri || '')
+  const body = s.slice(s.indexOf(',') + 1)
+  return Math.floor(body.length * 3 / 4) - (body.endsWith('==') ? 2 : body.endsWith('=') ? 1 : 0)
+}
+
+// The square of the source to use: zoom 1 is the largest centred square; pan x and y run -1..1 across what is left.
+function avatarCrop(srcW, srcH, zoom, panX, panY) {
+  const z = clamp(Number(zoom) || 1, 1, 4)
+  const side = Math.max(1, Math.min(srcW, srcH) / z)
+  const px = clamp(Number(panX) || 0, -1, 1), py = clamp(Number(panY) || 0, -1, 1)
+  return { sx: (srcW - side) / 2 * (1 + px), sy: (srcH - side) / 2 * (1 + py), sw: side, sh: side }
+}
+
+// A data URI of at most `limit` bytes from a canvas: WebP first, lowering the quality until it fits, then JPEG. A browser
+// that can't make a type answers with a PNG instead (checked by the prefix), so that type is skipped. Null if nothing fits.
+function encodeAvatar(canvas, limit) {
+  for (const type of AVATAR_TYPES) {
+    for (const q of AVATAR_QUALITY) {
+      let uri = ''
+      try { uri = canvas.toDataURL(type, q) } catch (_) { break }
+      if (typeof uri !== 'string' || uri.indexOf('data:' + type + ';base64,') !== 0) break
+      if (dataUriBytes(uri) <= limit) return uri
+    }
+  }
+  return null
+}
+
+// Pictures arrive from the engine as data URIs, asked for in small batches and kept by person and version.
+const AVATAR_CACHE = new Map()
+const AVATAR_ASK = { keys: new Map(), timer: null, tries: new Map() }
+function avatarFlush() {
+  AVATAR_ASK.timer = null
+  const batch = Array.from(AVATAR_ASK.keys.entries()).slice(0, 8)
+  if (!batch.length) return
+  const pks = Array.from(new Set(batch.map(([k]) => k.split(':')[0])))
+  P.rest('/avatars?pks=' + pks.join(',')).then(r => {
+    const got = (r && r.avatars) || {}
+    for (const [k, subs] of batch) {
+      const [pk] = k.split(':')
+      const hit = got[pk]
+      if (hit && typeof hit.uri === 'string' && hit.uri.indexOf('data:image/') === 0) {
+        AVATAR_CACHE.set(pk + ':' + hit.v, hit.uri)
+        if (AVATAR_CACHE.size > 300) AVATAR_CACHE.delete(AVATAR_CACHE.keys().next().value)
+      } else AVATAR_CACHE.set(k, '')   // no picture any more (or hidden, or pictures are off): don't ask again for this version
+      AVATAR_ASK.keys.delete(k)
+      subs.forEach(fn => fn())
+    }
+    if (AVATAR_ASK.keys.size) AVATAR_ASK.timer = P.setTimeout(avatarFlush, 40)   // more people were waiting
+  }, () => {
+    for (const [k] of batch) {
+      const n = (AVATAR_ASK.tries.get(k) || 0) + 1
+      AVATAR_ASK.tries.set(k, n)
+      if (n >= 3) { AVATAR_ASK.keys.delete(k); AVATAR_CACHE.set(k, '') }
+    }
+  }).then(() => { if (AVATAR_ASK.keys.size && !AVATAR_ASK.timer) AVATAR_ASK.timer = P.setTimeout(avatarFlush, 1500) })
+}
+function avatarWant(pk, v, fn) {
+  const k = pk + ':' + v
+  const subs = AVATAR_ASK.keys.get(k) || new Set()
+  subs.add(fn)
+  AVATAR_ASK.keys.set(k, subs)
+  if (!AVATAR_ASK.timer) AVATAR_ASK.timer = P.setTimeout(avatarFlush, 40)
+  return () => { subs.delete(fn) }
+}
+
+// The data URI of a person's picture ('' while it loads, or when there is none). Pass '' to skip.
+function useAvatarUri(pk, v) {
+  const key = pk && v ? pk + ':' + v : ''
+  const [, tick] = useState(0)
+  useEffect(() => {
+    if (!key || AVATAR_CACHE.has(key)) return
+    return avatarWant(pk, v, () => tick(n => n + 1))
+  }, [key])
+  return key ? (AVATAR_CACHE.get(key) || '') : ''
+}
+
+// "Maya is typing…" for the people the engine lists (never agents; a lookalike carries a flag, never the real name).
+function typingText(list) {
+  const names = (list || []).map(t => String(t.name || 'Someone') + (t.impostor ? ' (not verified)' : ''))
+  if (!names.length) return ''
+  if (names.length > 3) return 'Several people are typing…'
+  return joinNames(names) + (names.length === 1 ? ' is' : ' are') + ' typing…'
+}
+
+// One typing signal per room per 5 s while the box has words in it (the engine enforces 12 a minute across rooms and
+// sends nothing when nobody else is here). Fire and forget: a failure is never shown.
+const TYPING_SENT = {}
+function typingPing(roomId, now) {
+  const t = now == null ? Date.now() : now
+  if (!roomId || t - (TYPING_SENT[roomId] || 0) < 5000) return false
+  TYPING_SENT[roomId] = t
+  Promise.resolve(P.rest('/typing', { method: 'POST', body: { room: roomId } })).catch(() => {})
+  return true
+}
+
 // The engine answers 400/409 with {detail}. Each platform's fetch wraps that differently, so
 // dig the human sentence out of whatever arrived.
 function errText(e) {
@@ -372,6 +478,7 @@ function createStore() {
   function period() {
     const g = state.snap && state.snap.room && state.snap.room.game
     if (g && g.phase !== 'end') return 1000
+    if (views > 0 && state.snap && state.snap.room && (state.snap.room.typing || []).length) return 1000   // typing is short-lived
     return views > 0 ? 2000 : 5000
   }
 
@@ -848,6 +955,18 @@ function faceAcc(kind, b) {
 // A short-lived expression per agent pk ('smug', 'caught', 'happy', 'wary', 'perk'), worked out on each
 // client from room events it already has (see reactionsFor). Never sent over the wire.
 const ExprContext = createContext({})
+
+// What the engine says each person looks like, from the snapshot: { people: {pk: {face?, av?}}, show: bool }.
+// `av` is a picture's version (the picture is fetched on its own); `show` is the "Show profile pictures" switch.
+const PeopleContext = createContext({ people: {}, show: true })
+
+// A person's built face: the same drawings as an agent's, but still (no blinking, no breathing, no state) and in a
+// plain circle with no tint, so a person never reads as an agent. Agents also keep their bubble and "X's agent" label.
+function PersonFace(props) {
+  const size = props.size || 28
+  return jsx('span', { className: cx('h-pface', props.className), 'aria-hidden': true, style: { width: size, height: size },
+    children: jsx(Face, { face: props.face, pk: props.pk, state: 'activity: idle', size: Math.round(size * 0.86), className: 'hf-still' }) })
+}
 
 function Face(props) {
   const f = faceFor(props.face, props.pk)
@@ -1460,6 +1579,19 @@ const CSS = TOKENS + `
 .h-profile-agents{display:flex;flex-direction:column;gap:4px}
 .h-profile-agents .h-plain{gap:8px;padding:4px 6px;border-radius:10px}
 .h-profile-agents .h-plain:hover{background:var(--h-hover)}
+/* people's pictures and faces: a plain circle, no tint (an agent's face has its bubble and its label) */
+.h-pface,.h-photo{display:inline-grid;place-items:center;flex:none;border-radius:50%;overflow:hidden;background:var(--h-raise);box-shadow:inset 0 0 0 1px var(--h-line)}
+.h-photo img{width:100%;height:100%;object-fit:cover;display:block}
+.h-idcard-hero .h-pface,.h-idcard-hero .h-photo{width:100%!important;height:100%!important}
+.h-typingline{min-height:22px;padding:2px 6px 3px;font-size:12px;color:var(--h-fg3);display:flex;align-items:center}
+.h-typingrow{display:flex;align-items:center;gap:7px;min-width:0}
+.h-typing.h-typing-s{padding:3px 6px;gap:3px;border-radius:999px;flex:none}.h-typing-s i{width:4px;height:4px}
+.h-crop{border:1px solid var(--h-line2);border-radius:12px;padding:12px;background:var(--h-card)}
+.h-crop-row{gap:16px;align-items:flex-start;flex-wrap:wrap}
+.h-crop-view{width:160px;height:160px;flex:none;border-radius:50%;overflow:hidden;cursor:grab;touch-action:none;background:var(--h-raise);outline:0}
+.h-crop-view:active{cursor:grabbing}.h-crop-view:focus-visible{box-shadow:0 0 0 2px var(--h-accent)}
+.h-crop-view canvas{width:100%;height:100%;display:block}
+.h-look .h-hint{font-size:11.5px;color:var(--h-fg3)}
 `
 
 // ===== ui/30_parts.js ===========================================================================
@@ -1597,7 +1729,7 @@ function FacePicker(props) {
     'aria-label': props.id ? 'Face editor' : undefined, children: [
     !props.noPreview && jsx(Face, { face, pk: props.pk, state: props.previewState || 'activity: idle', size: 64, name: props.name }),
     jsxs('div', { className: 'h-col h-grow', style: { gap: 10, minWidth: 0 }, children: [
-      jsxs('div', { className: 'h-facepart', children: [
+      !props.noCard && jsxs('div', { className: 'h-facepart', children: [
         jsx('div', { className: 'h-faint h-tiny h-caps', children: 'Card' }),
         jsx('div', { className: 'h-shapes', role: 'radiogroup', 'aria-label': 'Card style', children: FACE_CARDS.map(o =>
           jsxs('button', { type: 'button', className: 'h-shape h-cardpick', role: 'radio', 'aria-checked': face.card === o, 'data-on': face.card === o,
@@ -1630,7 +1762,32 @@ function FacePicker(props) {
 
 function Initial(props) {
   const n = String(props.name || '?').trim()
-  return jsx('span', { className: 'h-initial', 'aria-hidden': true, children: (n[0] || '?').toUpperCase() })
+  const size = props.size
+  return jsx('span', { className: 'h-initial', 'aria-hidden': true, style: size ? { width: size, height: size, fontSize: Math.max(9, Math.round(size * 0.43)) } : undefined,
+    children: (n[0] || '?').toUpperCase() })
+}
+
+// A picture someone chose, in a circle. `uri` is a data URI the engine rebuilt from bytes it checked; an <img> only,
+// never inlined, and it never gets a name or a link of its own.
+function PersonPhoto(props) {
+  const size = props.size || 28
+  return jsx('span', { className: cx('h-photo', props.className), 'aria-hidden': true, style: { width: size, height: size },
+    children: jsx('img', { src: props.uri, alt: '', width: size, height: size, draggable: false, decoding: 'async', referrerPolicy: 'no-referrer' }) })
+}
+
+// How a person shows up anywhere: their picture (when they set one and pictures are on), else their face, else the
+// letter. A lookalike (`flagged`) gets the letter only, so a copied picture can't make it pass for the real person.
+// `art` overrides the snapshot's (Settings previews a picture before it is published).
+function PersonMark(props) {
+  const ctx = useContext(PeopleContext)
+  const size = props.size || 28
+  const art = props.flagged ? null : (props.art !== undefined ? props.art : ctx.people[props.pk])
+  const pics = props.art !== undefined || ctx.show
+  const uri = useAvatarUri(art && art.av && pics ? props.pk : '', art && art.av)
+  const body = art && art.uri && pics ? art.uri : uri
+  if (body) return jsx(PersonPhoto, { uri: body, size, className: props.className })
+  if (art && art.face) return jsx(PersonFace, { face: art.face, pk: props.pk, size, className: props.className })
+  return jsx(Initial, { name: props.name, size: props.size })
 }
 
 function Notice(props) {
@@ -1720,6 +1877,148 @@ function GuardedToy(props) {
 function Modal(props) {
   return jsx(K.Dialog, { open: props.open, onClose: props.onClose, title: props.title, description: props.description,
     wide: props.wide, footer: props.footer, children: props.children })
+}
+
+// ===== ui/32_look.js ============================================================================
+
+// ---------------------------------------------------------------------------------------------
+// how a person looks: an optional picture (cropped and re-encoded here, then public) and an optional built face.
+// Agents keep their own faces; this is the owner's. The same editor is in onboarding and Settings.
+// ---------------------------------------------------------------------------------------------
+
+const PICTURE_FILE = /^image\/(png|jpeg|webp|gif|bmp|avif)$/   // rasters only: an SVG is never drawn or sent
+const PICTURE_FILE_MAX = 25 * 1024 * 1024
+
+// Crop (centre, zoom, drag or arrow keys) and preview a chosen file on the 256 pixel canvas the picture is made from.
+// onUse(dataUri) gets the re-encoded result; the original file is only ever read by this page.
+function AvatarCropper(props) {
+  const [img, setImg] = useState(null)
+  const [err, setErr] = useState('')
+  const [zoom, setZoom] = useState(1)
+  const [pan, setPan] = useState({ x: 0, y: 0 })
+  const canvas = useRef(null)
+  const drag = useRef(null)
+  const ref = useEnter(true)
+  useEffect(() => {
+    let live = true
+    let url = ''
+    const done = (src, w, h) => { if (live) setImg({ src, w, h }) }
+    const fallback = () => {
+      try {
+        url = URL.createObjectURL(props.file)
+        const im = new Image()
+        im.onload = () => done(im, im.naturalWidth, im.naturalHeight)
+        im.onerror = () => { if (live) setErr('Ninsei could not read that file as a picture.') }
+        im.src = url
+      } catch (_) { if (live) setErr('Ninsei could not read that file as a picture.') }
+    }
+    if (typeof createImageBitmap === 'function') createImageBitmap(props.file).then(b => done(b, b.width, b.height), fallback)
+    else fallback()
+    return () => { live = false; if (url) URL.revokeObjectURL(url) }
+  }, [props.file])
+  useEffect(() => {
+    const c = canvas.current
+    if (!img || !c) return
+    const g = c.getContext('2d')
+    const r = avatarCrop(img.w, img.h, zoom, pan.x, pan.y)
+    g.fillStyle = '#ffffff'
+    g.fillRect(0, 0, AVATAR_PX, AVATAR_PX)
+    g.imageSmoothingEnabled = true
+    g.imageSmoothingQuality = 'high'
+    g.drawImage(img.src, r.sx, r.sy, r.sw, r.sh, 0, 0, AVATAR_PX, AVATAR_PX)
+  }, [img, zoom, pan.x, pan.y])
+  const use = () => {
+    const uri = canvas.current ? encodeAvatar(canvas.current, AVATAR_BYTES) : null
+    if (!uri) { setErr('That picture would not shrink small enough. Zoom in, or try another one.'); return }
+    props.onUse(uri)
+  }
+  const move = (dx, dy) => setPan(p => ({ x: clamp(p.x + dx, -1, 1), y: clamp(p.y + dy, -1, 1) }))
+  const onKey = e => {
+    const step = 0.12
+    if (e.key === 'ArrowLeft') move(-step, 0)
+    else if (e.key === 'ArrowRight') move(step, 0)
+    else if (e.key === 'ArrowUp') move(0, -step)
+    else if (e.key === 'ArrowDown') move(0, step)
+    else if (e.key === '+' || e.key === '=') setZoom(z => clamp(z + 0.1, 1, 3))
+    else if (e.key === '-') setZoom(z => clamp(z - 0.1, 1, 3))
+    else return
+    e.preventDefault()
+  }
+  return jsxs('div', { className: 'h-crop', ref, children: [
+    err && jsx(Notice, { icon: 'warning', role: 'alert', children: err }),
+    !img && !err && jsx('div', { className: 'h-faint h-small', children: 'Reading the picture…' }),
+    img && jsxs('div', { className: 'h-row h-crop-row', children: [
+      jsx('div', { className: 'h-crop-view', tabIndex: 0, role: 'group', 'aria-label': 'Picture crop. Arrow keys move it, plus and minus zoom.', onKeyDown: onKey,
+        onPointerDown: e => { drag.current = { x: e.clientX, y: e.clientY, p: pan }; try { e.currentTarget.setPointerCapture(e.pointerId) } catch (_) { /* not capturable */ } },
+        onPointerMove: e => { const d = drag.current; if (d) setPan({ x: clamp(d.p.x - (e.clientX - d.x) / 80, -1, 1), y: clamp(d.p.y - (e.clientY - d.y) / 80, -1, 1) }) },
+        onPointerUp: () => { drag.current = null }, onPointerCancel: () => { drag.current = null },
+        children: jsx('canvas', { ref: canvas, width: AVATAR_PX, height: AVATAR_PX, 'aria-hidden': true }) }),
+      jsxs('div', { className: 'h-col', style: { gap: 8, minWidth: 0 }, children: [
+        jsxs('label', { className: 'h-faint h-small', children: ['Zoom ', jsx('input', { type: 'range', className: 'h-hue', min: 1, max: 3, step: 0.05, value: zoom, 'aria-label': 'Zoom',
+          onChange: e => setZoom(Number(e.target.value)) })] }),
+        jsx('div', { className: 'h-faint h-tiny', children: 'Drag the picture, or use the arrow keys, to move it.' }),
+        jsxs('div', { className: 'h-actions', children: [
+          jsx(K.Button, { variant: 'primary', size: 'sm', onClick: use, disabled: !!props.busy, children: props.useLabel || 'Use this picture' }),
+          jsx(K.Button, { variant: 'ghost', size: 'sm', onClick: props.onCancel, children: 'Cancel' })
+        ] })
+      ] })
+    ] })
+  ] })
+}
+
+// The editor. Props: pk, name; face (the owner's built face or null) and onFace(face|null); art ({face?, av?}: what shows now);
+// staged (a picture waiting for Save, onboarding) or null; onPicture(uri) with a data URI, or '' to take it away; hasPicture;
+// busy; stage (true in onboarding: a picture is held until setup finishes instead of being published at once).
+function PersonLook(props) {
+  const [file, setFile] = useState(null)
+  const [note, setNote] = useState('')
+  const input = useRef(null)
+  const pick = e => {
+    const f = e.target.files && e.target.files[0]
+    e.target.value = ''
+    if (!f) return
+    if (!PICTURE_FILE.test(f.type)) { setNote('Choose a PNG, JPEG, WebP or GIF picture.'); return }
+    if (f.size > PICTURE_FILE_MAX) { setNote('That file is over 25 MB. Choose a smaller picture.'); return }
+    setNote('')
+    setFile(f)
+  }
+  const used = uri => { setFile(null); props.onPicture(uri) }
+  const shown = props.staged ? { uri: props.staged, face: props.face || undefined } : props.art
+  const has = !!(props.staged || props.hasPicture)
+  return jsxs('div', { className: 'h-col h-look', style: { gap: 12 }, children: [
+    jsxs('div', { className: 'h-row', style: { gap: 14, alignItems: 'flex-start' }, children: [
+      jsx(PersonMark, { pk: props.pk, name: props.name || 'You', size: 72, art: shown || null }),
+      jsxs('div', { className: 'h-col', style: { gap: 8, minWidth: 0 }, children: [
+        jsxs('div', { className: 'h-actions', children: [
+          jsx(K.Button, { variant: 'secondary', size: 'sm', disabled: !!props.busy, onClick: () => input.current && input.current.click(),
+            children: has ? 'Change picture' : 'Choose a picture' }),
+          has && jsx(K.Button, { variant: 'ghost', size: 'sm', disabled: !!props.busy, onClick: () => { setFile(null); props.onPicture('') }, children: 'Remove picture' }),
+          jsx('input', { type: 'file', ref: input, accept: 'image/png,image/jpeg,image/webp,image/gif', style: { display: 'none' }, tabIndex: -1, 'aria-hidden': true, onChange: pick })
+        ] }),
+        note && jsx('div', { className: 'h-hint h-err', role: 'alert', children: note }),
+        jsx('div', { className: 'h-hint', children: props.stage
+          ? 'Optional. It is published when you finish setup.'
+          : 'Optional. Shown next to your name for people in your rooms.' })
+      ] })
+    ] }),
+    file && jsx(AvatarCropper, { file, onUse: used, onCancel: () => setFile(null), busy: props.busy,
+      useLabel: props.stage ? 'Use this picture' : 'Use and publish' }),
+    jsxs('div', { className: 'h-hint', children: [
+      'Public and permanent: your picture goes to public Nostr relays, where anyone can see it, and relays or other apps may keep old pictures forever, even after you remove it. ',
+      'Ninsei crops it to a square, shrinks it to 256 pixels and re-encodes it on this computer, which drops EXIF details such as GPS location and camera model. The original file is never uploaded. People who turn pictures off see your face or initial instead.'
+    ] }),
+    jsxs('div', { className: 'h-col', style: { gap: 8 }, children: [
+      jsx('div', { className: 'h-label', style: { fontSize: 12, fontWeight: 600, color: 'var(--h-fg2)' }, children: 'Your face' }),
+      jsxs('div', { className: 'h-row', style: { gap: 10 }, children: [
+        jsx(Seg, { label: 'What stands in for your picture', value: props.face ? 'face' : 'letter',
+          onChange: v => props.onFace(v === 'face' ? faceFor(props.face, props.pk) : null),
+          options: [{ id: 'letter', label: 'My initial' }, { id: 'face', label: 'A face' }] }),
+        props.face && jsx(PersonFace, { face: props.face, pk: props.pk, size: 40 })
+      ] }),
+      props.face && jsx(FacePicker, { value: props.face, pk: props.pk, noCard: true, noPreview: true, onChange: props.onFace }),
+      jsx('div', { className: 'h-hint', children: 'Shown when you have no picture, or when someone has pictures off. Built from the same parts as an agent’s, in a plain circle. Public like your name.' })
+    ] })
+  ] })
 }
 
 // ===== ui/34_scanner.js =========================================================================
@@ -2550,9 +2849,12 @@ function IdCard(props) {
   const crew = (props.agents || []).filter(a => a && a.pk).slice(0, 3)
   const idle = 'activity: idle'
 
+  // a person who set a picture or a face is shown by it (never a lookalike: the sheet passes `art` only for the real key)
+  const mark = !agent && !warn && props.art && (props.art.av || props.art.face) ? jsx(PersonHero, { pk: props.pk, art: props.art }) : null
   const hero = agent
     // the picture is always the whole face; an away agent's status is in the corner, not a faded portrait
     ? jsx(Face, { face: props.face, pk: props.pk, state: stateWord(props.state) === 'absent' ? idle : (props.state || idle), size: 120 })
+    : mark ? mark
     : crew.length
       ? jsx('div', { className: 'h-idcard-crew', children: crew.map((a, i) => {
           const [left, top, size] = CREW_SPOTS[crew.length][i]
@@ -2615,6 +2917,15 @@ function IdCard(props) {
       if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); if (!e.repeat) flip() }
     } : undefined,
     children: jsx('div', { className: 'h-idcard-tilt', children: jsxs('div', { className: 'h-idcard-turn', ref: turn, children: [front, back] }) }) })
+}
+
+// A person's picture or face as the card's big picture. The saved card image draws a face but not a picture
+// (the picture is a stranger's file: it stays out of anything that gets exported).
+function PersonHero(props) {
+  const uri = useAvatarUri(props.art.av && props.pk ? props.pk : '', props.art.av)
+  if (uri) return jsx(PersonPhoto, { uri, size: 120, className: 'h-idcard-photo' })
+  if (props.art.face) return jsx(PersonFace, { face: props.art.face, pk: props.pk, size: 120 })
+  return null
 }
 
 // Wraps a face or a name so it opens that card. Outside a room (no provider) it renders as is.
@@ -2692,6 +3003,10 @@ function ProfileSheet(props) {
   const [busy, setBusy] = useState('')
   const canCopy = useCanCopyImage()
   const found = findMember(room, who.pk)
+  // what this person looks like: their picture (while pictures are on) and face, from the snapshot
+  const looks = useContext(PeopleContext)
+  const entry = looks.people[who.pk]
+  const art = entry ? (looks.show ? entry : entry.face ? { face: entry.face } : undefined) : undefined
   const [card, setCard] = useState(null)
   const [flipped, setFlipped] = useState(false)
   const isAgent = who.kind === 'agent' || !!found.agent
@@ -2729,7 +3044,7 @@ function ProfileSheet(props) {
 
   // the sheet's card turns over (click, Enter/Space, or the Flip button) and tilts
   const flip = { interactive: true, flipped, onFlip: setFlipped, cardRef }
-  const body = isAgent ? agentSheet(who, found, snap, props.onOpen, flip) : personSheet(who, found, card, props.onOpen, flip)
+  const body = isAgent ? agentSheet(who, found, snap, props.onOpen, flip) : personSheet(who, found, card, props.onOpen, flip, art)
 
   // buttons under the card: save or copy it as an image, edit your own agent's face, hide someone else
   const act = cardActions(who, found, snap)
@@ -2836,7 +3151,7 @@ function agentSheet(who, found, snap, onOpen, flip) {
   }
 }
 
-function personSheet(who, found, card, onOpen, flip) {
+function personSheet(who, found, card, onOpen, flip, art) {
   const p = found.person || {}
   const name = p.name || who.name || 'Someone'
   const agents = p.agents || []
@@ -2847,7 +3162,7 @@ function personSheet(who, found, card, onOpen, flip) {
   return {
     title: name + (p.you ? ', you' : ''),
     card: jsx(IdCard, Object.assign({ kind: 'person', name, pk: who.pk, face: agents[0] && agents[0].face, fields, warn: !!p.impostor, online: !!p.online,
-      agents, about: card && card.line, first: p.first, posts: p.posts }, flip)),
+      agents, about: card && card.line, first: p.first, posts: p.posts, art }, flip)),
     rows: [
       card && card.line ? jsx('div', { className: 'h-profile-vibe', children: card.line }, 'l') : null,
       interests.length ? jsx('div', { className: 'h-chips', children: interests.map(t => jsx('span', { className: 'h-chip', children: t }, t)) }, 'i') : null,
@@ -3405,7 +3720,8 @@ function Onboarding(props) {
   const [form, setForm] = useState(() => ({
     display_name: s.display_name || '', agent_name: s.agent_name || '', vibe: s.vibe || '',
     face: faceFor(s.face && s.face.shape ? s.face : null, snap.me && snap.me.agent && snap.me.agent.pk),
-    interests: s.interests || [], budget_daily: BUDGET_PRESETS.includes(s.budget_daily) ? s.budget_daily : 40000
+    interests: s.interests || [], budget_daily: BUDGET_PRESETS.includes(s.budget_daily) ? s.budget_daily : 40000,
+    person_face: s.person_face || null, avatar: ''   // your own face and picture (optional); the picture waits here until setup is finished
   }))
   const [busy, setBusy] = useState(false)
   const set = patch => setForm(Object.assign({}, form, patch))
@@ -3416,7 +3732,10 @@ function Onboarding(props) {
     if (!ready || busy) return
     setBusy(true)
     try {
-      await store.post('/settings', Object.assign({}, form, { onboarded: true }))
+      const { avatar, person_face, ...rest } = form
+      await store.post('/settings', Object.assign({}, rest, { person_face: person_face || {}, onboarded: true }))
+      // the picture is published only now: until setup is finished nothing about you has been sent anywhere
+      if (avatar) { try { await store.post('/avatar', { img: avatar }) } catch (_) { /* toasted; it can be added in Settings */ } }
       nav().set('welcome')  // land on "Rooms for you", not an empty room view
     } catch (_) { /* toasted */ }
     setBusy(false)
@@ -3446,6 +3765,9 @@ function Onboarding(props) {
         fields: [['Owner', form.display_name || 'You'], ['Status', 'New']] }) }),
       jsx(FacePicker, { value: form.face, pk: agentPk, name: form.agent_name, noPreview: true, onChange: face => set({ face }) })
     ] }) }),
+    jsx(Field, { label: 'How you look (optional)', children: jsx(PersonLook, { pk: snap.me && snap.me.pk, name: form.display_name, stage: true,
+      face: form.person_face, onFace: person_face => set({ person_face }), staged: form.avatar, hasPicture: !!form.avatar, art: form.person_face ? { face: form.person_face } : null,
+      onPicture: avatar => set({ avatar }) }) }),
     jsx(Field, { label: 'What are you into?', id: 'h-on-int', hint: 'Used to find rooms and people. Your interest card is published only if you choose to in the Lobby.',
       children: jsx(InterestInput, { id: 'h-on-int', value: form.interests, onChange: interests => set({ interests }) }) }),
     jsx(Field, { label: 'Daily budget for room chatter', hint: 'Reserved before every model call, settled after. At the limit your agent rests until tomorrow.',
@@ -3473,7 +3795,7 @@ function SettingsForm(props) {
   const agentPk = snap.me && snap.me.agent && snap.me.agent.pk
   const initial = () => ({ display_name: s.display_name, line: s.line || '', agent_name: s.agent_name, vibe: s.vibe,
     face: faceFor(s.face, agentPk), interests: s.interests || [], budget_daily: s.budget_daily, msgs_daily: s.msgs_daily,
-    relays: (s.relays || []).join('\n') })
+    person_face: s.person_face || null, relays: (s.relays || []).join('\n') })
   const [form, setForm] = useState(initial)
   const [busy, setBusy] = useState(false)
   // An empty relay list means offline, so saving one takes a second press that says so.
@@ -3485,6 +3807,15 @@ function SettingsForm(props) {
   }
   const dirty = JSON.stringify(form) !== JSON.stringify(initial())
   const now = (patch) => store.post('/settings', patch).catch(() => {})
+  // your picture is published the moment you choose it (or take it away), apart from the Save button
+  const [picBusy, setPicBusy] = useState(false)
+  const mePk = snap.me && snap.me.pk
+  const myArt = (snap.people && snap.people[mePk]) || null
+  const setPicture = async img => {
+    setPicBusy(true)
+    try { await store.post('/avatar', { img }, img ? 'Picture published' : 'Picture removed') } catch (_) { /* toasted */ }
+    setPicBusy(false)
+  }
 
   const budgetErr = limitError(form.budget_daily, BUDGET_MAX, 'tokens', '40000')
   const msgsErr = limitError(form.msgs_daily, MSGS_MAX, 'messages', '60')
@@ -3496,7 +3827,7 @@ function SettingsForm(props) {
     if (goingOffline && !confirmOffline) { setConfirmOffline(true); return }
     setConfirmOffline(false)
     setBusy(true)
-    const body = Object.assign({}, form, { relays: relayList,
+    const body = Object.assign({}, form, { relays: relayList, person_face: form.person_face || {},
       budget_daily: parseCount(form.budget_daily), msgs_daily: parseCount(form.msgs_daily) })
     try { await store.post('/settings', body, 'Saved') } catch (_) { /* toasted */ }
     setBusy(false)
@@ -3556,7 +3887,13 @@ function SettingsForm(props) {
         jsx(Field, { label: 'Display name', id: 'h-s-name', children: jsx(K.Input, { id: 'h-s-name', value: form.display_name, maxLength: 32, onChange: e => set({ display_name: e.target.value }) }) }),
         jsx(Field, { label: 'One line about you', id: 'h-s-line', children: jsx(K.Input, { id: 'h-s-line', value: form.line, maxLength: 200, onChange: e => set({ line: e.target.value }) }) })
       ] }),
-      jsx(Field, { label: 'Interests', id: 'h-s-int', children: jsx(InterestInput, { id: 'h-s-int', value: form.interests, onChange: interests => set({ interests }) }) })
+      jsx(Field, { label: 'Interests', id: 'h-s-int', children: jsx(InterestInput, { id: 'h-s-int', value: form.interests, onChange: interests => set({ interests }) }) }),
+      jsx(Field, { label: 'Your picture and face', children: jsx(PersonLook, { pk: mePk, name: form.display_name, face: form.person_face, onFace: person_face => set({ person_face }),
+        art: myArt ? Object.assign({}, myArt, form.person_face ? { face: form.person_face } : { face: undefined }) : (form.person_face ? { face: form.person_face } : null),
+        hasPicture: !!(myArt && myArt.av), busy: picBusy, onPicture: setPicture }) }),
+      jsx(Field, { label: 'Show profile pictures', hint: 'Pictures are other people’s files, shown to you as small images. Nobody keeps only faces and initials on your screen, and Ninsei stops keeping their pictures. Your own is not affected.',
+        children: jsx(Seg, { label: 'Show profile pictures', value: s.show_avatars || 'everyone', onChange: v => now({ show_avatars: v }),
+          options: [{ id: 'everyone', label: 'Everyone in my rooms' }, { id: 'nobody', label: 'Nobody' }] }) })
     ] }),
     jsxs('section', { className: 'h-col', style: { gap: 10 }, children: [
       jsx('div', { className: 'h-sec', children: 'Hidden people' }),
@@ -3720,6 +4057,7 @@ function RoomView(props) {
         game && jsx(TallTales, { store, room, game, book, key: game.gid }),
         drafts.length > 0 && jsx(DraftTray, { store, drafts })
       ] }),
+      jsx(TypingLine, { list: room.typing }),
       jsx(Composer, { store, room, snap, gameOn: !!(game && game.phase !== 'end'), reply: replyTo, onCancelReply })
     ] })
   ] })
@@ -3984,7 +4322,7 @@ function Message(props) {
   return jsxs('div', { className: cx('h-msg', agent && 'h-agent'), 'data-role': m.role, 'data-first': props.first, 'data-mid': m.id, 'data-bar': picking,
     'data-impostor': !!imp, 'data-mentioned': !!m.mentions_me, style: agent ? { '--hue': f.hue } : undefined, children: [
       jsx('div', { className: 'h-gutter', children: props.first ? jsx(ProfileButton, { who, label: 'Show ' + m.name + '’s card',
-        children: agent ? jsx(Face, { face: m.face, pk: m.pk, state: 'activity: idle', size: 28, name: m.name }) : jsx(Initial, { name: m.name }) }) : null }),
+        children: agent ? jsx(Face, { face: m.face, pk: m.pk, state: 'activity: idle', size: 28, name: m.name }) : jsx(PersonMark, { pk: m.pk, name: m.name, flagged: !!imp }) }) : null }),
       jsxs('div', { style: { minWidth: 0 }, children: [
         props.first && jsxs('div', { className: 'h-meta', children: [
           jsx(ProfileButton, { who, label: 'Show ' + m.name + '’s card', children: jsx('b', { children: m.name }) }),
@@ -4518,6 +4856,23 @@ function Draft(props) {
 
 // ---- composer --------------------------------------------------------------------------------
 
+// "Maya is typing…": people only (agents show their own thinking dots), always in the page so the composer never jumps.
+// The row eases in on a spring when someone starts; the text is a status, so screen readers hear it once per change.
+function TypingLine(props) {
+  const list = props.list || []
+  const text = typingText(list)
+  return jsx('div', { className: 'h-typingline', role: 'status', 'aria-live': 'polite', children: text ? jsx(TypingRow, { list, text }, 'on') : null })
+}
+
+function TypingRow(props) {
+  const ref = useEnter(true)
+  return jsxs('div', { className: 'h-typingrow', ref, children: [
+    jsx('span', { className: 'h-row', style: { gap: 2 }, 'aria-hidden': true, children: props.list.slice(0, 3).map(t => jsx(PersonMark, { pk: t.pk, name: t.name, size: 16, flagged: !!t.impostor }, t.pk)) }),
+    jsx('span', { className: 'h-typing h-typing-s', 'aria-hidden': true, children: [0, 1, 2].map(i => jsx('i', { style: { animationDelay: (i * 0.16) + 's' } }, i)) }),
+    jsx('span', { className: 'h-trunc', children: props.text })
+  ] })
+}
+
 // Everyone you can @ in this room: your agent first, then who's here, then the rest. Never you, never a lookalike.
 function mentionCandidates(room) {
   const out = []
@@ -4604,14 +4959,15 @@ function Composer(props) {
     open && jsx('div', { className: 'h-ac', id: listId, role: 'listbox', 'aria-label': 'Mention someone', children: opts.map((c, i) =>
       jsxs('div', { id: listId + '-' + i, role: 'option', className: 'h-ac-opt', 'aria-selected': i === sel,
         onMouseDown: e => { e.preventDefault(); choose(c) }, onMouseEnter: () => setPick(i), children: [
-          c.kind === 'agent' ? jsx(Face, { face: c.face, pk: c.pk, state: 'activity: idle', size: 22, name: c.name }) : jsx(Initial, { name: c.name }),
+          c.kind === 'agent' ? jsx(Face, { face: c.face, pk: c.pk, state: 'activity: idle', size: 22, name: c.name }) : jsx(PersonMark, { pk: c.pk, name: c.name, size: 22 }),
           jsx('b', { className: 'h-trunc', children: c.name }),
           jsx('span', { className: 'h-ac-sub h-trunc', children: c.sub })
         ] }, c.pk)) }),
     jsx('textarea', { ref: ta, rows: 1, value: text, placeholder: dm ? dm.placeholder : 'Message ' + room.name + ' (type @ to mention someone)', 'aria-label': dm ? dm.placeholder : 'Message', maxLength: dm ? dm.max : undefined,
       role: dm ? undefined : 'combobox', 'aria-autocomplete': dm ? undefined : 'list', 'aria-expanded': dm ? undefined : open, 'aria-controls': open ? listId : undefined,
       'aria-activedescendant': open ? listId + '-' + sel : undefined,
-      onChange: e => { setText(e.target.value); track(e); setPick(0); if (!mentionQuery(e.target.value, e.target.selectionStart)) setShut(-1) }, onSelect: track, onClick: track, onKeyUp: e => { if (!open || !/Arrow(Up|Down)/.test(e.key)) track(e) },
+      onChange: e => { setText(e.target.value); track(e); setPick(0); if (!mentionQuery(e.target.value, e.target.selectionStart)) setShut(-1)
+        if (!dm && e.target.value.trim()) typingPing(room.id) }, onSelect: track, onClick: track, onKeyUp: e => { if (!open || !/Arrow(Up|Down)/.test(e.key)) track(e) },
       onKeyDown: onKey }),
     !dm && jsxs('div', { style: { position: 'relative' }, children: [
       jsx(K.Tip, { label: 'Games', children: jsx(K.Button, { variant: 'ghost', size: 'icon', 'aria-label': 'Games', 'aria-expanded': menu,
@@ -4662,6 +5018,8 @@ function Person(props) {
   return jsxs('div', { className: 'h-person', ref, children: [
     jsxs('div', { className: 'h-person-row', children: [
       jsx('span', { className: 'h-presence', 'data-on': !!p.online, role: 'img', 'aria-label': p.online ? 'online' : 'away' }),
+      jsx(ProfileButton, { who: { kind: 'person', pk: p.pk, name: p.name }, label: 'Show ' + p.name + '’s card',
+        children: jsx(PersonMark, { pk: p.pk, name: p.name, size: 22, flagged: !!p.impostor }) }),
       jsx(ProfileButton, { who: { kind: 'person', pk: p.pk, name: p.name }, className: 'h-trunc', label: 'Show ' + p.name + '’s card',
         children: jsx('span', { className: 'h-trunc h-namelink', style: { fontWeight: 600 }, children: p.name }) }),
       p.you && jsx('span', { className: 'h-faint h-tiny', children: 'you' }),
@@ -4822,7 +5180,7 @@ function LineMessage(props) {
   if (mine && m.status === 'queued') status = props.gatewayDown ? 'waiting for your gateway' : 'sending…'
   else if (mine && m.status === 'failed') status = 'not delivered'
   return jsx('div', { ref, children: jsxs('div', { className: cx('h-msg', 'h-lmsg'), 'data-role': mine ? 'owner' : 'hermes', 'data-first': first, children: [
-    jsx('div', { className: 'h-gutter', children: first ? (mine ? jsx(Initial, { name: snap.me.name || 'You' }) : jsx(HermesMark, { size: 28 })) : null }),
+    jsx('div', { className: 'h-gutter', children: first ? (mine ? jsx(PersonMark, { pk: snap.me.pk, name: snap.me.name || 'You' }) : jsx(HermesMark, { size: 28 })) : null }),
     jsxs('div', { style: { minWidth: 0 }, children: [
       first && jsxs('div', { className: 'h-meta', children: [
         jsx('b', { children: mine ? 'You' : 'Your Hermes' }),
@@ -4946,7 +5304,7 @@ function DmRail(props) {
       list.length === 0 && !dms.requests && jsx('div', { className: 'h-faint h-small', style: { padding: '2px 8px' }, children: 'Open someone’s card and press Message.' }),
       list.map(t => jsxs('button', { type: 'button', className: 'h-navrow', 'data-on': cur === t.pk, 'aria-current': cur === t.pk ? 'page' : undefined,
         onClick: () => open(t.pk), children: [
-          jsx(K.Icon, { name: 'lock', size: 12 }),
+          jsx(PersonMark, { pk: t.pk, name: t.name, size: 18, flagged: !!t.impostor }),
           jsx('span', { className: 'h-grow h-trunc', style: { fontWeight: t.unread ? 600 : 400 }, children: t.name }),
           t.unread > 0 && jsx('span', { className: 'h-dot', 'aria-label': t.unread + (t.unread === 1 ? ' unread private message' : ' unread private messages') })
         ] }, t.pk)),
@@ -5020,7 +5378,7 @@ function DmView(props) {
   const dmSend = useMemo(() => ({ onSend: send, placeholder: 'Message ' + name + ' (private)', max: 2000 }), [pk, name])
   return jsxs(Fragment, { children: [
     jsxs('div', { className: 'h-head', children: [
-      jsx(Initial, { name }),
+      jsx(PersonMark, { pk, name, size: 32, flagged: !!(data && data.impostor) }),
       jsxs('div', { className: 'h-grow h-col', style: { gap: 2, minWidth: 0 }, children: [
         jsxs('div', { className: 'h-row', children: [
           jsx('h2', { className: 'h-trunc', children: name }),
@@ -5078,7 +5436,7 @@ function DmRequests(props) {
     jsx('div', { className: 'h-muted', children: 'People you haven’t met in a room. Their words stay hidden until you open the conversation. Accepting moves it to your list; hiding drops it and anything they send later.' }),
     reqs.length === 0 && jsx('div', { className: 'h-faint', style: { marginTop: 14 }, children: 'No requests right now.' }),
     jsx('div', { className: 'h-list', children: reqs.map(t => jsxs('div', { className: 'h-row', style: { gap: 10, padding: '8px 0' }, children: [
-      jsx(Initial, { name: t.name }),
+      jsx(PersonMark, { pk: t.pk, name: t.name, size: 28, flagged: !!t.impostor }),
       jsxs('div', { className: 'h-grow h-col', style: { gap: 2, minWidth: 0 }, children: [
         jsx('b', { className: 'h-trunc', children: t.name }),
         jsx('span', { className: 'h-faint h-small', children: (t.unread || 1) + (t.unread === 1 ? ' message · ' : ' messages · ') + fmtAgo(t.ts) })
@@ -5707,7 +6065,7 @@ function RoomActivity(props) {
 function LobbyPerson(props) {
   const p = props.p
   return jsxs('div', { className: 'h-item', children: [
-    jsx(Initial, { name: p.name }),
+    jsx(PersonMark, { pk: p.pk, name: p.name }),
     jsxs('div', { className: 'h-grow h-col', style: { gap: 4 }, children: [
       jsxs('div', { className: 'h-row', children: [
         jsx('b', { className: 'h-trunc', children: p.name }),
@@ -5830,6 +6188,9 @@ function App(props) {
   const openDm = pk => { store.setDm(pk); go('dm') }
   const embedded = !!props.embedded  // Desktop's room tab: the sidebar's Ninsei tab is the rail
   const snap = st.snap
+  // what each person looks like, for every PersonMark below (pictures only while "Show profile pictures" is on)
+  const looks = useMemo(() => ({ people: (snap && snap.people) || {}, show: !(snap && snap.settings && snap.settings.show_avatars === 'nobody') }),
+    [snap && snap.people, snap && snap.settings && snap.settings.show_avatars])
 
   let inner
   if (!snap) {
@@ -5853,7 +6214,7 @@ function App(props) {
     else center = jsx(Welcome, { store, snap, onLobby: () => go('lobby') })
 
     // ProfileLayer: a click on a name or face, in the room or the people column, opens that card
-    inner = jsx(RoomReactions, { snap, room: showRoom ? room : null, children: jsx(ProfileLayer, { room: showRoom ? room : null, snap, store, openSettings, openDm, children: jsxs('div', { className: 'h-grid', 'data-people': people ? 'open' : 'closed', 'data-embedded': embedded || undefined, children: [
+    inner = jsx(PeopleContext.Provider, { value: looks, children: jsx(RoomReactions, { snap, room: showRoom ? room : null, children: jsx(ProfileLayer, { room: showRoom ? room : null, snap, store, openSettings, openDm, children: jsxs('div', { className: 'h-grid', 'data-people': people ? 'open' : 'closed', 'data-embedded': embedded || undefined, children: [
       !embedded && jsx('nav', { className: 'h-left', 'aria-label': 'Ninsei rooms', children: jsx(Rail, { store, snap, view, go, roomId }) }),
       jsxs('main', { className: 'h-center', children: [
         st.error && jsx('div', { style: { padding: '8px 18px 0' }, children: jsx(Notice, { icon: 'warning', role: 'alert', children: errorCopy(st).title + '. Showing the last state we had.' }) }),
@@ -5869,7 +6230,7 @@ function App(props) {
           onClick: closePeople, children: jsx(K.Icon, { name: 'close', size: 14 }) }) }),
         view === 'hermes' ? jsx(LineAbout, { snap }) : view === 'dm' ? jsx(DmAbout, {}) : room && showRoom ? jsx(People, { room, snap, store }) : jsx(MyAgentCard, { snap })
       ] })
-    ] }) }) })
+    ] }) }) }) })
   }
   return jsxs('div', { className: 'hx h-page', 'data-platform': P.kind, children: [
     P.inlineStyle && jsx('style', { children: CSS }),

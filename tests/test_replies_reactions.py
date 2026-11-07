@@ -402,7 +402,7 @@ def test_the_composer_shows_who_you_reply_to_and_sends_the_reply_id():
         + fn(ROOM_JS, "mentionCandidates") + fn(ROOM_JS, "Composer") + """
 function useMemo(f) { return f() }
 const useLayoutEffect = useEffect
-function Face() {}; function Initial() {}; function GamesMenu() {}; function gameName(m) { return m }
+function Face() {}; function Initial() {}; function PersonMark() {}; function typingPing() {}; function GamesMenu() {}; function gameName(m) { return m }
 K.Tip = function Tip() {}
 const posts = []
 const store = { post: async (p, b) => { posts.push([p, b]) } }
@@ -467,7 +467,7 @@ const useEnter = () => ({ current: null })
 globalThis.P = { listen: () => () => {} }; globalThis.document = {}
 const SPRING = { pop: {} }; const motion = { reduced: () => true }
 const cx = (...a) => a.filter(Boolean).join(' ')
-function ProfileButton() {}; function Face() {}; function Initial() {}; function RichText() {}; function ImpostorChip() {}
+function ProfileButton() {}; function Face() {}; function Initial() {}; function PersonMark() {}; function RichText() {}; function ImpostorChip() {}
 const faceFor = () => ({ hue: 1 }); const fmtTime = () => '10:00'
 const REACTION_LIST = ['a', 'b']
 K.Tip = function Tip() {}

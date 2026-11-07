@@ -214,6 +214,7 @@ async def test_every_joined_room_gets_its_own_history_filter_in_bounded_requests
         e.store.save_room(r, {"id": r, "name": r})
     await e._resubscribe()
     assert [f["kinds"] for f in e.pool.subs.pop("dm")] == [[1059]]  # the private-message request is its own, one filter
+    assert all(f["kinds"] == [30078] and len(f["authors"]) <= 50 for f in e.pool.subs.pop("art"))  # so is the pictures-and-faces one
     hist = [f for fs in e.pool.subs.values() for f in fs if f["kinds"] == [KIND_ROOM]]
     assert sorted(f["#h"][0] for f in hist) == sorted([ROOM] + rooms) and all(len(f["#h"]) == 1 for f in hist)
     assert all(f["limit"] <= ROOM_HISTORY_LIMIT for f in hist)
@@ -221,7 +222,7 @@ async def test_every_joined_room_gets_its_own_history_filter_in_bounded_requests
     assert len(e.pool.subs) == 3 and "rooms" in e.pool.subs  # 21 rooms, 8 to a request
     for r in rooms:  # leave most of them: the requests that held only left rooms are closed
         await e.leave_room(r)
-    assert set(e.pool.subs) - {"dm"} == {"rooms"}
+    assert set(e.pool.subs) - {"dm", "art"} == {"rooms"}
 
 
 async def test_unhide_asks_for_each_rooms_history_separately(bare):

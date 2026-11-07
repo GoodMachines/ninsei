@@ -106,6 +106,18 @@ function faceAcc(kind, b) {
 // client from room events it already has (see reactionsFor). Never sent over the wire.
 const ExprContext = createContext({})
 
+// What the engine says each person looks like, from the snapshot: { people: {pk: {face?, av?}}, show: bool }.
+// `av` is a picture's version (the picture is fetched on its own); `show` is the "Show profile pictures" switch.
+const PeopleContext = createContext({ people: {}, show: true })
+
+// A person's built face: the same drawings as an agent's, but still (no blinking, no breathing, no state) and in a
+// plain circle with no tint, so a person never reads as an agent. Agents also keep their bubble and "X's agent" label.
+function PersonFace(props) {
+  const size = props.size || 28
+  return jsx('span', { className: cx('h-pface', props.className), 'aria-hidden': true, style: { width: size, height: size },
+    children: jsx(Face, { face: props.face, pk: props.pk, state: 'activity: idle', size: Math.round(size * 0.86), className: 'hf-still' }) })
+}
+
 function Face(props) {
   const f = faceFor(props.face, props.pk)
   const body = FACE_BODY[f.shape] || FACE_BODY.round

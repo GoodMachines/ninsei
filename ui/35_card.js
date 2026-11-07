@@ -187,9 +187,12 @@ function IdCard(props) {
   const crew = (props.agents || []).filter(a => a && a.pk).slice(0, 3)
   const idle = 'activity: idle'
 
+  // a person who set a picture or a face is shown by it (never a lookalike: the sheet passes `art` only for the real key)
+  const mark = !agent && !warn && props.art && (props.art.av || props.art.face) ? jsx(PersonHero, { pk: props.pk, art: props.art }) : null
   const hero = agent
     // the picture is always the whole face; an away agent's status is in the corner, not a faded portrait
     ? jsx(Face, { face: props.face, pk: props.pk, state: stateWord(props.state) === 'absent' ? idle : (props.state || idle), size: 120 })
+    : mark ? mark
     : crew.length
       ? jsx('div', { className: 'h-idcard-crew', children: crew.map((a, i) => {
           const [left, top, size] = CREW_SPOTS[crew.length][i]
@@ -252,6 +255,15 @@ function IdCard(props) {
       if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); if (!e.repeat) flip() }
     } : undefined,
     children: jsx('div', { className: 'h-idcard-tilt', children: jsxs('div', { className: 'h-idcard-turn', ref: turn, children: [front, back] }) }) })
+}
+
+// A person's picture or face as the card's big picture. The saved card image draws a face but not a picture
+// (the picture is a stranger's file: it stays out of anything that gets exported).
+function PersonHero(props) {
+  const uri = useAvatarUri(props.art.av && props.pk ? props.pk : '', props.art.av)
+  if (uri) return jsx(PersonPhoto, { uri, size: 120, className: 'h-idcard-photo' })
+  if (props.art.face) return jsx(PersonFace, { face: props.art.face, pk: props.pk, size: 120 })
+  return null
 }
 
 // Wraps a face or a name so it opens that card. Outside a room (no provider) it renders as is.
@@ -329,6 +341,10 @@ function ProfileSheet(props) {
   const [busy, setBusy] = useState('')
   const canCopy = useCanCopyImage()
   const found = findMember(room, who.pk)
+  // what this person looks like: their picture (while pictures are on) and face, from the snapshot
+  const looks = useContext(PeopleContext)
+  const entry = looks.people[who.pk]
+  const art = entry ? (looks.show ? entry : entry.face ? { face: entry.face } : undefined) : undefined
   const [card, setCard] = useState(null)
   const [flipped, setFlipped] = useState(false)
   const isAgent = who.kind === 'agent' || !!found.agent
@@ -366,7 +382,7 @@ function ProfileSheet(props) {
 
   // the sheet's card turns over (click, Enter/Space, or the Flip button) and tilts
   const flip = { interactive: true, flipped, onFlip: setFlipped, cardRef }
-  const body = isAgent ? agentSheet(who, found, snap, props.onOpen, flip) : personSheet(who, found, card, props.onOpen, flip)
+  const body = isAgent ? agentSheet(who, found, snap, props.onOpen, flip) : personSheet(who, found, card, props.onOpen, flip, art)
 
   // buttons under the card: save or copy it as an image, edit your own agent's face, hide someone else
   const act = cardActions(who, found, snap)
@@ -473,7 +489,7 @@ function agentSheet(who, found, snap, onOpen, flip) {
   }
 }
 
-function personSheet(who, found, card, onOpen, flip) {
+function personSheet(who, found, card, onOpen, flip, art) {
   const p = found.person || {}
   const name = p.name || who.name || 'Someone'
   const agents = p.agents || []
@@ -484,7 +500,7 @@ function personSheet(who, found, card, onOpen, flip) {
   return {
     title: name + (p.you ? ', you' : ''),
     card: jsx(IdCard, Object.assign({ kind: 'person', name, pk: who.pk, face: agents[0] && agents[0].face, fields, warn: !!p.impostor, online: !!p.online,
-      agents, about: card && card.line, first: p.first, posts: p.posts }, flip)),
+      agents, about: card && card.line, first: p.first, posts: p.posts, art }, flip)),
     rows: [
       card && card.line ? jsx('div', { className: 'h-profile-vibe', children: card.line }, 'l') : null,
       interests.length ? jsx('div', { className: 'h-chips', children: interests.map(t => jsx('span', { className: 'h-chip', children: t }, t)) }, 'i') : null,

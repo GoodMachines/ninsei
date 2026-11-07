@@ -14,7 +14,7 @@ EXTRA = """
 const useLayoutEffect = useEffect
 const useMemo = f => f()
 const Fragment2 = Fragment
-function Initial() {}; function Notice() {}; function Modal() {}; function Composer() {}; function Message() {}
+function Initial() {}; function PersonMark() {}; function typingPing() {}; function Notice() {}; function Modal() {}; function Composer() {}; function Message() {}
 function NotVerified() {}; function groupItems(msgs) { return msgs.map(m => ({ kind: 'msg', key: m.id, m, first: true })) }
 function useEnter() { return null }
 function nav() { return { set(v) { globalThis.NAVSET = v } } }

@@ -19,7 +19,7 @@ function DmRail(props) {
       list.length === 0 && !dms.requests && jsx('div', { className: 'h-faint h-small', style: { padding: '2px 8px' }, children: 'Open someone’s card and press Message.' }),
       list.map(t => jsxs('button', { type: 'button', className: 'h-navrow', 'data-on': cur === t.pk, 'aria-current': cur === t.pk ? 'page' : undefined,
         onClick: () => open(t.pk), children: [
-          jsx(K.Icon, { name: 'lock', size: 12 }),
+          jsx(PersonMark, { pk: t.pk, name: t.name, size: 18, flagged: !!t.impostor }),
           jsx('span', { className: 'h-grow h-trunc', style: { fontWeight: t.unread ? 600 : 400 }, children: t.name }),
           t.unread > 0 && jsx('span', { className: 'h-dot', 'aria-label': t.unread + (t.unread === 1 ? ' unread private message' : ' unread private messages') })
         ] }, t.pk)),
@@ -93,7 +93,7 @@ function DmView(props) {
   const dmSend = useMemo(() => ({ onSend: send, placeholder: 'Message ' + name + ' (private)', max: 2000 }), [pk, name])
   return jsxs(Fragment, { children: [
     jsxs('div', { className: 'h-head', children: [
-      jsx(Initial, { name }),
+      jsx(PersonMark, { pk, name, size: 32, flagged: !!(data && data.impostor) }),
       jsxs('div', { className: 'h-grow h-col', style: { gap: 2, minWidth: 0 }, children: [
         jsxs('div', { className: 'h-row', children: [
           jsx('h2', { className: 'h-trunc', children: name }),
@@ -151,7 +151,7 @@ function DmRequests(props) {
     jsx('div', { className: 'h-muted', children: 'People you haven’t met in a room. Their words stay hidden until you open the conversation. Accepting moves it to your list; hiding drops it and anything they send later.' }),
     reqs.length === 0 && jsx('div', { className: 'h-faint', style: { marginTop: 14 }, children: 'No requests right now.' }),
     jsx('div', { className: 'h-list', children: reqs.map(t => jsxs('div', { className: 'h-row', style: { gap: 10, padding: '8px 0' }, children: [
-      jsx(Initial, { name: t.name }),
+      jsx(PersonMark, { pk: t.pk, name: t.name, size: 28, flagged: !!t.impostor }),
       jsxs('div', { className: 'h-grow h-col', style: { gap: 2, minWidth: 0 }, children: [
         jsx('b', { className: 'h-trunc', children: t.name }),
         jsx('span', { className: 'h-faint h-small', children: (t.unread || 1) + (t.unread === 1 ? ' message · ' : ' messages · ') + fmtAgo(t.ts) })

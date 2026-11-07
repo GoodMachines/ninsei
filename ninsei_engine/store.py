@@ -50,6 +50,12 @@ CREATE TABLE IF NOT EXISTS dm_peers (
   peer TEXT PRIMARY KEY, accepted INTEGER NOT NULL DEFAULT 0, first_at REAL NOT NULL, last_read REAL NOT NULL DEFAULT 0);
 -- Gift wraps already opened (or refused): a restart or a relay replaying history costs one lookup, not a decryption.
 CREATE TABLE IF NOT EXISTS dm_wraps (id TEXT PRIMARY KEY, at REAL NOT NULL);
+-- What people in my rooms look like: a profile picture (kind 'avatar', the image bytes, already checked by
+-- avatar.py) or a built face (kind 'face', JSON). One row per (person, kind): the newest event wins, and an
+-- empty one ("I removed it") is kept as a row with no data so an older copy can't bring it back.
+CREATE TABLE IF NOT EXISTS person_art (
+  pk TEXT NOT NULL, kind TEXT NOT NULL, id TEXT NOT NULL, created_at INTEGER NOT NULL,
+  mime TEXT NOT NULL DEFAULT '', data BLOB, arrived_at REAL NOT NULL, PRIMARY KEY (pk, kind));
 -- Build progress, written by Ninsei's Hermes hooks in whatever process runs the owner's build chat
 -- (ninsei_hooks.py). Coarse on purpose: a step count and a state, never tool names or contents.
 CREATE TABLE IF NOT EXISTS build_progress (
@@ -77,6 +83,10 @@ DM_PER_REQUEST = 20
 DM_REQUEST_PEERS = 20
 DM_TOTAL = 5000
 DM_WRAP_MEMORY = 20000    # gift wrap ids remembered
+
+# people's pictures and faces kept on disk (most recently received first; mine are never dropped)
+ART_AVATARS = 300         # picture rows that hold bytes (at most 48 KB each)
+ART_ROWS = 1200           # all rows: faces, and the empty ones that mark a removed picture
 
 
 def cap_reply(text: str) -> str:
@@ -126,6 +136,47 @@ class Store:
     def close(self) -> None:
         with self._lock:
             self._db.close()
+
+    # --- people's pictures and faces ---------------------------------------------------------------
+    def art_put(self, pk: str, kind: str, eid: str, created_at: int, mime: str, data: Optional[bytes],
+                arrived_at: float, keep: str = "") -> list[tuple[str, str]]:
+        """Store the newest picture or face of one person (replacing the older row), then drop the oldest
+        received rows beyond the caps. Returns the (pk, kind) pairs dropped; `keep` (my own key) is never one."""
+        with self._lock:
+            self._db.execute("INSERT OR REPLACE INTO person_art(pk,kind,id,created_at,mime,data,arrived_at) VALUES(?,?,?,?,?,?,?)",
+                             (pk, kind, eid, created_at, mime, data, arrived_at))
+            gone: list[tuple[str, str]] = []
+            for where, cap in (("kind='avatar' AND data IS NOT NULL", ART_AVATARS), ("1=1", ART_ROWS)):
+                rows = self._db.execute(f"SELECT pk,kind FROM person_art WHERE pk<>? AND {where} "
+                                        "ORDER BY arrived_at DESC LIMIT -1 OFFSET ?", (keep, cap)).fetchall()
+                for rpk, rkind in rows:
+                    self._db.execute("DELETE FROM person_art WHERE pk=? AND kind=?", (rpk, rkind))
+                    gone.append((rpk, rkind))
+            self._db.commit()
+        return gone
+
+    def art_get(self, pk: str, kind: str) -> Optional[dict]:
+        with self._lock:
+            row = self._db.execute("SELECT id,created_at,mime,data FROM person_art WHERE pk=? AND kind=?", (pk, kind)).fetchone()
+        return {"id": row[0], "created_at": row[1], "mime": row[2], "data": row[3]} if row else None
+
+    def art_index(self) -> list[dict]:
+        """Every row without its picture bytes (a face is small and comes whole), for the engine's memory."""
+        with self._lock:
+            rows = self._db.execute("SELECT pk,kind,id,created_at,mime,LENGTH(data),"
+                                    "CASE WHEN kind='face' THEN data END FROM person_art").fetchall()
+        return [{"pk": r[0], "kind": r[1], "id": r[2], "created_at": r[3], "mime": r[4], "size": r[5] or 0, "data": r[6]} for r in rows]
+
+    def art_forget(self, pk: str) -> None:
+        """Delete everything held of one person (hiding them)."""
+        with self._lock:
+            self._db.execute("DELETE FROM person_art WHERE pk=?", (pk,))
+            self._db.commit()
+
+    def art_forget_others(self, kind: str, mine: str) -> None:
+        with self._lock:
+            self._db.execute("DELETE FROM person_art WHERE kind=? AND pk<>?", (kind, mine))
+            self._db.commit()
 
     # --- kv ---------------------------------------------------------------------------------------
     def get(self, key: str, default: Any = None) -> Any:

@@ -131,7 +131,7 @@ function FacePicker(props) {
     'aria-label': props.id ? 'Face editor' : undefined, children: [
     !props.noPreview && jsx(Face, { face, pk: props.pk, state: props.previewState || 'activity: idle', size: 64, name: props.name }),
     jsxs('div', { className: 'h-col h-grow', style: { gap: 10, minWidth: 0 }, children: [
-      jsxs('div', { className: 'h-facepart', children: [
+      !props.noCard && jsxs('div', { className: 'h-facepart', children: [
         jsx('div', { className: 'h-faint h-tiny h-caps', children: 'Card' }),
         jsx('div', { className: 'h-shapes', role: 'radiogroup', 'aria-label': 'Card style', children: FACE_CARDS.map(o =>
           jsxs('button', { type: 'button', className: 'h-shape h-cardpick', role: 'radio', 'aria-checked': face.card === o, 'data-on': face.card === o,
@@ -164,7 +164,32 @@ function FacePicker(props) {
 
 function Initial(props) {
   const n = String(props.name || '?').trim()
-  return jsx('span', { className: 'h-initial', 'aria-hidden': true, children: (n[0] || '?').toUpperCase() })
+  const size = props.size
+  return jsx('span', { className: 'h-initial', 'aria-hidden': true, style: size ? { width: size, height: size, fontSize: Math.max(9, Math.round(size * 0.43)) } : undefined,
+    children: (n[0] || '?').toUpperCase() })
+}
+
+// A picture someone chose, in a circle. `uri` is a data URI the engine rebuilt from bytes it checked; an <img> only,
+// never inlined, and it never gets a name or a link of its own.
+function PersonPhoto(props) {
+  const size = props.size || 28
+  return jsx('span', { className: cx('h-photo', props.className), 'aria-hidden': true, style: { width: size, height: size },
+    children: jsx('img', { src: props.uri, alt: '', width: size, height: size, draggable: false, decoding: 'async', referrerPolicy: 'no-referrer' }) })
+}
+
+// How a person shows up anywhere: their picture (when they set one and pictures are on), else their face, else the
+// letter. A lookalike (`flagged`) gets the letter only, so a copied picture can't make it pass for the real person.
+// `art` overrides the snapshot's (Settings previews a picture before it is published).
+function PersonMark(props) {
+  const ctx = useContext(PeopleContext)
+  const size = props.size || 28
+  const art = props.flagged ? null : (props.art !== undefined ? props.art : ctx.people[props.pk])
+  const pics = props.art !== undefined || ctx.show
+  const uri = useAvatarUri(art && art.av && pics ? props.pk : '', art && art.av)
+  const body = art && art.uri && pics ? art.uri : uri
+  if (body) return jsx(PersonPhoto, { uri: body, size, className: props.className })
+  if (art && art.face) return jsx(PersonFace, { face: art.face, pk: props.pk, size, className: props.className })
+  return jsx(Initial, { name: props.name, size: props.size })
 }
 
 function Notice(props) {
