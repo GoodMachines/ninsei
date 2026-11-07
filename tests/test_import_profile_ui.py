@@ -5,7 +5,7 @@ from test_audit_ui import CORE, PARTS, SETUP, STYLE, block, const, fn, needs_nod
 from test_audit_review import SETTINGS_JS
 
 PICKER_JS = (const(PARTS, "PERSONA_MAX") + block(PARTS, "FLAG_LABEL") + fn(PARTS, "flagLine") + fn(PARTS, "liveFlags")
-             + fn(PARTS, "HermesPicker") + fn(PARTS, "applyProposal") + fn(PARTS, "PersonaField") + fn(CORE, "errText") + """
+             + fn(PARTS, "hermesSub") + fn(PARTS, "HermesPicker") + fn(PARTS, "applyProposal") + fn(PARTS, "PersonaField") + fn(CORE, "errText") + """
 K.Input = function Input() {}
 const toasts = []
 const PROFILES = [
@@ -41,7 +41,7 @@ out({ label: text(root.tree).includes('Start from one of your Hermes agents'), n
 """)
     assert r["label"] and r["n"] == 3 and r["hint"]
     assert r["texts"][1] == "Archie the Watcherthis oneKeeps an eye on things"
-    assert r["texts"][0] == "defaultdefault" and r["texts"][2] == "bookmark-botNo personality set"
+    assert r["texts"][0] == "default" and r["texts"][2] == "bookmark-botNo personality set"
     assert r["here"] == [r["texts"][1]]
     assert r["tree"] is None and r["failedTree"] is None          # no profiles, or the list failed: the row is simply not there
 

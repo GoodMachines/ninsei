@@ -37,6 +37,14 @@ function liveFlags(flags, text) {
   return (flags || []).filter(f => t.includes(String(f.text || '').replace(/…$/, '')))
 }
 
+// A profile card's second line: its description, else whether it has a personality, else the profile's own name
+// when the card shows a different display name. Never the title again.
+function hermesSub(p) {
+  if (p.description) return p.description
+  if (!p.has_personality) return 'No personality set'
+  return p.display_name && p.display_name !== p.name ? p.name : ''
+}
+
 function HermesPicker(props) {
   const [list, setList] = useState(null)
   const [busy, setBusy] = useState('')
@@ -62,7 +70,7 @@ function HermesPicker(props) {
           jsx('b', { children: p.display_name || p.name }),
           p.current && jsx('span', { className: 'h-chip h-hermes-here', children: 'this one' })
         ] }),
-        jsx('span', { className: 'h-hermes-sub', children: p.description || (p.has_personality ? p.name : 'No personality set') })
+        hermesSub(p) && jsx('span', { className: 'h-hermes-sub', children: hermesSub(p) })
       ] }, p.name)) }),
     jsx('div', { className: 'h-hint', children: 'Reads that agent’s personality file (SOUL.md) and name once, and never changes it. Nothing is saved until you press Save.' })
   ] })
