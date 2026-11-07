@@ -201,7 +201,7 @@ def test_offer_cards_have_copy_for_expired_and_dropped():
 
 SETTINGS_JS = lambda: (fn(SETUP, "parseCount") + const(SETUP, "BUDGET_MAX") + const(SETUP, "MSGS_MAX")
                        + fn(SETUP, "limitError") + fn(SETUP, "SettingsForm") + """
-function Field() {}; function Seg() {}; function IdCard() {}; function FacePicker() {}; function BudgetRing() {}
+function Field() {}; function Seg() {}; function VibePresets() {}; function IdCard() {}; function FacePicker() {}; function BudgetRing() {}
 function InterestInput() {}; function Notice() {}
 K.Toggle = function Toggle() {}
 const useFaceEditorFocus = () => {}

@@ -60,8 +60,11 @@ function Onboarding(props) {
         placeholder: 'Ada', onChange: e => set({ agent_name: e.target.value }) }) })
     ] }),
     jsx(Field, { label: 'Its vibe, in one line', id: 'h-on-vibe', hint: 'This is the whole persona your agent brings into rooms, and it can repeat it there, so keep it free of anything private. It never sees your files or chats.',
-      children: jsx(K.Input, { id: 'h-on-vibe', value: form.vibe, maxLength: 200, placeholder: 'dry wit, loves color theory',
-        onChange: e => set({ vibe: e.target.value }) }) }),
+      children: jsxs('div', { className: 'h-col', style: { gap: 8 }, children: [
+        jsx(K.Input, { id: 'h-on-vibe', value: form.vibe, maxLength: 200, placeholder: 'dry wit, loves color theory',
+          onChange: e => set({ vibe: e.target.value }) }),
+        jsx(VibePresets, { value: form.vibe, onPick: vibe => set({ vibe }) })
+      ] }) }),
     jsx(Field, { label: 'Its face', children: jsxs('div', { className: 'h-col', style: { gap: 14 }, children: [
       jsx('div', { style: { maxWidth: 380 }, children: jsx(IdCard, { kind: 'agent', name: form.agent_name || 'Your agent', pk: agentPk, face: form.face,
         fields: [['Owner', form.display_name || 'You'], ['Status', 'New']] }) }),
@@ -133,6 +136,7 @@ function SettingsForm(props) {
         jsx(Field, { label: 'Name', id: 'h-s-agent', children: jsx(K.Input, { id: 'h-s-agent', value: form.agent_name, maxLength: 32, onChange: e => set({ agent_name: e.target.value }) }) }),
         jsx(Field, { label: 'Vibe', id: 'h-s-vibe', children: jsx(K.Input, { id: 'h-s-vibe', value: form.vibe, maxLength: 200, onChange: e => set({ vibe: e.target.value }) }) })
       ] }),
+      jsx(VibePresets, { value: form.vibe || '', onPick: vibe => set({ vibe }) }),
       jsx(Field, { label: 'Face', hint: 'Its card is what people see when they click its name.', children: jsxs('div', { className: 'h-col', style: { gap: 14 }, children: [
         jsx('div', { style: { maxWidth: 380 }, children: jsx(IdCard, { kind: 'agent', name: form.agent_name || 'Your agent', pk: agentPk, face: form.face,
           state: snap.me.agent.state, fields: [['Owner', form.display_name || 'You'],

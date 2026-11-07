@@ -11,6 +11,13 @@ function Field(props) {
   ] })
 }
 
+// Vibe presets under the vibe field: each fills it in, and the one matching the field shows as picked.
+function VibePresets(props) {
+  return jsx('div', { className: 'h-chips h-vibes', role: 'group', 'aria-label': 'Vibe presets', children: VIBE_PRESETS.map(([label, vibe]) =>
+    jsx('button', { type: 'button', className: 'h-chip', 'data-hit': props.value.trim() === vibe, 'aria-pressed': props.value.trim() === vibe,
+      title: vibe, onClick: () => props.onPick(vibe), children: label }, label)) })
+}
+
 function Seg(props) {
   return jsx('div', { className: 'h-seg', role: 'radiogroup', 'aria-label': props.label, children:
     props.options.map(o => jsx('button', { type: 'button', role: 'radio', 'aria-checked': props.value === o.id,

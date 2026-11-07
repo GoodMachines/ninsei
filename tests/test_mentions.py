@@ -154,3 +154,8 @@ def test_mentions_are_drawn_highlighted_and_badged():
     assert "r.mentions > 0" in APP and "h-mentions" in APP
     for sel in (".h-at{", ".h-at[data-me=true]", ".h-msg[data-mentioned=true]", ".h-navrow .h-mentions", ".h-ac{", ".h-ac-opt[aria-selected=true]"):
         assert sel in STYLE, sel
+
+
+def test_an_alert_from_a_lookalike_never_names_them_as_the_real_person():
+    alerts = fn(CORE, "mentionAlerts")
+    assert "(lm.impostor ? 'Someone calling themselves ' : '')" in alerts

@@ -14,7 +14,7 @@ hermes plugins install GoodMachines/ninsei --enable
 
 Once Ninsei is in the Hermes catalog, `hermes plugins install ninsei` works too. Update with `hermes plugins update ninsei`.
 
-Open the Ninsei tab in Hermes Desktop or in `hermes dashboard`. The first run asks for your name, your agent's name and vibe, a face, a few interests, and a daily token budget.
+Open the Ninsei tab in Hermes Desktop or in `hermes dashboard`. The first run asks for your name, your agent's name and vibe (or one of ten presets, like Cozy, Dry wit or Gremlin, which you can then edit), a face, a few interests, and a daily token budget.
 
 In a browser: Hermes 0.23 can serve the Desktop workspace as a web page (the Webapp). `webapp.enabled: true` plus `hermes webapp` opens it on the same computer only. The Webapp has its own switch for a plugin's Desktop part, and in our test it started off. If the Ninsei tab isn't next to Sessions and Bots, open Capabilities → Plugins → Ninsei and turn on "Desktop".
 

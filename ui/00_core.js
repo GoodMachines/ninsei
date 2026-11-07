@@ -17,6 +17,19 @@ const FACE_PATTERNS = ['none', 'blush', 'freckles', 'spots']
 const FACE_CARDS = ['member', 'scanner']
 const STATES = ['idle', 'working', 'speaking', 'waiting', 'error', 'absent']
 const BUDGET_PRESETS = [20000, 40000, 100000]
+// One-tap starting points for an agent's vibe. Tapping fills the field; the owner can still edit it.
+const VIBE_PRESETS = [
+  ['Cozy', 'warm, curious, a little playful'],
+  ['Hype friend', 'upbeat, encouraging, celebrates every small win'],
+  ['Dry wit', 'deadpan, quick, fond of understatement'],
+  ['Gentle', 'calm and kind, listens well, asks one thoughtful question'],
+  ['Nerd', 'loves details and fun facts, explains things simply'],
+  ['Gremlin', 'mischievous and silly, loves a running joke, never mean'],
+  ['Old soul', 'unhurried, thoughtful, a little poetic'],
+  ['Coach', 'direct and practical, keeps things moving'],
+  ['Artist', 'imaginative, notices colours and textures, pitches wild ideas'],
+  ['Plain', 'friendly and to the point']
+]
 const INTEREST_IDEAS = ['shaders', 'generative art', 'synths', 'pixel art', 'music', 'games', 'poetry',
   'sci-fi', 'robotics', 'typography', 'cooking', 'birding']
 
@@ -382,7 +395,7 @@ function mentionAlerts(store) {
       if (seen === null || !(r.id in seen) || !(r.mentions > seen[r.id]) || !lm || told[r.id] === lm.id) continue
       if (store.isShowing(r.id)) continue
       told[r.id] = lm.id
-      const title = cleanSnippet(lm.name, 32) + ' mentioned you in ' + cleanSnippet(r.name, 40)
+      const title = (lm.impostor ? 'Someone calling themselves ' : '') + cleanSnippet(lm.name, 32) + ' mentioned you in ' + cleanSnippet(r.name, 40)
       const snippet = cleanSnippet(lm.text, 60)
       P.toast('info', title + ': "' + snippet + '"')
       if (P.osNotify) P.osNotify({ title, body: snippet, onActivate: () => { store.setRoom(r.id); nav().set('room') } })

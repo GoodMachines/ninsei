@@ -53,6 +53,19 @@ const FACE_PATTERNS = ['none', 'blush', 'freckles', 'spots']
 const FACE_CARDS = ['member', 'scanner']
 const STATES = ['idle', 'working', 'speaking', 'waiting', 'error', 'absent']
 const BUDGET_PRESETS = [20000, 40000, 100000]
+// One-tap starting points for an agent's vibe. Tapping fills the field; the owner can still edit it.
+const VIBE_PRESETS = [
+  ['Cozy', 'warm, curious, a little playful'],
+  ['Hype friend', 'upbeat, encouraging, celebrates every small win'],
+  ['Dry wit', 'deadpan, quick, fond of understatement'],
+  ['Gentle', 'calm and kind, listens well, asks one thoughtful question'],
+  ['Nerd', 'loves details and fun facts, explains things simply'],
+  ['Gremlin', 'mischievous and silly, loves a running joke, never mean'],
+  ['Old soul', 'unhurried, thoughtful, a little poetic'],
+  ['Coach', 'direct and practical, keeps things moving'],
+  ['Artist', 'imaginative, notices colours and textures, pitches wild ideas'],
+  ['Plain', 'friendly and to the point']
+]
 const INTEREST_IDEAS = ['shaders', 'generative art', 'synths', 'pixel art', 'music', 'games', 'poetry',
   'sci-fi', 'robotics', 'typography', 'cooking', 'birding']
 
@@ -418,7 +431,7 @@ function mentionAlerts(store) {
       if (seen === null || !(r.id in seen) || !(r.mentions > seen[r.id]) || !lm || told[r.id] === lm.id) continue
       if (store.isShowing(r.id)) continue
       told[r.id] = lm.id
-      const title = cleanSnippet(lm.name, 32) + ' mentioned you in ' + cleanSnippet(r.name, 40)
+      const title = (lm.impostor ? 'Someone calling themselves ' : '') + cleanSnippet(lm.name, 32) + ' mentioned you in ' + cleanSnippet(r.name, 40)
       const snippet = cleanSnippet(lm.text, 60)
       P.toast('info', title + ': "' + snippet + '"')
       if (P.osNotify) P.osNotify({ title, body: snippet, onActivate: () => { store.setRoom(r.id); nav().set('room') } })
@@ -956,6 +969,9 @@ const CSS = TOKENS + `
 .h-chip{display:inline-flex;align-items:center;gap:4px;padding:1px 7px;border-radius:999px;font-size:11px;background:var(--h-raise);color:var(--h-fg2);border:1px solid transparent;white-space:nowrap}
 .h-chip[data-hit=true]{color:var(--h-fg);border-color:color-mix(in oklch,var(--h-accent) 55%,transparent);background:color-mix(in oklch,var(--h-accent) 14%,transparent)}
 .h-chip button{border:0;background:transparent;color:inherit;padding:0;cursor:pointer;line-height:1}
+.h-vibes .h-chip{font:inherit;font-size:12px;padding:3px 10px;cursor:pointer}
+.h-vibes .h-chip:hover{color:var(--h-fg);background:var(--h-hover)}
+.h-vibes .h-chip:focus-visible{outline:2px solid var(--h-accent);outline-offset:1px}
 .h-scroll{flex:1;min-height:96px;overflow-y:auto;overscroll-behavior:contain}
 .h-timeline{display:flex;flex-direction:column;padding:14px 18px 8px;gap:2px;max-width:860px;width:100%;margin:0 auto}
 .h-msg{display:grid;grid-template-columns:32px minmax(0,1fr);gap:0 10px;padding:3px 0}
@@ -1407,6 +1423,13 @@ function Field(props) {
     props.error && jsx('div', { className: 'h-hint h-err', id: props.id ? props.id + '-err' : undefined, role: 'alert', children: props.error }),
     props.hint && jsx('div', { className: 'h-hint', children: props.hint })
   ] })
+}
+
+// Vibe presets under the vibe field: each fills it in, and the one matching the field shows as picked.
+function VibePresets(props) {
+  return jsx('div', { className: 'h-chips h-vibes', role: 'group', 'aria-label': 'Vibe presets', children: VIBE_PRESETS.map(([label, vibe]) =>
+    jsx('button', { type: 'button', className: 'h-chip', 'data-hit': props.value.trim() === vibe, 'aria-pressed': props.value.trim() === vibe,
+      title: vibe, onClick: () => props.onPick(vibe), children: label }, label)) })
 }
 
 function Seg(props) {
@@ -3352,8 +3375,11 @@ function Onboarding(props) {
         placeholder: 'Ada', onChange: e => set({ agent_name: e.target.value }) }) })
     ] }),
     jsx(Field, { label: 'Its vibe, in one line', id: 'h-on-vibe', hint: 'This is the whole persona your agent brings into rooms, and it can repeat it there, so keep it free of anything private. It never sees your files or chats.',
-      children: jsx(K.Input, { id: 'h-on-vibe', value: form.vibe, maxLength: 200, placeholder: 'dry wit, loves color theory',
-        onChange: e => set({ vibe: e.target.value }) }) }),
+      children: jsxs('div', { className: 'h-col', style: { gap: 8 }, children: [
+        jsx(K.Input, { id: 'h-on-vibe', value: form.vibe, maxLength: 200, placeholder: 'dry wit, loves color theory',
+          onChange: e => set({ vibe: e.target.value }) }),
+        jsx(VibePresets, { value: form.vibe, onPick: vibe => set({ vibe }) })
+      ] }) }),
     jsx(Field, { label: 'Its face', children: jsxs('div', { className: 'h-col', style: { gap: 14 }, children: [
       jsx('div', { style: { maxWidth: 380 }, children: jsx(IdCard, { kind: 'agent', name: form.agent_name || 'Your agent', pk: agentPk, face: form.face,
         fields: [['Owner', form.display_name || 'You'], ['Status', 'New']] }) }),
@@ -3425,6 +3451,7 @@ function SettingsForm(props) {
         jsx(Field, { label: 'Name', id: 'h-s-agent', children: jsx(K.Input, { id: 'h-s-agent', value: form.agent_name, maxLength: 32, onChange: e => set({ agent_name: e.target.value }) }) }),
         jsx(Field, { label: 'Vibe', id: 'h-s-vibe', children: jsx(K.Input, { id: 'h-s-vibe', value: form.vibe, maxLength: 200, onChange: e => set({ vibe: e.target.value }) }) })
       ] }),
+      jsx(VibePresets, { value: form.vibe || '', onPick: vibe => set({ vibe }) }),
       jsx(Field, { label: 'Face', hint: 'Its card is what people see when they click its name.', children: jsxs('div', { className: 'h-col', style: { gap: 14 }, children: [
         jsx('div', { style: { maxWidth: 380 }, children: jsx(IdCard, { kind: 'agent', name: form.agent_name || 'Your agent', pk: agentPk, face: form.face,
           state: snap.me.agent.state, fields: [['Owner', form.display_name || 'You'],

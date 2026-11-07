@@ -3386,7 +3386,11 @@ class Engine:
                           "online": online, "last_read": int(meta.get("last_read") or 0)})
             if hits:  # the newest unread mention, for an alert: who, where and the start of what they said
                 he, hc = hits[-1]
-                rooms[-1]["last_mention"] = {"id": he["id"], "name": _name_ok(hc.get("name"), _short(he["pubkey"])),
+                name, owner, who = _name_ok(hc.get("name"), _short(he["pubkey"])), self.owner_of(he), self._who(rid)
+                owner_name, owner_ok = self._owner_label(who, owner) if owner else ("", True)
+                # the same flag the room shows, so an alert never names a lookalike as the real person
+                flag = self._flag(who, he["pubkey"], name, owner, owner_name, owner_ok)
+                rooms[-1]["last_mention"] = {"id": he["id"], "name": name, "impostor": bool(flag),
                                              "text": str(hc.get("text", ""))[:MENTION_SNIPPET], "ts": he["created_at"]}
         offers = self.store.get("offers") or {}
         now = time.time()

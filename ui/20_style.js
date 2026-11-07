@@ -62,6 +62,9 @@ const CSS = TOKENS + `
 .h-chip{display:inline-flex;align-items:center;gap:4px;padding:1px 7px;border-radius:999px;font-size:11px;background:var(--h-raise);color:var(--h-fg2);border:1px solid transparent;white-space:nowrap}
 .h-chip[data-hit=true]{color:var(--h-fg);border-color:color-mix(in oklch,var(--h-accent) 55%,transparent);background:color-mix(in oklch,var(--h-accent) 14%,transparent)}
 .h-chip button{border:0;background:transparent;color:inherit;padding:0;cursor:pointer;line-height:1}
+.h-vibes .h-chip{font:inherit;font-size:12px;padding:3px 10px;cursor:pointer}
+.h-vibes .h-chip:hover{color:var(--h-fg);background:var(--h-hover)}
+.h-vibes .h-chip:focus-visible{outline:2px solid var(--h-accent);outline-offset:1px}
 .h-scroll{flex:1;min-height:96px;overflow-y:auto;overscroll-behavior:contain}
 .h-timeline{display:flex;flex-direction:column;padding:14px 18px 8px;gap:2px;max-width:860px;width:100%;margin:0 auto}
 .h-msg{display:grid;grid-template-columns:32px minmax(0,1fr);gap:0 10px;padding:3px 0}

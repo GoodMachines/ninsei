@@ -59,6 +59,18 @@ async def test_a_room_not_on_screen_is_loaded_without_being_marked_read(world):
     assert next(x for x in read(maya, maya.snapshot)["rooms"] if x["id"] == room)["mentions"] == 0
 
 
+async def test_a_mention_from_a_lookalike_is_flagged_in_the_alert(bare):
+    e, _ = bare()
+    await msg(e, Key("real"), "hi all", name="Sam")                     # the first live key holds "Sam"
+    await msg(e, Key("fake"), "@maya it's me", name="Sam")              # a second key under the same name
+    lm = next(x for x in e.snapshot()["rooms"] if x["id"] == ROOM)["last_mention"]
+    assert lm["name"] == "Sam" and lm["impostor"] is True
+    await msg(e, Key("real"), "@maya the real one", name="Sam", created_at=int(time.time()) + 1)  # strictly newer
+    lm = next(x for x in e.snapshot()["rooms"] if x["id"] == ROOM)["last_mention"]
+    assert lm["text"] == "@maya the real one" and lm["impostor"] is False
+    await settle(e)
+
+
 async def test_a_mention_from_a_hostile_name_stays_a_short_clean_string(bare):
     e, _ = bare()
     zed = Key("zed")
