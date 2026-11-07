@@ -569,3 +569,11 @@ Out of scope, noticed:
 4. Reads paused during a cool (low): any disconnect waited out the cool before reconnecting. Now only a connect refused with 429/503 waits; other drops reconnect as usual.
 5. `relay_probe.py` crashed on an event whose `t` was a list, and printed control characters raw. `t` must be a string, non-printables become `?`.
 Each has a test (`test_relay_limits.py`, `test_game_secrecy.py`). Checked sound by the review: NIP-44 against the spec, sealed sizes, replay and forgery, claim tokens, decrypt cost, lucky scoring, agent turns, cooling scope, `_beat_soon`, `found`.
+
+## Overnight soak, 2026-11-07
+
+`scripts/soak.py --hours 8 --out <dir>`: two standalone engines (never onboarded, so no Commons) in a fresh random room over the five default relays, at `6585ec2`. One message every 5 min, alternating sender; B offline 5 min each hour and must catch up on restart.
+- 96 messages; 89 checked live, 89 delivered, 0 missed. Latency median 0.26 s, max 0.77 s.
+- 7 offline gaps; B had the missed message within 0.5 to 0.8 s of restarting each time.
+- Rate limits: damus once (23:43) and snort once (07:04); both cooled, resent, outbox 0 at the end, 0 rejections. About 520 accepted events per relay from A.
+- Same Mac, same IP for both installs, so it proves relay storage, resubscribe and backoff, not reachability from another network: that still needs a second person or machine (`scripts/relay_probe.py` from there).
