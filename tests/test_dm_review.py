@@ -369,3 +369,33 @@ async def test_a_relay_gets_at_most_three_logins_in_ten_minutes():
     await asyncio.gather(*pool._flush_tasks, return_exceptions=True)
     events, done = await pool.query_relay(url, [{"kinds": [1059]}], needs_auth=True)
     assert (events, done) == ([], False)                                         # paging waits out the pause too
+
+
+async def test_a_full_page_of_same_second_junk_is_not_mistaken_for_the_end(bare, monkeypatch):
+    """Security review of the paging: 400+ junk wraps all dated T come back whole for `until=T`. That page has nothing
+    new, which used to read as "the end" and let `since` move past every real wrap older than T."""
+    monkeypatch.setattr(eng, "DM_PACE_S", 0)
+    e, _ = bare()
+    JUNK_TO[0] = e._identity()["person_pk"]
+    k = Key("under-the-pile")
+    befriend(e, k)
+    now = int(time.time())
+    real = [wrap_to(e, k, f"real {i}") for i in range(5)]
+    stuck = min(w["created_at"] for w in real) + 1                                 # every real wrap is below it
+    e.pool = PagingPool([junk(i, stuck) for i in range(450)] + real)
+    await run_pass(e)
+    assert {m["text"] for m in e.store.dm_messages(k.ppk)} == {f"real {i}" for i in range(5)}
+    assert any(p.get("until") == stuck - 1 for p in e.pool.pages)                  # stepped below the stuck second
+    assert e._dm_reached == {e.pool.url: 1.0}                                     # an empty reply ended it
+
+    # the same pile with too few pages to get under it: not the end, so `since` stays
+    monkeypatch.setattr(eng, "DM_PAGES", 2)
+    f, _ = bare("Other")
+    JUNK_TO[0] = f._identity()["person_pk"]
+    f.store.set("dm_since_relays", {"wss://one.example": now - 100})
+    f.pool = PagingPool([junk(i, now - 10) for i in range(450)])
+    await run_pass(f)
+    assert f._dm_reached == {}
+    f._dm_repass_at = time.time()                                                  # (no second pass in this test)
+    f._dm_touch()
+    assert f.store.get("dm_since_relays") == {"wss://one.example": now - 100}

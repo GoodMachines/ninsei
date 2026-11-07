@@ -108,6 +108,7 @@ DM_QUEUE_MAX = 400         # gift wraps waiting to be opened; more than this are
 DM_HISTORY_LIMIT = 400     # gift wraps asked of one relay per page of history
 DM_PAGES = 10              # pages of history (going back with `until`) asked of one relay per pass
 DM_PAGE_TIMEOUT = 8.0      # seconds one page may take before the pass on that relay gives up (it is asked again later)
+DM_OPEN_WAIT = 30.0        # seconds a pass waits for a relay to connect and answer the live request
 DM_REPASS_GAP = 600        # seconds between history passes started by an overflow, a reconnect or a new friend
 DM_SELF_COPY_DELAY = (5, 90)  # seconds (scaled by timescale) before my own copy of a wrap goes out, chosen at random
 DM_FUTURE_SKEW = 600       # a message dated further ahead than this is dropped (it would claim to come after a yes)
@@ -968,7 +969,7 @@ class Engine:
             return max(0, int(since) - DM_SINCE_MARGIN)
         return None
 
-    async def _dm_pass(self, full: bool = False) -> None:
+    async def _dm_pass(self, full: bool = False, only: Optional[list] = None) -> None:
         """Read the gift wraps every relay holds for me, page by page (newest first, `until` moving back), down to
         that relay's `since` (or, `full`, as far as DM_PAGES go). A relay whose pages reached the end is marked
         reached; only then may `_dm_touch` move its `since`. Wraps wait for room in the queue rather than being
@@ -981,6 +982,8 @@ class Engine:
         started = {}
         try:
             urls = list(getattr(self.pool, "urls", []) or [])
+            if only is not None:
+                urls = [u for u in urls if u in only]
             got = await asyncio.gather(*(self._dm_pass_relay(u, None if full else self._dm_since(u)) for u in urls),
                                        return_exceptions=True)
             st = getattr(self.pool, "status", {}) or {}
@@ -1008,9 +1011,15 @@ class Engine:
             self._spawn(self._dm_pass())
 
     async def _dm_pass_relay(self, url: str, since: Optional[int]) -> bool:
-        """Page back through one relay. True when its history was read down to `since` (or to its end)."""
+        """Page back through one relay. True only when its history was read down to `since` (or to its end).
+
+        Only an empty reply is the end: a short page isn't (relays cap `limit` below what we ask), and neither is a
+        page with nothing new (a pile of junk wraps all dated the same second comes back whole for `until` = that
+        second). `until` is inclusive, so after a page that made progress the rest of its oldest second comes next;
+        after one that made none, `until` steps below that second. Running out of DM_PAGES is not the end, so that
+        relay's `since` stays where it was."""
         pk = self._identity()["person_pk"]
-        end = time.monotonic() + DM_PAGE_TIMEOUT
+        end = time.monotonic() + DM_OPEN_WAIT
         while not self.pool.eosed("dm", url):   # the live request is answered (a login, if wanted, is done)
             if time.monotonic() > end:
                 return False
@@ -1026,14 +1035,21 @@ class Engine:
             evs, done = await self.pool.query_relay(url, [flt], timeout=DM_PAGE_TIMEOUT, needs_auth=True)
             if not done:
                 return False
+            dates = [ev["created_at"] for ev in evs if isinstance(ev, dict) and isinstance(ev.get("created_at"), int)
+                     and not isinstance(ev.get("created_at"), bool)]
+            if not dates:
+                return True                   # an empty reply: nothing (more) down to `since`
             new = [ev for ev in evs if isinstance(ev, dict) and ev.get("id") not in ids]
-            if not new:
-                return True                   # nothing older than what we have: the end, or `since`
             for ev in new:
                 ids.add(ev.get("id"))
                 await self._dm_enqueue(ev, "history")
-            oldest = min(ev["created_at"] for ev in new if isinstance(ev.get("created_at"), int))
-            until = oldest if until is None or oldest < until else until - 1
+            oldest = min(dates)
+            if new and (until is None or oldest < until):
+                until = oldest
+            else:
+                until = (until if until is not None else oldest) - 1
+            if since is not None and until < since:
+                return True
         return False                          # pages ran out first: `since` stays where it was
 
     async def _resubscribe(self) -> None:
@@ -4229,9 +4245,17 @@ class Engine:
         moved = [u for u, at in self._dm_reached.items() if u not in st or st[u].retry_at != at]
         for u in moved:
             self._dm_reached.pop(u, None)
-        if (moved or self._dm_dropped) and not self._dm_passes and now - self._dm_repass_at >= DM_REPASS_GAP:
-            self._dm_repass_at = now
-            self._spawn(self._dm_pass())
+        if not self._dm_passes and now - self._dm_repass_at >= DM_REPASS_GAP:
+            if moved or self._dm_dropped:
+                self._dm_repass_at = now
+                self._spawn(self._dm_pass())
+            else:
+                # an open relay whose history no pass has read to the end (it came up late, or its pages ran out):
+                # ask it alone again
+                behind = [u for u, s in st.items() if u not in self._dm_reached and getattr(s, "state", "") == "open"]
+                if behind:
+                    self._dm_repass_at = now
+                    self._spawn(self._dm_pass(only=behind))
         if self._dm_dropped or self._dm_busy or self._dm_queue.qsize() or self._dm_passes or not self._dm_reached:
             return
         per = self.store.get("dm_since_relays")
