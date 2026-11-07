@@ -354,7 +354,7 @@ async def test_fold_rederives_reply_priority(bare):
 
 def test_skeleton_maps_lookalikes():
     assert skeleton("Mаya") == skeleton("Maya")            # Cyrillic а
-    assert skeleton("Ma​ya") == skeleton("Maya")       # zero-width space
+    assert skeleton("Ma\u200bya") == skeleton("Maya")       # zero-width space
     assert skeleton("ΜΑΥΑ") == skeleton("maya")             # Greek capitals
     assert skeleton("Ｍａｙａ") == skeleton("Maya")          # full width
     assert skeleton("Maya") != skeleton("Mara")
@@ -362,7 +362,7 @@ def test_skeleton_maps_lookalikes():
 
 async def test_homoglyph_name_is_flagged(bare):
     e, _ = bare()
-    for i, fake in enumerate(("Mаya", "Ma​ya", "MAYA")):
+    for i, fake in enumerate(("Mаya", "Ma\u200bya", "MAYA")):
         await e._on_event(Key(f"h{i}").person({"t": "msg", "name": fake, "text": f"hi {i}"}), "relay")
     flagged = [m for m in e.messages(ROOM) if m["text"].startswith("hi ")]
     assert len(flagged) == 3 and all(m.get("impostor") for m in flagged)

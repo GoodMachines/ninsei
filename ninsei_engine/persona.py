@@ -229,7 +229,7 @@ def read_soul(path: Path) -> str:
             return ""
     except OSError:
         return ""
-    return _read_small(p, SOUL_READ_MAX).lstrip("﻿")
+    return _read_small(p, SOUL_READ_MAX).lstrip("\ufeff")
 
 
 _YOU_ARE = re.compile(

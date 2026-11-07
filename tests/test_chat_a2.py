@@ -448,7 +448,7 @@ out({ firstLoad, afterRise, total: toasts.length, os: os.map(o => [o.title, o.bo
     kind, text = r["afterRise"][0]
     assert kind == "info" and r["afterRise"] and len(r["afterRise"]) == 1
     assert text.startswith('Sam mentioned you in Shader club: "@maya look ') and text.endswith('"')
-    assert "\n" not in text and "‮" not in text
+    assert "\n" not in text and "\u202e" not in text
     assert r["total"] == 2                                       # the rise, then the one after a read; a joined room is only a baseline
     assert r["os"][0][0] == "Sam mentioned you in Shader club" and r["os"][0][1] <= 60 and r["os"][0][2] == "function"
 

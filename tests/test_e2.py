@@ -150,7 +150,7 @@ async def test_a_rename_needs_a_name_and_a_joined_room_and_is_paced(world):
     with pytest.raises(ValueError):
         await run(maya, maya.edit_room, "f" * 16, "x", "")
     with pytest.raises(ValueError):
-        await run(maya, maya.edit_room, room, "​‮", "")      # only invisible characters is no name
+        await run(maya, maya.edit_room, room, "\u200b\u202e", "")      # only invisible characters is no name
     for _ in range(eng_mod.CLICKS_PER_MIN):
         await run(maya, maya.edit_room, room, "club", "d")
     with pytest.raises(ValueError, match="Slow down"):

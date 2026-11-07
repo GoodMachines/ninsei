@@ -115,7 +115,7 @@ def test_a_peers_shared_model_and_vibe_are_cleaned(tmp_path):
     owner_sk, agent_sk = nostr.new_secret(), nostr.new_secret()
     owner_pk, agent_pk = nostr.pubkey(owner_sk), nostr.pubkey(agent_sk)
     content = {"t": "presence", "name": "Bo", "state": "activity: idle", "at": time.time(),
-               "vibe": "v" * 500, "model": "evil<script>/m‮" + "x" * 100}
+               "vibe": "v" * 500, "model": "evil<script>/m\u202e" + "x" * 100}
     ev = nostr.build_event(agent_sk, eng_mod.KIND_LIVE, json.dumps(content),
                            [["h", room], ["owner", owner_pk, nostr.owner_binding(owner_sk, agent_pk)]])
     e.events[room] = {}
@@ -124,7 +124,7 @@ def test_a_peers_shared_model_and_vibe_are_cleaned(tmp_path):
     p = e.presence[room][agent_pk]
     assert len(p["vibe"]) == 200
     assert p["model"] == ("evilscript/m" + "x" * 100)[:60]
-    assert not re.search(r"[<>‮]", p["model"])
+    assert not re.search(r"[<>\u202e]", p["model"])
 
 
 async def test_profile_reads_the_lobby_copy_and_refuses_bad_keys(tmp_path):
