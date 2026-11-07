@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 
 from ninsei_engine import dm, nip44, nostr, store as store_mod
-from ninsei_engine.engine import DM_SEND_PER_MIN, KIND_ROOM, Engine
+from ninsei_engine.engine import COMMONS_ID, DM_SEND_PER_MIN, KIND_ROOM, Engine
 from local_relay import LocalRelay
 from test_engine import StubLLM, read, run, setup_room, wait_for, world  # noqa: F401  (fixture re-export)
 from test_hostile import FakePool, Key, ROOM, bare, settle  # noqa: F401  (fixture re-export)
@@ -967,7 +967,11 @@ async def test_a_friend_request_over_the_relay_shows_in_requests_with_no_words_a
     relay, engines, _ = world
     maya, sam = engines["Maya"], engines["Sam"]
     maya_pk, sam_pk = maya._identity()["person_pk"], sam._identity()["person_pk"]
-    # no shared room at all: Sam is a stranger, and can ask but not write
+    # no shared room at all: Sam is a stranger, and can ask but not write. Both installs join Commons on boot, and
+    # a room that shows Sam's name is exactly what lets a request carry it, so leave it first (leaving sticks).
+    for e in (maya, sam):
+        assert await wait_for(lambda e=e: COMMONS_ID in read(e, e.store.rooms))   # boot's join has finished
+        await run(e, e.leave_room, COMMONS_ID)
     with pytest.raises(ValueError, match="friends"):
         await run(sam, sam.dm_send, maya_pk, "hello from nowhere")
     await run(sam, sam.friend_request, maya_pk)
