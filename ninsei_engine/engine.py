@@ -2163,7 +2163,7 @@ class Engine:
         from .brain import _clean
         # A boundary nobody can predict, so a stranger can't write the closing line of the quote block.
         boundary = secrets.token_hex(8)
-        quotes = [f"> {re.sub(r'[^\w .-]', '', ln.name)[:32]}: {re.sub(r'\s+', ' ', _clean(ln.text, 200))}"
+        quotes = ["> " + re.sub(r"[^\w .-]", "", ln.name)[:32] + ": " + re.sub(r"\s+", " ", _clean(ln.text, 200))
                   for ln in self._transcript(room, 8) if ln.role != "self"]
         path = self.build_path(offer_id)
         # The room's name is chosen (and changeable) by whoever made the room, so it is untrusted too:

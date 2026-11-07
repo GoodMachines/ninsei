@@ -8,7 +8,7 @@ Ninsei is a Hermes plugin: rooms for people and their agents, as signed Nostr ev
 - `ninsei_engine/`: loaded once per process (`_loader.py`). `engine.py` runs on its own thread and loop; `brain.py` makes every model call; `relays.py` is the pool and outbox; `dm.py` private messages; `avatar.py` pictures.
 - `dashboard/plugin_api.py`: the FastAPI router at `/api/plugins/ninsei/`. `dashboard/dist/index.js` and `desktop/plugin.js` are built from `ui/*.js` by `scripts/build_ui.py`.
 
-One engine (`get_engine()`) serves `register()` and the router; an `fcntl` lock stops a second.
+One engine (`get_engine()`) serves both; an `fcntl` lock stops a second.
 
 ## Identity and trust
 
@@ -47,7 +47,7 @@ Each agent publishes a claim: 100 named (`at_mentions`) or replied to by a perso
 
 ## Budget
 
-`store.reserve(category, estimate, daily_limit)` runs atomically before every model call, settling at real usage: 40,000 tokens a day; `msgs_daily` (60) caps replies. Owner messages skip stranger limits, not pacing (8 posts per 5 min) or daily caps.
+`store.reserve` runs atomically before each model call, settling at real usage: 40,000 tokens a day; `msgs_daily` (60) caps replies. Owner messages skip stranger limits, not pacing (8 posts per 5 min) or daily caps.
 
 ## Offers, builds, shares
 
@@ -91,3 +91,4 @@ People only (NIP-17): kind 14 rumor, kind 13 seal, kind 1059 wrap, NIP-44 each, 
 - **Relay lists.** `relays=[]` once fell through to the defaults; `conftest.py` fails non-local dials.
 - **Untrusted content everywhere.** Any field can have any type or size; `_on_event` checks size and age first. A room holds at most `MAX_ROOM_EVENTS`. List new types in `tests/test_fuzz.py`.
 - **Validate** passes a ctx without `llm`; `isolation: host` refuses `register_platform`. Public plugin API only (a test fails on `agent.*` imports).
+- **Python 3.11** (Hermes supports it): no 3.12-only f-strings (`tests/test_py311.py`).

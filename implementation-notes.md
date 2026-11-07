@@ -809,3 +809,7 @@ Justin asked whether an existing Hermes profile can become the room agent instea
   - Use the imported profile's model. The room agent answers with the model of the profile Ninsei runs in; another model needs the `llm.model_override` capability, and spend follows the model.
   - Import memories, skills or tools. The room brain has none, by design.
   - Re-scan the text live while typing (needs either a client copy of the scan or a small POST route).
+
+## Python 3.11 (2026-11-07)
+
+Hermes declares `requires-python = ">=3.11,<3.15"`, but `engine.py` had a 3.12-only f-string (a backslash inside the braces, in the offer-build quote block), so Ninsei failed to import on a 3.11 Hermes. Justin's gateway runs the 3.12 `.venv`, which hid it. Fixed the line. The full suite passes under 3.11 (1097 passed, 5 skipped) in a throwaway venv with the same pinned packages. `tests/test_py311.py` walks every f-string with the 3.12 tokenizer and refuses what 3.11 can't parse (a backslash or comment in an expression, a nested string reusing the outer quote), since `ast.parse(feature_version=(3, 11))` does not catch these. It also compiles every file with a real 3.11 when one is found (`NINSEI_PY311`, `python3.11`, or Hermes's old `venv`).
