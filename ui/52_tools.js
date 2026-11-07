@@ -12,7 +12,9 @@ const LinkContext = createContext(null)
 function EmptyState(props) {
   const ref = useEnter(true)
   return jsxs('div', { className: cx('h-empty', props.compact && 'h-empty-s'), ref, children: [
-    props.icon && jsx(K.Icon, { name: props.icon, size: props.compact ? 16 : 22 }),
+    // Art is decorative (alt ''), so the title still says it all to a screen reader.
+    props.art ? jsx('img', { className: 'h-empty-art', src: props.art, alt: '', width: 240, height: 184, draggable: false })
+      : props.icon && jsx(K.Icon, { name: props.icon, size: props.compact ? 16 : 22 }),
     jsx('b', { children: props.title }),
     props.hint && jsx('div', { style: { maxWidth: 420 }, children: props.hint }),
     props.action && jsx('div', { className: 'h-actions', children: props.action })

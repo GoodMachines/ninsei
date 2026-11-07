@@ -179,7 +179,7 @@ button.h-link{background:none;border:0;padding:0;font:inherit;cursor:pointer;tex
 .h-qs-list{overflow-y:auto;overscroll-behavior:contain;padding:4px}.h-qs-none{padding:14px}
 .h-qs-opt{display:flex;align-items:center;gap:9px;min-width:0;padding:7px 10px;border-radius:8px;cursor:pointer}
 .h-qs-opt[aria-selected=true]{background:color-mix(in oklch,var(--h-accent) 18%,transparent)}
-.h-empty-s{padding:14px 10px;gap:6px;flex:none}
+.h-empty-s{padding:14px 10px;gap:6px;flex:none}.h-empty-art{display:block;width:240px;max-width:72%;height:auto;border-radius:12px;margin-bottom:4px;user-select:none}
 @media (pointer:coarse){.h-bar-btn{width:38px;height:36px}.h-bar{top:-20px}}
 .h-ac-opt .h-initial{width:22px;height:22px;font-size:11px}
 .h-ac-opt b{font-weight:600}
