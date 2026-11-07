@@ -14,9 +14,10 @@ These checks cannot promise that a decoder will not choke on a deliberately malf
 lossless-decoder bug is the reminder): that is why the Settings switch "Show profile pictures: Nobody" exists, and
 why a picture is only ever drawn through <img>, never inlined.
 
-`find_metadata` is for the sender's own side: the engine refuses to publish a picture that still carries EXIF,
-XMP, IPTC or text chunks, so a photo's GPS position never goes out even if a client skipped the
-re-encode the UI always does (a canvas redraw keeps pixels only).
+`find_metadata` is for the sender's own side: an allow-list, so the engine refuses to publish a picture that
+holds anything beyond the parts a plain picture needs (EXIF, XMP, IPTC, text, a private chunk, a second image),
+and a photo's GPS position never goes out even if a client skipped the re-encode the UI always does (a canvas
+redraw keeps pixels only).
 """
 from __future__ import annotations
 
@@ -26,7 +27,8 @@ import struct
 import zlib
 from typing import Optional
 
-MAX_BYTES = 48 * 1024        # decoded image bytes
+MAX_BYTES = 44_000           # decoded image bytes: the whole signed event (base64, JSON, tags, key and signature)
+                             # then stays under 60,000 bytes, below the 64 KB many relays refuse events over
 MAX_DIM = 512                # width and height, from the file's own header
 MAX_URI = 4 * ((MAX_BYTES + 2) // 3) + 40   # the longest legal data URI, so oversize is refused before decoding
 MIN_BYTES = 20
@@ -34,11 +36,13 @@ PREFIXES = {"data:image/webp;base64,": "image/webp", "data:image/jpeg;base64,": 
             "data:image/png;base64,": "image/png"}
 
 PNG_SIG = b"\x89PNG\r\n\x1a\n"
-# parts that carry metadata a photo can hold (EXIF with its GPS position, XMP, IPTC, text, a time), refused on
-# the sender's side
-_PNG_META = {b"eXIf", b"tEXt", b"iTXt", b"zTXt", b"tIME"}
-_WEBP_META = {b"EXIF", b"XMP "}
-_JPEG_META = {0xE1: "EXIF or XMP", 0xED: "IPTC", 0xFE: "a comment"}
+# What a picture I publish may hold, and nothing else (an allow-list: a deny-list of known metadata parts
+# missed a lowercase `exif`, a private chunk and an EXIF segment placed after the scan).
+_PNG_OK = {b"IHDR", b"PLTE", b"IDAT", b"IEND", b"tRNS", b"gAMA", b"cHRM", b"sRGB", b"iCCP", b"pHYs"}
+_WEBP_OK = {b"VP8 ", b"VP8L", b"VP8X", b"ALPH", b"ICCP"}
+_WEBP_FLAGGED = b"VP8X flags EXIF/XMP"   # pseudo-part: the VP8X header says an EXIF or XMP chunk is present
+_JPEG_OK = {0xE0, 0xE2}                  # APP0 JFIF and APP2 ICC profile (the table of markers a scan needs is not APPn)
+_JPEG_APP_ODD = 0x1000                   # pseudo-marker numbers: an APP0 that isn't JFIF, an APP2 that isn't an ICC profile
 
 
 def _png_dims(b: bytes) -> Optional[tuple[int, int, set]]:
@@ -86,11 +90,13 @@ def _webp_dims(b: bytes) -> Optional[tuple[int, int, set]]:
         typ = b[pos:pos + 4]
         (size,) = struct.unpack("<I", b[pos + 4:pos + 8])
         body = b[pos + 8:pos + 8 + size]
-        if len(body) != size or typ in (b"ANIM", b"ANMF"):
-            return None
+        if len(body) != size or typ in (b"ANIM", b"ANMF") or (typ in (b"VP8 ", b"VP8L") and image is not None):
+            return None   # animated, or a second image
         if not seen and typ == b"VP8X":
             if size < 10 or body[0] & 0x02:      # animation flag
                 return None
+            if body[0] & 0x0C:                   # EXIF and XMP flags
+                seen.add(_WEBP_FLAGGED)
             canvas = (int.from_bytes(body[4:7], "little") + 1, int.from_bytes(body[7:10], "little") + 1)
         elif typ == b"VP8 " and image is None:
             if size < 10 or body[3:6] != b"\x9d\x01\x2a" or body[0] & 1:   # start code; bit 0 clear = a key frame
@@ -114,35 +120,47 @@ _SOF = {0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 
 
 
 def _jpeg_dims(b: bytes) -> Optional[tuple[int, int, set]]:
-    """(width, height, marker numbers seen) of a JPEG: segments walked from SOI to the scan, a frame header
-    found on the way, and the end-of-image marker last."""
+    """(width, height, marker numbers seen) of a JPEG: every segment walked from SOI to the end-of-image marker
+    (the entropy-coded data of each scan skipped, so a progressive file's later scans are walked too), one frame
+    header, and the first end-of-image marker being the last two bytes: nothing, such as a second image, after it."""
     if len(b) < 4 or b[:3] != b"\xff\xd8\xff" or b[-2:] != b"\xff\xd9":
         return None
     pos, n, seen = 2, len(b), set()
     dims: Optional[tuple[int, int]] = None
-    while pos + 4 <= n:
+    scans = 0
+    while pos < n:
         if b[pos] != 0xFF:
             return None
-        marker = b[pos + 1]
-        if marker == 0xFF:                  # fill byte
+        while pos + 1 < n and b[pos + 1] == 0xFF:   # fill bytes
             pos += 1
-            continue
-        if marker == 0x00 or marker == 0xD8:
+        if pos + 1 >= n:
+            return None
+        marker = b[pos + 1]
+        if marker == 0xD9:                  # the end of the image: it must be the end of the file
+            return (dims[0], dims[1], seen) if dims and scans and pos + 2 == n else None
+        if marker in (0x00, 0x01, 0xD8) or 0xD0 <= marker <= 0xD7 or pos + 4 > n:
             return None
         (size,) = struct.unpack(">H", b[pos + 2:pos + 4])
         if size < 2 or pos + 2 + size > n:
             return None
+        body = b[pos + 4:pos + 2 + size]
         seen.add(marker)
+        if marker == 0xE0 and not body.startswith(b"JFIF\x00"):
+            seen.add(_JPEG_APP_ODD + marker)
+        if marker == 0xE2 and not body.startswith(b"ICC_PROFILE\x00"):
+            seen.add(_JPEG_APP_ODD + marker)
         if marker in _SOF:
-            if size < 8:
-                return None
-            if dims is not None:
+            if size < 8 or dims is not None:
                 return None
             h, w = struct.unpack(">HH", b[pos + 5:pos + 9])
             dims = (w, h)
-        if marker == 0xDA:                  # the scan: entropy-coded data follows, up to the end marker
-            return (dims[0], dims[1], seen) if dims else None
         pos += 2 + size
+        if marker == 0xDA:                  # entropy-coded data, up to the next real marker
+            scans += 1
+            while pos + 1 < n and not (b[pos] == 0xFF and b[pos + 1] not in (0x00, 0xFF) and not 0xD0 <= b[pos + 1] <= 0xD7):
+                pos += 1
+            if pos + 1 >= n:
+                return None
     return None
 
 
@@ -196,11 +214,14 @@ def find_metadata(data: bytes, mime: str) -> Optional[str]:
         return "not a picture Ninsei can read"
     parts = got[2]
     if mime == "image/jpeg":
-        for marker, name in _JPEG_META.items():
-            if marker in parts:
-                return name
+        names = {0xE1: "EXIF or XMP", 0xED: "IPTC", 0xFE: "a comment"}
+        for marker in sorted(parts):
+            if marker > 0xFF:
+                return "a part that isn't a JFIF header or a colour profile"
+            if (0xE0 <= marker <= 0xEF and marker not in _JPEG_OK) or marker == 0xFE:
+                return names.get(marker, "an extra application segment")
         return None
-    meta = _PNG_META if mime == "image/png" else _WEBP_META
-    for typ in sorted(parts & meta):
-        return typ.decode("ascii").strip()
+    allowed = _PNG_OK if mime == "image/png" else _WEBP_OK
+    for typ in sorted(parts - allowed, key=lambda t: (t == _WEBP_FLAGGED, t)):
+        return typ.decode("ascii", "replace").strip() or "an unknown part"
     return None

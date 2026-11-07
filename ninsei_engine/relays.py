@@ -443,8 +443,10 @@ class RelayPool:
             self.status[url].last_error = f"req failed: {e}"
 
     async def subscribe(self, sub_id: str, filters: list[dict], handler: EventHandler, *,
-                        resume: bool = True, needs_auth: bool = False) -> None:
-        sub = Subscription(sub_id, filters, handler, resume=resume, needs_auth=needs_auth)
+                        resume: bool = True, needs_auth: bool = False, dedupe: bool = True) -> None:
+        """`dedupe=False` hands every copy of an event to the handler, even one this pool has already seen (a
+        handler that can drop an event for its own reasons, and wants it again after a re-ask, needs this)."""
+        sub = Subscription(sub_id, filters, handler, resume=resume, needs_auth=needs_auth, dedupe=dedupe)
         old = self._subs.get(sub_id)
         if old:
             sub.newest = old.newest

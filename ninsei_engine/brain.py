@@ -319,20 +319,24 @@ class Brain:
                 out.append({"q": q[:240], "a": a[:80], "fake": fake[:80]})
         return out
 
-    async def fake(self, persona: dict, owner_name: str, question: str) -> str:
+    async def fake(self, persona: dict, owner_name: str, question: str, retry_ok=None) -> str:
         system = game_system(persona, owner_name) + (
             "\nThe game is Tall Tales, a bluffing game: write a FAKE answer to the question that sounds true, "
             "so people pick it over the real one. Match the length and style of a real short answer.")
         msgs = [{"role": "system", "content": system},
                 {"role": "user", "content": game_turn(question, "Your fake answer (1-6 words, no quotes):")}]
-        return await self._game_answer(msgs, "tales.fake", persona, FAKE_WORDS, clause=True)
+        return await self._game_answer(msgs, "tales.fake", persona, FAKE_WORDS, clause=True, retry_ok=retry_ok)
 
     async def _game_answer(self, msgs: list[dict], purpose: str, persona: dict, max_words: int,
-                           clause: bool = False) -> str:
+                           clause: bool = False, retry_ok=None) -> str:
         """One game answer. GAME_TOKENS leaves room for models that reason before they answer: at 30 tokens
         some spent the whole allowance thinking and returned nothing (Glimmer, live, 2026-11-07). An empty
-        reply gets one retry; a refusal or a paragraph does not."""
+        reply gets one retry; a refusal or a paragraph does not. `retry_ok()` is asked before the retry: a
+        stranger's game passes a check that counts it as a second call against the room's cap (and says no
+        when the cap is nearly used up), so empty replies can't double what a hostile host costs."""
         for attempt in (1, 2):
+            if attempt == 2 and retry_ok is not None and not retry_ok():
+                return ""
             raw = await self._complete("games", msgs, GAME_TOKENS, purpose)
             text = game_answer(_tidy(raw, persona.get("name", ""), one_line=True)[:200], max_words, clause)
             if text:
@@ -344,7 +348,7 @@ class Brain:
         return ""
 
     # --- Who's the Agent? -------------------------------------------------------------------------
-    async def human_answer(self, persona: dict, owner_name: str, prompt: str) -> str:
+    async def human_answer(self, persona: dict, owner_name: str, prompt: str, retry_ok=None) -> str:
         system = game_system(persona, owner_name) + (
             "\nThe game is Who's the Agent? Everyone in the room, people and AI agents, "
             "answers the same prompt, then the people guess which answers an agent wrote. Everyone knows "
@@ -355,7 +359,7 @@ class Brain:
             "details or anything private.")
         msgs = [{"role": "system", "content": system},
                 {"role": "user", "content": game_turn(prompt, "Your answer (under 12 words):")}]
-        return await self._game_answer(msgs, "who.answer", persona, HUMAN_WORDS)
+        return await self._game_answer(msgs, "who.answer", persona, HUMAN_WORDS, retry_ok=retry_ok)
 
     async def quip(self, persona: dict, owner_name: str, situation: str) -> str:
         text = await self._complete("games", [
