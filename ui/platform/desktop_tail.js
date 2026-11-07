@@ -160,31 +160,31 @@ function watchForPet(ctx, store) {
   }))
 }
 
-// The "Ninsei" theme: warm paper by day, dim lamplight by night. The hue is Ninsei's own default
-// agent colour (28, amber) pulled down to a calm, low-chroma family. Every text pair is
-// at least WCAG AA (4.5:1): checked with the SDK's contrastRatio formula, lowest pair 5.0:1 light
-// (primary on card) and 7.1:1 dark.
+// The "Ninsei" theme, Black Ice: void black and ice chrome at night, frost by day. Red is the only
+// colour and it means "you": the focus ring and the composer ring. Every text pair is at least
+// WCAG AA (4.5:1), checked with the SDK's contrastRatio formula: lowest 6.5:1 light (white on
+// destructive) and 6.9:1 dark (muted text on muted); the red ring is 4.3:1 or more on every surface.
 const NINSEI_THEME = {
   name: 'ninsei',
   label: 'Ninsei',
-  description: 'Warm, calm and low-contrast: paper and lamplight',
+  description: 'Black Ice: void black and ice chrome, one red signal',
   colors: {
-    background: '#f6efe4', foreground: '#3a2f27', card: '#efe6d8', cardForeground: '#3a2f27',
-    muted: '#e9dfcf', mutedForeground: '#66564a', popover: '#f1e9dc', popoverForeground: '#3a2f27',
-    primary: '#9a4a1f', primaryForeground: '#ffffff', secondary: '#e4d6c0', secondaryForeground: '#3a2f27',
-    accent: '#ead9c0', accentForeground: '#3a2f27', border: '#cdbfae', input: '#d9cbb8', ring: '#9a4a1f',
-    midground: '#9a4a1f', midgroundForeground: '#ffffff', composerRing: '#9a4a1f',
-    destructive: '#a8372a', destructiveForeground: '#ffffff',
-    sidebarBackground: '#efe6d8', sidebarBorder: '#d9cbb8', userBubble: '#e8d5b9', userBubbleBorder: '#cdbfae'
+    background: '#eef5f8', foreground: '#0b1116', card: '#e3edf2', cardForeground: '#0b1116',
+    muted: '#d9e6ed', mutedForeground: '#3c505d', popover: '#f4f9fb', popoverForeground: '#0b1116',
+    primary: '#2b3d49', primaryForeground: '#eef5f8', secondary: '#d2e1e9', secondaryForeground: '#0b1116',
+    accent: '#cddde6', accentForeground: '#0b1116', border: '#b6cad5', input: '#c4d6df', ring: '#d42a1f',
+    midground: '#2b3d49', midgroundForeground: '#eef5f8', composerRing: '#d42a1f',
+    destructive: '#b3261e', destructiveForeground: '#ffffff',
+    sidebarBackground: '#e3edf2', sidebarBorder: '#c4d6df', userBubble: '#d6e5ed', userBubbleBorder: '#b6cad5'
   },
   darkColors: {
-    background: '#1f1a17', foreground: '#e8ddcf', card: '#26201c', cardForeground: '#e8ddcf',
-    muted: '#2d2621', mutedForeground: '#bfb1a0', popover: '#2a231f', popoverForeground: '#e8ddcf',
-    primary: '#e3a06c', primaryForeground: '#241a12', secondary: '#3a2f27', secondaryForeground: '#e8ddcf',
-    accent: '#40322a', accentForeground: '#f0e4d4', border: '#4a3f37', input: '#3a2f27', ring: '#e3a06c',
-    midground: '#e3a06c', midgroundForeground: '#241a12', composerRing: '#e3a06c',
-    destructive: '#e8907f', destructiveForeground: '#2a1411',
-    sidebarBackground: '#1a1613', sidebarBorder: '#3a2f27', userBubble: '#3a2c22', userBubbleBorder: '#4a3f37'
+    background: '#070a0e', foreground: '#dbe9f0', card: '#0c1218', cardForeground: '#dbe9f0',
+    muted: '#111a22', mutedForeground: '#8ea5b3', popover: '#0d141a', popoverForeground: '#dbe9f0',
+    primary: '#a9cde0', primaryForeground: '#05070a', secondary: '#16222b', secondaryForeground: '#dbe9f0',
+    accent: '#172530', accentForeground: '#eef5f8', border: '#1f2d38', input: '#1a2731', ring: '#ff3b30',
+    midground: '#7fa6ba', midgroundForeground: '#05070a', composerRing: '#ff3b30',
+    destructive: '#ff6b61', destructiveForeground: '#05070a',
+    sidebarBackground: '#05070a', sidebarBorder: '#16222b', userBubble: '#122029', userBubbleBorder: '#22333f'
   }
 }
 
@@ -248,7 +248,7 @@ export default {
 
     ctx.registerMany([
       { id: 'page', area: sdk.ROUTES_AREA, data: { path: '/ninsei' }, render: () => jsx(App, { store }) },
-      { id: 'nav', area: sdk.SIDEBAR_NAV_AREA, data: { path: '/ninsei', label: 'Ninsei', codicon: 'home' } },
+      { id: 'nav', area: sdk.SIDEBAR_NAV_AREA, data: { path: '/ninsei', label: 'Ninsei', codicon: 'radio-tower' } },
       // docks into the Sessions zone as a tab (Sessions | Bots | Ninsei), shown or hidden like Bots, never closed
       { id: 'tab', area: sdk.PANES_AREA || 'panes', title: 'Ninsei', render: () => jsx(SideTab, { store, onOpen: show }),
         data: { placement: 'left', width: '260px', collapsible: true, hideOnly: true, tabTitleText: () => 'Ninsei',
@@ -271,9 +271,9 @@ export default {
     // A theme for the picker. Registering lists it; it is never selected for the user.
     if (sdk.THEMES_AREA) ctx.register({ id: 'theme-ninsei', area: sdk.THEMES_AREA, data: NINSEI_THEME })
 
-    const page = { id: 'settings', title: 'Ninsei', icon: 'home', render: () => jsx(Settings, { store }) }
+    const page = { id: 'settings', title: 'Ninsei', icon: 'radio-tower', render: () => jsx(Settings, { store }) }
     if (typeof ctx.registerSettingsPage === 'function') ctx.registerSettingsPage(page)
-    else if (sdk.SETTINGS_PLUGINS_AREA) ctx.register({ id: 'settings', area: sdk.SETTINGS_PLUGINS_AREA, title: 'Ninsei', render: page.render, data: { icon: 'home' } })
+    else if (sdk.SETTINGS_PLUGINS_AREA) ctx.register({ id: 'settings', area: sdk.SETTINGS_PLUGINS_AREA, title: 'Ninsei', render: page.render, data: { icon: 'radio-tower' } })
 
     watchForPet(ctx, store)
   }

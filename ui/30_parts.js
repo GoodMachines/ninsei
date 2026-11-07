@@ -11,6 +11,16 @@ function Field(props) {
   ] })
 }
 
+// The wordmark: "Ninsei" in DotGothic16, as outlines (no font file to load, nothing fetched). The glyphs are
+// taken from DotGothic16 (SIL Open Font License 1.1, see docs/fonts/DotGothic16-OFL.txt) by
+// scripts/wordmark_path.py. It takes the text colour, so it follows the host theme.
+const WORDMARK_PATH = 'M28 373H102V496H163V620H225V743H287V867H349V991H400V373H472V1188H400V1125H338V1001H276V878H214V754H153V631H102V1188H28ZM713 434H786V569H713ZM713 620H786V1188H713ZM1028 620H1102V682H1153V620H1349V682H1410V743H1472V1188H1400V754H1338V692H1163V754H1102V1188H1028ZM1528 991H1602V1114H1900V940H1591V878H1528V682H1591V620H1910V682H1972V816H1900V692H1602V867H1910V929H1972V1125H1910V1188H1591V1125H1528ZM2091 1063H2028V743H2091V682H2153V620H2349V682H2410V743H2472V940H2102V1053H2163V1114H2338V1053H2400V991H2472V1063H2410V1125H2349V1188H2153V1125H2091ZM2400 867V754H2338V692H2163V754H2102V867ZM2713 434H2786V569H2713ZM2713 620H2786V1188H2713Z'
+function Wordmark(props) {
+  const h = props.height || 14
+  return jsx('svg', { className: 'h-wordmark', role: 'img', 'aria-label': 'Ninsei', viewBox: '0 360 2800 840', height: h, width: h * 2800 / 840,
+    fill: 'currentColor', children: jsx('path', { d: WORDMARK_PATH }) })
+}
+
 // Vibe presets under the vibe field: each fills it in, and the one matching the field shows as picked.
 function VibePresets(props) {
   return jsx('div', { className: 'h-chips h-vibes', role: 'group', 'aria-label': 'Vibe presets', children: VIBE_PRESETS.map(([label, vibe]) =>

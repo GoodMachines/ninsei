@@ -48,7 +48,7 @@ const CSS = TOKENS + `
 
 /* left rail */
 .h-brand{display:flex;align-items:flex-start;gap:8px;padding:0 6px 12px}.h-brand>:first-child,.h-brand>:last-child{margin-top:4px}
-.h-brand b{font-size:14px;letter-spacing:.01em}
+.h-wordmark{display:block;margin:2px 0 4px;flex:none}
 .h-nav{display:flex;flex-direction:column;gap:1px;margin-bottom:14px}
 .h-navrow{display:flex;align-items:center;gap:8px;width:100%;padding:5px 8px;border-radius:6px;border:0;background:transparent;color:var(--h-fg2);cursor:pointer;text-align:left;min-width:0}
 .h-navrow:hover{background:var(--h-hover);color:var(--h-fg)}

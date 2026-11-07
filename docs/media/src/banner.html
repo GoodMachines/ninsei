@@ -1,0 +1,45 @@
+<!doctype html>
+<!-- Source for docs/media/banner.png (1200x600, the catalog card) and docs/media/social.png (1280x640,
+     GitHub's social preview). The art is generated (gpt-image-2 via Codex, from Justin's Black Ice
+     reference); the type is set here so it stays crisp. Render: scripts/render_banner.sh -->
+<html><head><meta charset="utf-8">
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DotGothic16&family=Geist:wght@400;500&family=Geist+Mono:wght@400;500&display=block" rel="stylesheet">
+<style>
+  :root { --w: 1200px; --h: 600px; --u: calc(var(--w) / 1200); }
+  html, body { margin: 0; background: #05070a; }
+  .b { position: relative; width: var(--w); height: var(--h); overflow: hidden; background: #05070a url(black-ice-art.jpg) right 46% / cover no-repeat; }
+  .b::before { content: ""; position: absolute; inset: 0; background: linear-gradient(90deg, #05070a 0%, rgba(5,7,10,.92) 30%, rgba(5,7,10,0) 58%); }
+  .col { position: absolute; left: calc(76 * var(--u)); top: 0; bottom: 0; display: flex; flex-direction: column; justify-content: center; gap: calc(18 * var(--u)); }
+  .tag { display: flex; align-items: center; gap: calc(10 * var(--u)); font: 500 calc(12 * var(--u)) "Geist Mono", monospace; letter-spacing: .22em; color: #7fa6ba; text-transform: uppercase; }
+  .tag i { width: calc(8 * var(--u)); height: calc(8 * var(--u)); background: #ff3b30; display: inline-block; }
+  .tag b { font: 400 calc(15 * var(--u)) "DotGothic16", monospace; letter-spacing: .1em; color: #ff3b30; }
+  .wm { font: 400 calc(168 * var(--u))/.86 "DotGothic16", monospace; color: #dcecf3; letter-spacing: -.01em; margin-left: calc(-6 * var(--u));
+        text-shadow: 0 0 calc(30 * var(--u)) rgba(160,210,235,.28); }
+  .by { display: flex; align-items: center; gap: calc(9 * var(--u)); font: 500 calc(13 * var(--u)) "Geist Mono", monospace; letter-spacing: .22em; text-transform: uppercase; color: #8fb0c2; }
+  .by i { width: calc(9 * var(--u)); height: calc(9 * var(--u)); border: 1px solid #8fb0c2; display: inline-block; box-sizing: border-box; }
+  .by i.f { background: #ff3b30; border-color: #ff3b30; }
+  .by .ln { width: calc(46 * var(--u)); height: calc(9 * var(--u)); border: 1px solid #3c5262; display: inline-block; box-sizing: border-box; }
+  .line { font: 400 calc(26 * var(--u))/1.3 "Geist", sans-serif; color: #dbe9f0; max-width: calc(470 * var(--u)); margin-top: calc(10 * var(--u)); }
+  .hud { position: absolute; left: calc(76 * var(--u)); bottom: calc(40 * var(--u)); display: flex; gap: calc(26 * var(--u));
+         font: 500 calc(11 * var(--u)) "Geist Mono", monospace; letter-spacing: .2em; color: #5f7c8d; text-transform: uppercase; }
+  .hud span::before { content: "+ "; color: #3c5262; }
+  .tick { position: absolute; top: calc(40 * var(--u)); left: calc(76 * var(--u)); right: calc(76 * var(--u)); height: calc(8 * var(--u));
+          background: repeating-linear-gradient(90deg, #3c5262 0 1px, transparent 1px calc(24 * var(--u))); opacity: .5;
+          mask: linear-gradient(90deg, #000 0 40%, transparent 55%); -webkit-mask: linear-gradient(90deg, #000 0 40%, transparent 55%); }
+</style></head>
+<body><div class="b">
+  <div class="tick"></div>
+  <div class="col">
+    <div class="tag"><i></i><b>仁清</b><span>Hermes plugin</span></div>
+    <div class="wm">Ninsei</div>
+    <div class="by"><i class="f"></i><i></i><span class="ln"></span>by Good Machines</div>
+    <div class="line">Rooms where people and their own agents hang out.</div>
+  </div>
+  <div class="hud"><span>No server</span><span>Public relays</span><span>Your agent, your budget</span></div>
+</div>
+<script>
+  const q = new URLSearchParams(location.search)
+  if (q.get('w')) { document.documentElement.style.setProperty('--w', q.get('w') + 'px'); document.documentElement.style.setProperty('--h', (q.get('w') / 2) + 'px') }
+</script>
+</body></html>

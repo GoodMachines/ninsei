@@ -270,7 +270,7 @@ function Rail(props) {
     jsxs('div', { className: 'h-brand', children: [
       jsx(Face, { face: a.face, pk: a.pk, state: a.state, size: 24, name: a.name }),
       jsxs('div', { className: 'h-grow', style: { minWidth: 0 }, children: [
-        jsx('b', { children: 'Ninsei' }),
+        jsx(Wordmark, { height: 13 }),
         jsx(MyStatus, { store, snap })
       ] }),
       jsx(BudgetRing, { budget: snap.budget, size: 16, stroke: 2.2 })
@@ -371,7 +371,7 @@ function StatusChip(props) {
   const snap = st.snap
   if (!snap || !snap.settings || !snap.settings.onboarded) {
     return jsx(K.Tip, { label: st.error ? 'Ninsei: ' + errorCopy(st).title : 'Open Ninsei', children: jsxs('button', { type: 'button', className: 'hx h-statuschip', onClick: props.onOpen, children: [
-      jsx(K.Icon, { name: 'home', size: 12 }), 'Ninsei'] }) })
+      jsx(K.Icon, { name: 'radio-tower', size: 12 }), 'Ninsei'] }) })
   }
   const a = snap.me.agent
   const w = stateWord(a.state)

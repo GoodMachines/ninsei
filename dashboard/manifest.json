@@ -1,2 +1,2 @@
-{"name": "ninsei", "label": "Ninsei", "icon": "Heart", "version": "0.1.0",
+{"name": "ninsei", "label": "Ninsei", "icon": "Zap", "version": "0.1.0",
  "tab": {"path": "/ninsei", "position": "end"}, "entry": "dist/index.js", "api": "plugin_api.py"}

@@ -1524,7 +1524,7 @@ const CSS = TOKENS + `
 
 /* left rail */
 .h-brand{display:flex;align-items:flex-start;gap:8px;padding:0 6px 12px}.h-brand>:first-child,.h-brand>:last-child{margin-top:4px}
-.h-brand b{font-size:14px;letter-spacing:.01em}
+.h-wordmark{display:block;margin:2px 0 4px;flex:none}
 .h-nav{display:flex;flex-direction:column;gap:1px;margin-bottom:14px}
 .h-navrow{display:flex;align-items:center;gap:8px;width:100%;padding:5px 8px;border-radius:6px;border:0;background:transparent;color:var(--h-fg2);cursor:pointer;text-align:left;min-width:0}
 .h-navrow:hover{background:var(--h-hover);color:var(--h-fg)}
@@ -2073,6 +2073,16 @@ function Field(props) {
     props.error && jsx('div', { className: 'h-hint h-err', id: props.id ? props.id + '-err' : undefined, role: 'alert', children: props.error }),
     props.hint && jsx('div', { className: 'h-hint', children: props.hint })
   ] })
+}
+
+// The wordmark: "Ninsei" in DotGothic16, as outlines (no font file to load, nothing fetched). The glyphs are
+// taken from DotGothic16 (SIL Open Font License 1.1, see docs/fonts/DotGothic16-OFL.txt) by
+// scripts/wordmark_path.py. It takes the text colour, so it follows the host theme.
+const WORDMARK_PATH = 'M28 373H102V496H163V620H225V743H287V867H349V991H400V373H472V1188H400V1125H338V1001H276V878H214V754H153V631H102V1188H28ZM713 434H786V569H713ZM713 620H786V1188H713ZM1028 620H1102V682H1153V620H1349V682H1410V743H1472V1188H1400V754H1338V692H1163V754H1102V1188H1028ZM1528 991H1602V1114H1900V940H1591V878H1528V682H1591V620H1910V682H1972V816H1900V692H1602V867H1910V929H1972V1125H1910V1188H1591V1125H1528ZM2091 1063H2028V743H2091V682H2153V620H2349V682H2410V743H2472V940H2102V1053H2163V1114H2338V1053H2400V991H2472V1063H2410V1125H2349V1188H2153V1125H2091ZM2400 867V754H2338V692H2163V754H2102V867ZM2713 434H2786V569H2713ZM2713 620H2786V1188H2713Z'
+function Wordmark(props) {
+  const h = props.height || 14
+  return jsx('svg', { className: 'h-wordmark', role: 'img', 'aria-label': 'Ninsei', viewBox: '0 360 2800 840', height: h, width: h * 2800 / 840,
+    fill: 'currentColor', children: jsx('path', { d: WORDMARK_PATH }) })
 }
 
 // Vibe presets under the vibe field: each fills it in, and the one matching the field shows as picked.
@@ -7194,7 +7204,7 @@ function cardPost(refresh) {
 }
 
 function CardChip(props) {
-  return jsxs('span', { className: 'hx h-chip h-cardchip', role: 'note', children: [jsx(K.Icon, { name: 'home', size: 12 }), props.children || 'Ninsei: not found'] })
+  return jsxs('span', { className: 'hx h-chip h-cardchip', role: 'note', children: [jsx(K.Icon, { name: 'radio-tower', size: 12 }), props.children || 'Ninsei: not found'] })
 }
 
 // ---- offer ------------------------------------------------------------------------------------
@@ -7785,7 +7795,7 @@ function Rail(props) {
     jsxs('div', { className: 'h-brand', children: [
       jsx(Face, { face: a.face, pk: a.pk, state: a.state, size: 24, name: a.name }),
       jsxs('div', { className: 'h-grow', style: { minWidth: 0 }, children: [
-        jsx('b', { children: 'Ninsei' }),
+        jsx(Wordmark, { height: 13 }),
         jsx(MyStatus, { store, snap })
       ] }),
       jsx(BudgetRing, { budget: snap.budget, size: 16, stroke: 2.2 })
@@ -7886,7 +7896,7 @@ function StatusChip(props) {
   const snap = st.snap
   if (!snap || !snap.settings || !snap.settings.onboarded) {
     return jsx(K.Tip, { label: st.error ? 'Ninsei: ' + errorCopy(st).title : 'Open Ninsei', children: jsxs('button', { type: 'button', className: 'hx h-statuschip', onClick: props.onOpen, children: [
-      jsx(K.Icon, { name: 'home', size: 12 }), 'Ninsei'] }) })
+      jsx(K.Icon, { name: 'radio-tower', size: 12 }), 'Ninsei'] }) })
   }
   const a = snap.me.agent
   const w = stateWord(a.state)
@@ -7980,7 +7990,7 @@ function StatusChip(props) {
     organization: 'M5.5 6.5a2 2 0 1 0 0-4 2 2 0 0 0 0 4zM2 13c0-2.2 1.6-4 3.5-4S9 10.8 9 13M11 7a1.7 1.7 0 1 0 0-3.4A1.7 1.7 0 0 0 11 7zM10.5 9c1.9 0 3.5 1.6 3.5 4',
     'sign-out': 'M6 2.5H3v11h3M10 5l3 3-3 3M13 8H6',
     clock: 'M8 1.8a6.2 6.2 0 1 0 0 12.4A6.2 6.2 0 0 0 8 1.8zM8 4.5V8l2.3 1.5',
-    home: 'M2.5 7.5L8 2.5l5.5 5M4 6.5v7h8v-7M6.8 13.5V10h2.4v3.5',
+    'radio-tower': 'M8 8v6M6 14h4M8 6.6v.1M5.5 4.1a3.5 3.5 0 0 0 0 5M10.5 4.1a3.5 3.5 0 0 1 0 5M3.6 2.3a6 6 0 0 0 0 8.6M12.4 2.3a6 6 0 0 1 0 8.6',
     close: 'M4 4l8 8M12 4l-8 8',
     sparkle: 'M8 2.5l1.3 3.7 3.7 1.3-3.7 1.3L8 12.5l-1.3-3.7L3 7.5l3.7-1.3z',
     'eye-closed': 'M2 8c1.6-2.6 3.6-4 6-4s4.4 1.4 6 4c-1.6 2.6-3.6 4-6 4S3.6 10.6 2 8zM3 13L13 3',

@@ -61,7 +61,7 @@ function cardPost(refresh) {
 }
 
 function CardChip(props) {
-  return jsxs('span', { className: 'hx h-chip h-cardchip', role: 'note', children: [jsx(K.Icon, { name: 'home', size: 12 }), props.children || 'Ninsei: not found'] })
+  return jsxs('span', { className: 'hx h-chip h-cardchip', role: 'note', children: [jsx(K.Icon, { name: 'radio-tower', size: 12 }), props.children || 'Ninsei: not found'] })
 }
 
 // ---- offer ------------------------------------------------------------------------------------
