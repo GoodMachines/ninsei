@@ -272,7 +272,12 @@ function JoinDialog(props) {
   const [busy, setBusy] = useState(false)
   const join = async () => {
     setBusy(true)
-    try { const meta = await props.store.post('/rooms/join', { room: code.trim() }); props.onDone(meta.id) } catch (_) { setBusy(false) }
+    try {
+      const meta = await props.store.post('/rooms/join', { room: code.trim() })
+      // a code names a room, not where it lives: nothing on my relays means a typo or different relays
+      if (meta.found === false) P.toast('info', 'Nothing here yet on your relays. Check the code, or ask whoever shared it which relays they use (Settings, Relays).')
+      props.onDone(meta.id)
+    } catch (_) { setBusy(false) }
   }
   return jsx(Modal, { open: true, onClose: props.onClose, title: 'Join by code', description: 'Paste a code like ninsei:203f22bcfd1b4b2f.',
     footer: [

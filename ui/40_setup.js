@@ -2,6 +2,12 @@
 // onboarding (first run) and settings (Desktop: Settings > Plugins > Ninsei; dashboard: a view)
 // ---------------------------------------------------------------------------------------------
 
+// A relay that said "slow down" gets nothing from us for a while; say so, and when it comes back.
+function relayNote(r) {
+  if (r.resting_s > 0) return 'Resting: it asked us to slow down. Back in ' + (r.resting_s < 90 ? r.resting_s + ' s' : Math.ceil(r.resting_s / 60) + ' min')
+  return r.error ? r.error : r.state + ' · ' + r.ok + ' ok'
+}
+
 // A whole number typed into a limit field, or null when it is empty or not a number (never a silent 0).
 function parseCount(v) {
   const t = String(v == null ? '' : v).trim()
@@ -187,9 +193,9 @@ function SettingsForm(props) {
       jsx('div', { className: 'h-sec', children: 'Relays' }),
       offlineNow && jsx(Notice, { icon: 'warning', role: 'status', children: 'Offline: no relays set. Nothing you or your agent say leaves this machine, and messages wait as not delivered. Add a relay below to go back online.' }),
       jsx('div', { className: 'h-col', style: { gap: 0 }, children: (snap.relays || []).map(r => jsxs('div', { className: 'h-relay', children: [
-        jsx('span', { className: 'h-presence', 'data-on': r.state === 'open' && !r.error }),
+        jsx('span', { className: 'h-presence', 'data-on': r.state === 'open' && !r.error && !r.resting_s }),
         jsx('span', { className: 'h-grow h-trunc', children: r.url }),
-        jsx('span', { className: 'h-faint h-small h-trunc', style: { maxWidth: 260 }, title: r.error || '', children: r.error ? r.error : r.state + ' · ' + r.ok + ' ok' })
+        jsx('span', { className: 'h-faint h-small h-trunc', style: { maxWidth: 260 }, title: r.error || '', children: relayNote(r) })
       ] }, r.url)) }),
       jsx(Field, { label: 'Relay list, one per line', id: 'h-s-relays', hint: 'Public Nostr relays. Ninsei writes to all of them and reads from all of them. Messages on public relays are public and effectively permanent.',
         children: jsx('textarea', { id: 'h-s-relays', className: 'h-ta', rows: 5, value: form.relays, spellCheck: false, onChange: e => set({ relays: e.target.value }) }) }),

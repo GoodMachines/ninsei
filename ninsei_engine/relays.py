@@ -10,6 +10,7 @@ import asyncio
 import json
 import logging
 import random
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Awaitable, Callable, Optional
@@ -38,6 +39,17 @@ BACKOFF_MAX_S = 30.0
 HEALTHY_AFTER_S = 30.0      # ... and resets only after a connection stayed this long, or delivered an EVENT/EOSE
 TRAFFIC_MIN_S = 5.0         # and stayed at least this long (an EOSE then a close is the same hot loop as no reply)
 SYNTH = "ninsei:"            # prefix on locally made (not relay-sent) OK results
+COOL_BASE_S = 60.0          # a relay that says we're over its rate limit gets no events from us for this long,
+COOL_MAX_S = 30 * 60.0      # doubling up to this while it keeps saying so. Reads go on.
+# NIP-01 asks for "rate-limited:"; damus answers "banned: too many rate-limit violations, try again later".
+# Sending on through either keeps a per-IP ban alive for every install behind that IP, so we wait instead.
+_BUSY_STATUS = re.compile(r"HTTP (?:429|503)\b")
+_TRANSIENT = re.compile(r"^\s*rate-limited\b|rate[\s-]*limit|slow\s*down|try again later", re.I)
+
+
+def transient(reason: str) -> bool:
+    """A refusal that means "not now" rather than "never": the event is retried, never marked failed."""
+    return bool(_TRANSIENT.search(reason or ""))
 
 
 def _ephemeral(ev: dict) -> bool:
@@ -70,18 +82,24 @@ class RelayStatus:
     rejected: int = 0
     last_reject: str = ""
     backoff: float = 0.0   # seconds the next reconnect waits (before jitter)
+    rate_limited: int = 0  # times this relay told us to slow down
 
 
 class RelayPool:
     def __init__(self, urls: list[str], *, max_seen: int = 20000, outbox=None,
                  outbox_max: int = OUTBOX_MAX, outbox_ttl: float = OUTBOX_TTL_S,
                  backoff_base: float = BACKOFF_BASE_S, backoff_max: float = BACKOFF_MAX_S,
-                 healthy_after: float = HEALTHY_AFTER_S, traffic_min: float = TRAFFIC_MIN_S):
+                 healthy_after: float = HEALTHY_AFTER_S, traffic_min: float = TRAFFIC_MIN_S,
+                 cool_base: float = COOL_BASE_S, cool_max: float = COOL_MAX_S):
         """`outbox` is an optional Store; with it, unacknowledged events survive a restart."""
         self._backoff_base = backoff_base
         self._backoff_max = backoff_max
         self._healthy_after = healthy_after
         self._traffic_min = traffic_min
+        self._cool_base = cool_base
+        self._cool_max = cool_max
+        self._cool_until: dict[str, float] = {}   # url -> monotonic time it may get events again
+        self._cool_step: dict[str, int] = {}
         self._got_traffic: dict[str, bool] = {}
         self.urls = list(dict.fromkeys(u.strip() for u in urls if u.strip()))
         self.status = {u: RelayStatus(u) for u in self.urls}
@@ -172,6 +190,8 @@ class RelayPool:
                 raise
             except Exception as e:  # network errors are normal: back off and retry
                 st.last_error = type(e).__name__ + (f": {e}" if str(e) else "")
+                if _BUSY_STATUS.search(str(e)):
+                    self._cool(url)   # "too many requests" / "unavailable" at the door: wait as for a rate limit
             finally:
                 self._ws.pop(url, None)
                 for fut in self._pending_ok.pop(url, {}).values():
@@ -185,8 +205,8 @@ class RelayPool:
                 # a connection that worked: reconnect promptly. Traffic alone isn't enough: a relay that
                 # answers EOSE and drops the socket at once would reset the delay on every round.
                 delay = self._backoff_base
-            st.state, st.backoff = "backoff", delay
-            await asyncio.sleep(delay * (0.7 + random.random() * 0.6))
+            st.state, st.backoff = "backoff", max(delay, self.cooling(url))
+            await asyncio.sleep(st.backoff * (0.7 + random.random() * 0.6))
             delay = min(delay * 2, self._backoff_max)
 
     # --- inbound --------------------------------------------------------------------------------
@@ -233,15 +253,22 @@ class RelayPool:
             st = self.status[url]
             if msg[2]:
                 st.ok += 1
+                if not self.cooling(url):
+                    self._cool_step.pop(url, None)   # it takes events again: the next limit starts small
             else:
                 st.rejected += 1
                 st.last_reject = str(msg[3] if len(msg) > 3 else "")[:120]
+                if transient(st.last_reject):
+                    self._cool(url)
             if fut and not fut.done():
                 fut.set_result((bool(msg[2]), str(msg[3] if len(msg) > 3 else "")))
         elif typ == "EOSE" and len(msg) >= 2:
             sub = self._subs.get(msg[1])
             if sub:
                 sub.eose.add(url)
+        elif typ == "NOTICE" and len(msg) >= 2 and isinstance(msg[1], str) and transient(msg[1]):
+            self.status[url].last_reject = msg[1][:120]
+            self._cool(url)
         elif typ == "CLOSED" and len(msg) >= 2:
             self.status[url].last_error = f"subscription closed: {msg[2] if len(msg) > 2 else ''}"[:120]
 
@@ -287,6 +314,30 @@ class RelayPool:
     def mark_seen(self, eid: str) -> None:
         """Events we publish ourselves are handled locally; don't process their echo twice."""
         self._remember(eid)
+
+    # --- rate limits ----------------------------------------------------------------------------
+    def cooling(self, url: str) -> float:
+        """Seconds until this relay gets events from us again (0 when it isn't cooling)."""
+        return max(0.0, self._cool_until.get(url, 0.0) - time.monotonic())
+
+    def _cool(self, url: str) -> None:
+        if self.cooling(url) or self._stopped:
+            return   # the other answers to a burst land after the first one already started the wait
+        step = self._cool_step.get(url, 0)
+        wait = min(self._cool_base * (2 ** step), self._cool_max)
+        self._cool_step[url] = step + 1
+        self._cool_until[url] = time.monotonic() + wait
+        self.status[url].rate_limited += 1
+        log.info("ninsei: %s asked us to slow down; no events to it for %.0f s", url, wait)
+        t = asyncio.ensure_future(self._after_cool(url, wait))
+        self._flush_tasks.add(t)
+        t.add_done_callback(self._flush_tasks.discard)
+
+    async def _after_cool(self, url: str, wait: float) -> None:
+        await asyncio.sleep(wait)
+        ws = self._ws.get(url)
+        if ws is not None and not self.cooling(url):
+            self._spawn_flush(url, ws)   # what nobody else took is still queued: try this relay again
 
     # --- subscriptions --------------------------------------------------------------------------
     async def _send_req(self, url: str, ws, sub: Subscription) -> None:
@@ -349,6 +400,8 @@ class RelayPool:
         payload = json.dumps(["EVENT", ev])
         loop = asyncio.get_running_loop()
         for url, ws in list((only or self._ws).items()):
+            if self.cooling(url):
+                continue   # it said slow down: sending anyway only extends the ban
             fut = loop.create_future()
             self._pending_ok.setdefault(url, {})[ev["id"]] = fut
             futs[url] = fut
@@ -417,7 +470,7 @@ class RelayPool:
             self._store_call("event_outbox_drop", [eid])   # unknown ids read as "sent": no row to keep
             return
         # nobody accepted it. A real rejection from a relay is final; silence or a dead socket is retried.
-        answered = [msg for _, msg in out.values() if not msg.startswith(SYNTH)]
+        answered = [msg for _, msg in out.values() if not msg.startswith(SYNTH) and not transient(msg)]
         if answered:
             self._outbox.pop(eid, None)
             self._delivery[eid] = "failed"

@@ -37,8 +37,11 @@ KIND_ROOM = 4242          # regular: messages, joins, offers, shares, game event
 KIND_LIVE = 21042         # ephemeral: presence heartbeats, floor claims
 KIND_META = 30078         # parameterized replaceable: room metadata, interest cards
 APP_TAG = "ninsei"
-PRESENCE_EVERY = 30
-ABSENT_AFTER = 95
+PRESENCE_EVERY = 60         # keepalive beat to each room; a state change sends one sooner (see _beat_soon)
+ABSENT_AFTER = 150          # two missed beats and a bit
+STATE_BEAT_GAP = 5          # seconds between state-change beats; the latest state wins. A game round flips
+                            # the state several times, and every flip was a beat to every room: relays rate-
+                            # limit per IP, so a few installs on one network got banned (damus, 2026-11-06).
 BUILD_FRESH = 600         # s: a build-progress row older than this is an abandoned build
 MAX_BUILD_STEPS = 999
 CLAIM_WINDOW = 1.5
@@ -408,6 +411,8 @@ class Engine:
         self._lock_file = None
         self._want_lock = lock
         self.ts = timescale  # tests shrink game and claim timers
+        self._last_beat = 0.0
+        self._beat_waiting = False
         self.loop: Optional[asyncio.AbstractEventLoop] = None
         self.thread: Optional[threading.Thread] = None
         self.pool: Optional[RelayPool] = None
@@ -1546,7 +1551,7 @@ class Engine:
         if state == "system: error":
             self._error_until = time.time() + 20
         self._bump()
-        self._spawn(self._presence_once())
+        self._beat_soon()
 
     def _game_running(self, room: str) -> bool:
         """A game is on in this room: one the view shows as live, one I host here (even before its start event
@@ -2624,10 +2629,13 @@ class Engine:
             # the creator isn't known yet: ask widely, so a few newer forgeries can't push the real one out
             found = await self.pool.query([{"kinds": [KIND_META], "#d": [f"ninsei/room/{room}"], "limit": 50}], timeout=4)
             meta = {"id": room, "name": "Room " + room[:4], "about": "", "interests": []}
+            found_meta = False
             for ev in found:
                 m = self._room_meta_from(ev, room)
                 if m and m["at"] >= int(meta.get("at") or 0):
-                    meta = m
+                    meta, found_meta = m, True
+        else:
+            found_meta = True
         self.store.save_room(room, meta)
         self.events.setdefault(room, {})
         self.topics.setdefault(room, TopicTracker())
@@ -2645,7 +2653,9 @@ class Engine:
             await self._publish_room(room, True, {"t": "join"})
         await self._presence_once()
         self._bump()
-        return meta
+        # Nothing at all for this code on my relays: a typo, or the room lives on relays I don't use (a code
+        # names the room, not where it is). Say so instead of opening a room that just looks quiet.
+        return dict(meta, found=found_meta or bool(hist))
 
     async def leave_room(self, room: str) -> None:
         await self._end_hosted(room)
@@ -2882,9 +2892,30 @@ class Engine:
             await self._presence_once()
             await asyncio.sleep(PRESENCE_EVERY)
 
+    def _beat_soon(self) -> None:
+        """Tell the rooms about a state change: now, or once STATE_BEAT_GAP after the last beat, with whatever
+        the state is by then. Many changes in a row cost one beat per room, not one each."""
+        if self._beat_waiting:
+            return
+        wait = self._last_beat + STATE_BEAT_GAP * self.ts - time.time()
+        if wait <= 0:
+            self._last_beat = time.time()   # now, not when the task runs: the next change may come first
+            self._spawn(self._presence_once())
+            return
+        self._beat_waiting = True
+
+        async def later():
+            try:
+                await asyncio.sleep(wait)
+            finally:
+                self._beat_waiting = False
+            await self._presence_once()
+        self._spawn(later())
+
     async def _presence_once(self) -> None:
         if not self.pool:
             return
+        self._last_beat = time.time()
         if self.agent_state == "system: error" and time.time() > self._error_until:
             self.agent_state, self.agent_note = "activity: idle", ""
         why = self._resting()
@@ -3163,7 +3194,9 @@ class Engine:
             "model": self.brain.available(),
             "rooms": rooms,
             "relays": [{"url": st.url, "state": st.state, "ok": st.ok, "rejected": st.rejected,
-                        "error": st.last_error or st.last_reject} for st in (self.pool.status.values() if self.pool else [])],
+                        "error": st.last_error or st.last_reject, "rate_limited": st.rate_limited,
+                        "resting_s": int(self.pool.cooling(st.url) + 0.999)}
+                       for st in (self.pool.status.values() if self.pool else [])],
             "drafts": self.store.drafts(),
             # the private line's summary only (counts, never text): the UI fetches the thread itself
             "line": self.store.line_summary(),

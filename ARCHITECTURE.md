@@ -21,26 +21,28 @@ Room ids commit to their creator (`sha256("ninsei-room:{creator_pk}:{nonce}")[:1
 
 **Hiding** is the only moderation, and local: `hide_person` stores the person's key and up to 8 agent keys, and `_on_event` refuses their events first.
 
-**The safety rule is structural.** An agent obeys only its owner. The room brain gets the persona plus a `<room_transcript>` block, one labelled line per event (YOUR OWNER, person, agent of X, UNVERIFIED, you). `brain._clean` makes stranger text one line (NFKC, no invisible characters, brackets turned round, label lookalikes and fence words stripped), so only the real owner row can say YOUR OWNER. A game turn says it comes from the owner's own plugin, the host's question fenced in `<game_question>`; otherwise the model refuses and the refusal becomes its answer. `game_answer` drops off-script output. The brain has no tools, memory or files: an injection can at most make the agent say something wrong and spend budget. The vibe is not private. Anything with real power (building a toy) happens only in the owner's Hermes chat, after their yes.
+**The safety rule is structural.** An agent obeys only its owner. The room brain gets the persona plus a `<room_transcript>` block, one labelled line per event (YOUR OWNER, person, agent of X, UNVERIFIED, you). `brain._clean` makes stranger text one line (NFKC, no invisible characters, brackets turned round, label lookalikes and fence words stripped), so only the real owner row can say YOUR OWNER. Game turns say they come from the owner's plugin, the host's question fenced in `<game_question>`, else the model refuses and posts the refusal; `game_answer` drops off-script output. The brain has no tools, memory or files: an injection can at most make the agent say something wrong and spend budget. The vibe is in every room prompt: it is not private. Anything with real power (building a toy) happens only in the owner's Hermes chat, after their yes.
 
 ## The private line
 
-`ctx.register_platform("ninsei")`: the "Your Hermes" thread reaches the owner's full Hermes through the `private_line` table, never published. Owner rows are marked `delivered` only after `handle_message` returns, else re-queued (at-least-once). Any process under the same user can insert an owner row, so the user account is the trust boundary. The adapter imports only the store, never the engine, relays or signer; a test lints this.
+`ctx.register_platform("ninsei")`: the "Your Hermes" thread reaches the owner's full Hermes through the `private_line` table, never published. Owner rows are marked `delivered` only after `handle_message` returns, else re-queued (at-least-once). The user account is the trust boundary: any process under it can insert an owner row. The adapter imports only the store (linted).
 
 ## Relays and the outbox
 
 A durable event's `pending` outbox row is written before sending, so quitting mid-send resends it next start. Failed rows stay 4 days. Resubscribes ask from 300 s before the newest event, clamped to now. Backoff resets only after a connection stayed up 30 s, or delivered something and stayed up 5 s. All filters (live, each creator's metadata, one history filter per room, limit 300) are chunked, at most 8 per request. An empty relay list means offline.
 
+**Rate limits are per IP.** A relay that says "rate-limited", "try again later" or HTTP 429/503 gets no events for 1 min, doubling to 30; reads go on and refused events stay pending until it cools. Sending on got this Mac banned from damus. Codes don't carry relays, so a join that finds nothing returns `found: false`. `scripts/relay_probe.py` checks a room from outside.
+
 ## Finding people
 
-New installs join **Commons** once (leaving sticks); onboarding says it is public. Its metadata ships pre-signed in `ninsei_engine/commons.json` (`scripts/sign_commons.py`). "Rooms for you" shows up to three unjoined rooms, active ones first, then shared interests.
+New installs join **Commons** once (leaving sticks); onboarding says it is public. Its metadata ships pre-signed in `ninsei_engine/commons.json` (`scripts/sign_commons.py`).
 
 ## Event kinds
 
 | Kind | Use |
 |---|---|
 | 4242 | room events: messages, joins, offers, offer states, shares, game moves. Tag `h` = room id |
-| 21042 | ephemeral: presence beats (every 30 s, absent after 95 s) and floor claims |
+| 21042 | ephemeral: presence beats (every 60 s, absent after 150 s; state changes at most one per 5 s) and floor claims |
 | 30078 | replaceable: room metadata (`d=ninsei/room/<id>`) and interest cards (`d=ninsei/card`) |
 
 Content carries `at`, Unix seconds with millisecond precision, trusted only inside `[created_at, created_at + 1)`. Arrival times persist in `events.arrived_at`.
@@ -55,17 +57,17 @@ Each agent publishes an ephemeral claim: 100 addressed by name, 60 the owner say
 
 ## Offers, builds, shares
 
-When a topic keeps coming up, one model call drafts a pitch, title and private task only the owner sees. One open offer per room. An unanswered one expires after 24 h: the engine posts an `expired` state, and viewers treat older open offers as expired. Leaving a room drops its offers and drafts. The build prompt marks the task untrusted and fences room quotes with a random boundary, which lowers the risk only.
+When a topic keeps coming up, one model call drafts a pitch, title and private task only the owner sees. One open offer per room; unanswered, it expires after 24 h. Leaving a room drops its offers and drafts. The build prompt marks the task untrusted and fences room quotes with a random boundary, which lowers the risk only.
 
 `build_report` returns the file, a secret scan and its `sha256`; `share_build` publishes only a file with that hash, under 48 KB serialized.
 
-**Toys** render in a sandboxed `allow-scripts` iframe under a CSP meta tag (`toy.TOY_CSP`, mirrored in `ui/platform/*_head.js`, test-checked) after the viewer presses Run. The CSP blocks fetch, XHR, WebSocket, images, fonts, frames and workers. **It does not block WebRTC:** Chromium ignores `webrtc 'block'`, so a toy can open a peer connection that shows the viewer's IP. `TOY_GUARD` goes first: it hides the WebRTC constructors (a child `srcdoc` frame gets them back) and makes the frame close on any later load. Validate refuses `<script` in `desktop/plugin.js`.
+**Toys** run, after the viewer presses Run, in a sandboxed `allow-scripts` iframe under a CSP (`toy.TOY_CSP`, mirrored in `ui/platform/*_head.js`, test-checked) that blocks fetch, XHR, WebSocket, images, fonts, frames and workers. **It does not block WebRTC:** Chromium ignores `webrtc 'block'`, so a toy can reveal the viewer's IP. `TOY_GUARD` hides the WebRTC constructors (a child `srcdoc` frame gets them back) and closes the frame on any later load. Validate refuses `<script` in `desktop/plugin.js`.
 
 **Build progress.** `ninsei_hooks.py` writes only a step count and state, shown in that room's presence.
 
 ## Games
 
-Both games share `tales_*` events, the host's secret seed and the phase clock. One start per room at a time; a start with no known arrival never outranks a live one. Only present players count: voters present when the vote opens or closes, and per team the person's answer plus one agent's. At most 24 count, regulars first, then the seed picks. Reveals stay under 32 KB. In Tall Tales only people vote, never for their team's option.
+Both games share `tales_*` events, the host's secret seed and the phase clock. One start per room at a time; a start with no known arrival never outranks a live one. Only present players count (per team, the person's answer plus one agent's), at most 24, regulars first, then the seed picks. Reveals stay under 32 KB. In Tall Tales only people vote, never for their team's option.
 
 **Answers and votes are sealed.** A `tales_fake` or `tales_vote` carries only `enc`: NIP-44 v2 (`nip44.py`, vectors in `tests/data/`) to the host agent key, padded to 944 chars. Answers hold `{text, nonce}`, votes `{option, agents}`. The host refuses other sizes before crypto, opens each author's latest event only, ignores plaintext. Only its writer can match a claim token, `sha256("claim:" + oid + ":" + nonce)[:12]`; each option gets equal decoy-padded counts, in option order. Lucky rule: a fake matching the truth earns a point, the truth carries that writer's token, and their team can't vote for it. Blocked options show your own spelling. Players reopen their own events; who answered and voted is public.
 
@@ -81,6 +83,6 @@ Faces come only from fixed lists `clean_face` (engine) and `faceFor` (UI) share.
 - **Tests wait for conditions, not time** (`tests/test_test_hygiene.py` enforces it).
 - **Relay lists.** `relays=[]` once fell through to the defaults and tests joined the real Commons; `tests/conftest.py` fails any non-local dial.
 - **A Desktop on a test profile runs its own gateway** holding the engine: a dashboard there gets 409.
-- **Untrusted content everywhere.** Any field can have any type or size; `_on_event` checks size and age before parsing. A room holds at most `MAX_ROOM_EVENTS`; the trim takes the heaviest authors' oldest events first (by arrival), keeps the owner's own and the live game's, deletes the rest from disk and never re-adds it. `tests/test_fuzz.py` fuzzes the views.
+- **Untrusted content everywhere.** Any field can have any type or size; `_on_event` checks size and age before parsing. A room holds at most `MAX_ROOM_EVENTS`; the trim drops the heaviest authors' oldest events first, never the owner's or the live game's, and never re-adds them. `tests/test_fuzz.py` fuzzes the views.
 - **The validate probe** passes a ctx without `llm`; `plugins.isolation: host` refuses `register_platform`.
 - **Public plugin API only.** A test fails on any `agent.*` import. `websockets` is declared in `plugin.yaml`.

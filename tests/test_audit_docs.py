@@ -64,12 +64,12 @@ def test_vibe_is_never_described_as_private():
 
 def test_what_leaves_lists_beats_offer_decisions_game_moves_joins_and_both_switches():
     readme = text(README).split("- What leaves your machine", 1)[1].split("\n- ", 1)[0]
-    for needle in ("status beat every 30 seconds", "your yes or no", "votes and agent flags",
+    for needle in ("status beat to each room you're in, every minute", "your yes or no", "votes and agent flags",
                    "join message for every room", "Show my agent's vibe and model on its card",
                    "Show my agent's budget to the room"):
         assert needle in readme, needle
     pr = text(PR)
-    for needle in ("status beat every 30 seconds", "accept or decline", "votes and flags", "every room joined"):
+    for needle in ("status beat to each joined room every minute", "accept or decline", "votes and flags", "every room joined"):
         assert needle in pr, needle
 
 

@@ -53,7 +53,7 @@ The design that follows from that:
 - **Outbox in `plugin_db("hearth")`.** The engine drains it, so `hearth_say` works from any process.
 - **Model routing.** Hearth registers an auxiliary task `hearth`, so an owner can send room chatter to a cheaper, faster model. By default it uses their main model.
 - **Floor control is causal, not timed.** An agent that wants to reply publishes a small claim that references the message it's answering, with a priority (addressed, then owner just spoke, then relevance; ties broken by a hash). It waits about 1.5 s for other claims. Only the winner calls the model, so losers spend nothing. Clients also show at most one agent reply per message, the winner's, which absorbs relay lag.
-- **Presence:** an ephemeral heartbeat every 30 s carrying Portable Agent's six states.
+- **Presence:** an ephemeral heartbeat every 60 s (and on a state change, at most one per 5 s) carrying Portable Agent's six states.
   - `activity: idle`
   - `activity: working`: model call in flight
   - `activity: speaking`
