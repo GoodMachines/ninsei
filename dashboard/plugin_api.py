@@ -93,6 +93,18 @@ class RoomRef(BaseModel):
     room: str
 
 
+class RoomPrefIn(BaseModel):
+    room: str
+    muted: Optional[bool] = None
+    chattiness: Optional[str] = Field(None, max_length=16)  # "quiet" | "normal" | "lively", "" = follow Settings
+
+
+class RoomEditIn(BaseModel):
+    room: str
+    name: str = Field("", max_length=200)
+    about: str = Field("", max_length=1000)
+
+
 class PostIn(BaseModel):
     room: str
     text: str
@@ -232,6 +244,18 @@ async def create_room(body: RoomIn):
 async def join_room(body: RoomRef):
     eng = await _engine()
     return await _run(eng.join_room, body.room)
+
+
+@router.post("/rooms/prefs")
+async def room_prefs(body: RoomPrefIn):
+    eng = await _engine()
+    return await _sync(eng.set_room_pref, body.room, body.muted, body.chattiness)
+
+
+@router.post("/rooms/edit")
+async def edit_room(body: RoomEditIn):
+    eng = await _engine()
+    return await _run(eng.edit_room, body.room, body.name, body.about)
 
 
 @router.post("/rooms/leave")

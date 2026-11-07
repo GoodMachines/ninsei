@@ -50,11 +50,66 @@ function App(props) {
       if (back && back.isConnected && back.focus) try { back.focus() } catch (_) { /* gone */ }
     }
   }, [people])
-  const go = v => nav().set(v)
+  // The sidebar is a drawer on a narrow page; going anywhere closes it
+  const [drawer, setDrawer] = useState(false)
+  const leftRef = useRef(null)
+  const go = v => { nav().set(v); setDrawer(false) }
+  const dmKey = store.dm()
+  useEffect(() => { setDrawer(false) }, [view, roomKey, dmKey])
+  useSlide(leftRef, drawer, { x: -28, y: 0 })
+  useSlide(rightRef, people, { x: 0, y: 40 })
+  useEffect(() => {
+    if (!drawer) return
+    const esc = e => { if (e.key === 'Escape' && !e.defaultPrevented && !document.querySelector('[role=dialog]')) { e.preventDefault(); setDrawer(false) } }
+    const off = P.listen(document, 'keydown', esc)
+    const btn = leftRef.current && leftRef.current.querySelector('button')
+    if (btn && btn.getClientRects().length > 0 && btn.focus) btn.focus()
+    return off
+  }, [drawer])
+  // Quick switcher and a Join dialog opened by a message link
+  const [switching, setSwitching] = useState(false)
+  const switchingRef = useRef(false)
+  switchingRef.current = switching
+  const [joinFor, setJoinFor] = useState('')
+  const rootRef = useRef(null)
+  const live = useRef(false)
+  // Cmd/Ctrl+K and Cmd/Ctrl+F belong to Ninsei only while focus (or your last click) is inside it, so the host's own
+  // shortcuts keep working everywhere else. F does nothing unless a room is open (then the host's find still runs).
+  useEffect(() => {
+    const mark = e => { const r = rootRef.current; live.current = !!(r && e.target && r.contains && r.contains(e.target)) }
+    const key = e => {
+      if (!(e.metaKey || e.ctrlKey) || e.altKey || e.shiftKey || e.isComposing) return
+      const k = String(e.key || '').toLowerCase()
+      if (k !== 'k' && k !== 'f') return
+      const r = rootRef.current
+      const a = document.activeElement
+      const idle = !a || a === document.body
+      if (!r || !(idle ? live.current : r.contains(a))) return
+      if (k === 'k') { e.preventDefault(); e.stopPropagation(); setSwitching(!switchingRef.current) }
+      else if (HOTKEYS.search && !switchingRef.current) { e.preventDefault(); e.stopPropagation(); HOTKEYS.search() }
+    }
+    const offs = [P.listen(document, 'pointerdown', mark, true), P.listen(document, 'focusin', mark), P.listen(window, 'keydown', key, { capture: true })]
+    return () => offs.forEach(f => f())
+  }, [])
   // Settings is a view of this page on the dashboard and a page of Desktop's own Settings on Desktop (as in the Rail)
   const openSettings = () => { if (P.kind === 'dashboard') go('settings'); else P.openSettings() }
   // "Message" on a person's card: their private conversation, in the centre
   const openDm = pk => { store.setDm(pk); go('dm') }
+  // a `ninsei:` link in a message: a room you are in opens (at the message, if it names one); any other opens the Join dialog
+  const openLink = (room, event) => {
+    const joined = ((store.get().snap || {}).rooms || []).some(r => r.id === room)
+    if (!joined) { setJoinFor(room + (event ? '#' + event : '')); return }
+    if (event) wantJump(room, event)
+    store.setRoom(room); go('room')
+  }
+  const pick = it => {
+    setSwitching(false)
+    if (it.kind === 'room') { store.setRoom(it.id); go('room') }
+    else if (it.kind === 'dm') { store.setDm(it.id); go('dm') }
+    else if (it.kind === 'requests') { store.setDm(DM_REQUESTS); go('dm') }
+    else if (it.kind === 'settings') openSettings()
+    else go(it.kind)
+  }
   const embedded = !!props.embedded  // Desktop's room tab: the sidebar's Ninsei tab is the rail
   const snap = st.snap
   // what each person looks like, for every PersonMark below (pictures only while "Show profile pictures" is on)
@@ -75,7 +130,7 @@ function App(props) {
     let center
     const dmPk = store.dm()
     if (view === 'hermes') center = jsx(LineView, { store, snap })
-    else if (view === 'dm') center = dmPk === DM_REQUESTS ? jsx(DmRequests, { store, snap }) : dmPk ? jsx(DmView, { store, snap, pk: dmPk, onPeople: togglePeople }, dmPk) : jsx(DmEmpty, {})
+    else if (view === 'dm') center = dmPk === DM_REQUESTS ? jsx(DmRequests, { store, snap }) : dmPk ? jsx(DmView, { store, snap, pk: dmPk, onPeople: togglePeople }, dmPk) : jsx(DmEmpty, { snap })
     else if (view === 'settings') center = jsx('div', { className: 'h-scroll', children: jsxs('div', { className: 'h-pane', children: [jsx('h1', { children: 'Settings' }, 'h'), jsx(SettingsForm, { store, snap, inset: true }, 's')] }) })
     else if (showRoom && room) center = jsx(RoomView, { store, snap, room, onPeople: togglePeople }, room.id)
     else if (showRoom) center = jsx('div', { className: 'h-empty', children: 'Opening the room…' })
@@ -83,9 +138,13 @@ function App(props) {
     else center = jsx(Welcome, { store, snap, onLobby: () => go('lobby') })
 
     // ProfileLayer: a click on a name or face, in the room or the people column, opens that card
-    inner = jsx(PeopleContext.Provider, { value: looks, children: jsx(RoomReactions, { snap, room: showRoom ? room : null, children: jsx(ProfileLayer, { room: showRoom ? room : null, snap, store, openSettings, openDm, children: jsxs('div', { className: 'h-grid', 'data-people': people ? 'open' : 'closed', 'data-embedded': embedded || undefined, children: [
-      !embedded && jsx('nav', { className: 'h-left', 'aria-label': 'Ninsei rooms', children: jsx(Rail, { store, snap, view, go, roomId }) }),
+    const down = !st.error ? relaysDown(snap) : null
+    inner = jsx(LinkContext.Provider, { value: openLink, children: jsx(PeopleContext.Provider, { value: looks, children: jsx(RoomReactions, { snap, room: showRoom ? room : null, children: jsx(ProfileLayer, { room: showRoom ? room : null, snap, store, openSettings, openDm, children: jsxs('div', { className: 'h-grid', 'data-people': people ? 'open' : 'closed', 'data-nav': drawer ? 'open' : 'closed', 'data-embedded': embedded || undefined, children: [
+      !embedded && jsx('nav', { className: 'h-left', ref: leftRef, 'aria-label': 'Ninsei rooms', children: jsx(Rail, { store, snap, view, go, roomId }) }),
+      drawer && jsx('div', { className: 'h-scrim h-scrim-nav', 'aria-hidden': true, onClick: () => setDrawer(false) }),
       jsxs('main', { className: 'h-center', children: [
+        !embedded && jsx(NavBar, { open: drawer, onToggle: () => setDrawer(!drawer), onSwitch: () => setSwitching(true) }),
+        down && jsx(ReconnectBanner, { snap, retry: down.retry }),
         st.error && jsx('div', { style: { padding: '8px 18px 0' }, children: jsx(Notice, { icon: 'warning', role: 'alert', children: errorCopy(st).title + '. Showing the last state we had.' }) }),
         !st.error && view !== 'settings' && Array.isArray(snap.settings.relays) && snap.settings.relays.length === 0 &&
           jsx('div', { style: { padding: '8px 18px 0' }, children: jsx(Notice, { icon: 'warning', role: 'status', children: jsxs('div', { className: 'h-row', style: { justifyContent: 'space-between', gap: 10 }, children: [
@@ -99,11 +158,13 @@ function App(props) {
           onClick: closePeople, children: jsx(K.Icon, { name: 'close', size: 14 }) }) }),
         view === 'hermes' ? jsx(LineAbout, { snap }) : view === 'dm' ? jsx(DmAbout, {}) : room && showRoom ? jsx(People, { room, snap, store }) : jsx(MyAgentCard, { snap })
       ] })
-    ] }) }) }) })
+    ] }) }) }) }) })
   }
-  return jsxs('div', { className: 'hx h-page', 'data-platform': P.kind, children: [
+  return jsxs('div', { className: 'hx h-page', ref: rootRef, 'data-platform': P.kind, children: [
     P.inlineStyle && jsx('style', { children: CSS }),
-    inner
+    inner,
+    snap && snap.settings.onboarded && switching && jsx(QuickSwitcher, { snap, onPick: pick, onClose: () => setSwitching(false) }),
+    snap && snap.settings.onboarded && joinFor && jsx(JoinDialog, { store, initial: joinFor, onClose: () => setJoinFor(''), onDone: id => { setJoinFor(''); store.setRoom(id); go('room') } })
   ] })
 }
 
@@ -232,9 +293,11 @@ function Rail(props) {
       (snap.rooms || []).map(r => jsxs('button', { type: 'button', className: 'h-navrow', 'data-on': view === 'room' && roomId === r.id,
         'aria-current': view === 'room' && roomId === r.id ? 'page' : undefined, onClick: () => open(r.id), children: [
           jsx('span', { className: 'h-hash', children: '#' }),
-          jsx('span', { className: 'h-grow h-trunc', style: { fontWeight: r.unread ? 600 : 400 }, children: r.name }),
+          jsx('span', { className: 'h-grow h-trunc', style: { fontWeight: r.unread && !r.muted ? 600 : 400, opacity: r.muted ? 0.65 : 1 }, children: r.name }),
+          r.muted && jsx(K.Tip, { label: 'Muted', children: jsx('span', { className: 'h-faint', role: 'img', 'aria-label': 'Muted', children: jsx(K.Icon, { name: 'bell-slash', size: 12 }) }) }),
           (drafts[r.id] || waiting[r.id]) && jsx(K.Tip, { label: waiting[r.id] ? 'Your agent is waiting on you' : 'Draft waiting to send', children: jsx(K.Icon, { name: waiting[r.id] ? 'clock' : 'edit', size: 12 }) }),
-          r.mentions > 0 ? jsx('span', { className: 'h-mentions', 'aria-label': r.mentions + (r.mentions === 1 ? ' mention' : ' mentions') + ' of you', children: '@' + (r.mentions > 9 ? '9+' : r.mentions) })
+          r.muted ? (r.unread > 0 && jsx('span', { className: 'h-dot h-dot-quiet', 'aria-label': 'unread, muted' }))
+          : r.mentions > 0 ? jsx('span', { className: 'h-mentions', 'aria-label': r.mentions + (r.mentions === 1 ? ' mention' : ' mentions') + ' of you', children: '@' + (r.mentions > 9 ? '9+' : r.mentions) })
             : r.unread > 0 && jsx('span', { className: 'h-dot', 'aria-label': r.unread + ' unread' }),
           jsxs('span', { className: 'h-count', title: r.online + ' online', children: [r.online || '', r.online > 0 && jsx('span', { className: 'h-vh', children: ' online' }, 's')] })
         ] }, r.id))
@@ -277,18 +340,20 @@ function NewRoomDialog(props) {
 }
 
 function JoinDialog(props) {
-  const [code, setCode] = useState('')
+  const [code, setCode] = useState(props.initial || '')
   const [busy, setBusy] = useState(false)
   const join = async () => {
     setBusy(true)
     try {
+      const link = parseRoomLink(code)
       const meta = await props.store.post('/rooms/join', { room: code.trim() })
+      if (link.event) wantJump(meta.id, link.event)
       // a code names a room, not where it lives: nothing on my relays means a typo or different relays
       if (meta.found === false) P.toast('info', 'Nothing here yet on your relays. Check the code, or ask whoever shared it which relays they use (Settings, Relays).')
       props.onDone(meta.id)
     } catch (_) { setBusy(false) }
   }
-  return jsx(Modal, { open: true, onClose: props.onClose, title: 'Join by code', description: 'Paste a code like ninsei:203f22bcfd1b4b2f.',
+  return jsx(Modal, { open: true, onClose: props.onClose, title: 'Join by code', description: 'Paste a code like ninsei:203f22bcfd1b4b2f, or a link to a message in a room.',
     footer: [
       jsx(K.Button, { variant: 'ghost', onClick: props.onClose, children: 'Cancel' }, 'c'),
       jsx(K.Button, { variant: 'primary', disabled: busy || !code.trim(), onClick: join, children: busy ? 'Joining…' : 'Join' }, 'j')

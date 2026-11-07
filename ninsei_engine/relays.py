@@ -90,6 +90,7 @@ class RelayStatus:
     last_reject: str = ""
     backoff: float = 0.0   # seconds the next reconnect waits (before jitter)
     rate_limited: int = 0  # times this relay told us to slow down
+    retry_at: float = 0.0  # wall-clock time of the next reconnect attempt while in "backoff"
 
 
 class RelayPool:
@@ -225,7 +226,9 @@ class RelayPool:
                 delay = self._backoff_base
             # turned away at the door: wait out the cool. Any other drop reconnects as usual, so reads go on.
             st.state, st.backoff = "backoff", max(delay, self.cooling(url)) if busy else delay
-            await asyncio.sleep(st.backoff * (0.7 + random.random() * 0.6))
+            wait = st.backoff * (0.7 + random.random() * 0.6)
+            st.retry_at = time.time() + wait
+            await asyncio.sleep(wait)
             delay = min(delay * 2, self._backoff_max)
 
     # --- inbound --------------------------------------------------------------------------------

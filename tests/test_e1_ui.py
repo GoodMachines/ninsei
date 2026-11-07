@@ -284,7 +284,7 @@ out({ springs, opacity: el.style.opacity })
 def test_retry_and_discard_post_to_the_engine_for_a_message_it_has_and_resend_a_local_one():
     js = fn(ROOM, "RoomView") + OUTBOX + """
 const useLayoutEffect = useEffect; const useMemo = f => f()
-function RoomHeader() {}; function SearchPanel() {}; function Timeline() {}; function Notice() {}; function TallTales() {}; function DraftTray() {}; function TypingLine() {}; function Composer() {}
+const HOTKEYS = { search: null }; function RoomHeader() {}; function SearchPanel() {}; function Timeline() {}; function Notice() {}; function TallTales() {}; function DraftTray() {}; function TypingLine() {}; function Composer() {}
 function nameBook() { return {} }
 const posts = []
 const store = { showing: () => () => {}, post: async (path, body) => { posts.push([path, body]); return { id: 'e9' } } }

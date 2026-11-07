@@ -189,7 +189,7 @@ async def test_the_api_routes_search_bound_the_query_and_pass_read_through(world
 
 # ---- formatting and links (UI, node) ---------------------------------------------------------------------
 
-RICH_FNS = ("squashName", "mentionNames", "mentionParts", "linkAt", "emphasisCloses", "richInline", "richParts")
+RICH_FNS = ("squashName", "mentionNames", "mentionParts", "linkAt", "roomLinkAt", "emphasisCloses", "richInline", "richParts")
 
 
 def rich_js():
@@ -341,6 +341,8 @@ TIMELINE_PRELUDE = """
 function useMemo(f) { return f() }
 const useLayoutEffect = useEffect
 const useEnter = () => ({ current: null })
+const PENDING_JUMP = { room: '', id: '', until: 0 }, JUMP_WATCH = new Set()
+function EmptyState() {}
 function TimelineItem() {}; function Thinking() {}
 const springIntoView = () => {}; const flash = () => {}
 const scrolled = []

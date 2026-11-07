@@ -120,7 +120,7 @@ function LineTyping() {
   const ref = useEnter(true)
   return jsx('div', { ref, children: jsxs('div', { className: 'h-msg h-lmsg', 'data-role': 'hermes', 'data-first': true, children: [
     jsx('div', { className: 'h-gutter', children: jsx(HermesMark, { size: 28 }) }),
-    jsxs('div', { className: 'h-typing', role: 'status', 'aria-label': 'Your Hermes is working', children: [0, 1, 2].map(i => jsx('i', { style: { animationDelay: (i * 0.16) + 's' } }, i)) })
+    jsx('div', { className: 'h-typing', role: 'status', 'aria-label': 'Your Hermes is working', children: jsx(Dots, {}) })
   ] }) })
 }
 

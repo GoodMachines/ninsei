@@ -142,6 +142,7 @@ DEFAULT_RELAYS = ["wss://nos.lol", "wss://relay.primal.net", "wss://nostr.mom",
                   "wss://relay.snort.social", "wss://relay.damus.io"]
 
 CHATTINESS = {"quiet": 0.0, "normal": 0.12, "lively": 0.3}
+MAX_ROOM_PREFS = 200  # rooms with a per-room setting (mute, chattiness); far more than anyone joins
 FACE_SHAPES = ["round", "soft", "tall", "wide", "drop", "bean"]
 # The rest of a face. Every list starts with its default, and ui/00_core.js keeps the same lists
 # (a test compares them). Faces are built only from these options, so a stranger can't put an
@@ -290,6 +291,34 @@ def _gave_up_claim(b: Any) -> Optional[tuple]:
 def _fold(s: str) -> str:
     """Text for matching: no accents, no case (the UI folds the same way to highlight the match)."""
     return "".join(ch for ch in unicodedata.normalize("NFKD", s) if unicodedata.category(ch) != "Mn").lower()
+
+
+def _clean_room_prefs(raw) -> dict:
+    """Per-room settings as stored: {room id: {"muted": True, "chattiness": "quiet"|"normal"|"lively"}}. Only rooms
+    with something set appear, and only well-formed entries survive (the store is ours, but it is read everywhere)."""
+    out: dict = {}
+    for rid, p in (raw.items() if isinstance(raw, dict) else []):
+        if not isinstance(rid, str) or not isinstance(p, dict) or len(out) >= MAX_ROOM_PREFS:
+            continue
+        e = {}
+        if p.get("muted") is True:
+            e["muted"] = True
+        if p.get("chattiness") in CHATTINESS:
+            e["chattiness"] = p["chattiness"]
+        if e:
+            out[rid] = e
+    return out
+
+
+def parse_room_link(text: str) -> tuple[str, str]:
+    """(room id, event id) from what someone pasted: `ninsei:<room>`, `ninsei:<room>#<event id>` or a bare room id.
+    The event id is "" unless it is 64 hex characters. A room id is cut at its first non-hex character."""
+    t = str(text or "").strip()[:200]
+    t = re.sub(r"^ninsei:", "", t, flags=re.I)
+    room, _, ev = t.partition("#")
+    room = re.sub(r"[^a-f0-9]", "", room.lower())[:24]
+    ev = ev.strip().lower()
+    return room, ev if nostr.is_hex(ev, 32) else ""
 
 
 def _name_ok(name: str, fallback: str) -> str:
@@ -730,11 +759,12 @@ class Engine:
             "agent_name": "", "vibe": "warm, curious, a little playful", "face": None,
             "budget_daily": 40000, "msgs_daily": MSGS_DAILY, "chattiness": "normal", "offers": True, "share_budget": False,
             "card_details": False, "relays": DEFAULT_RELAYS, "card_published_at": 0,
-            "person_face": None, "show_avatars": "everyone",
+            "person_face": None, "show_avatars": "everyone", "room_prefs": {},
         }
         out = {**defaults, **s}
         out["person_face"] = clean_face(out["person_face"]) if isinstance(out.get("person_face"), dict) and out["person_face"] else None
         out["show_avatars"] = "nobody" if out.get("show_avatars") == "nobody" else "everyone"
+        out["room_prefs"] = _clean_room_prefs(out.get("room_prefs"))
         # a face saved before a key existed (the card style, say) gains its default here
         out["face"] = clean_face(out["face"]) if out.get("face") else self._default_face()
         return out
@@ -781,6 +811,40 @@ class Engine:
         if cur["show_avatars"] != before:
             self._art_shown_changed(cur["show_avatars"])
         return cur
+
+    def room_chattiness(self, room: str) -> str:
+        """How chatty my agent is in this room: the room's own setting, else the global one."""
+        own = self.settings()["room_prefs"].get(room, {}).get("chattiness")
+        return own if own in CHATTINESS else self.settings()["chattiness"]
+
+    def set_room_pref(self, room: str, muted: Optional[bool] = None, chattiness: Optional[str] = None) -> dict:
+        """Mute a room (for alerts only: it still fills and my agent still answers) and/or give it its own agent
+        chattiness. `chattiness` "" or "default" goes back to the global setting. Local; nothing is published."""
+        if room not in self.store.rooms():
+            raise ValueError("you are not in that room")
+        if chattiness is not None and chattiness not in CHATTINESS and chattiness not in ("", "default"):
+            raise ValueError("chattiness is quiet, normal or lively")
+        prefs = dict(self.settings()["room_prefs"])
+        p = dict(prefs.get(room, {}))
+        if muted is not None:
+            if muted:
+                p["muted"] = True
+            else:
+                p.pop("muted", None)
+        if chattiness is not None:
+            if chattiness in CHATTINESS:
+                p["chattiness"] = chattiness
+            else:
+                p.pop("chattiness", None)
+        if p:
+            prefs[room] = p
+        else:
+            prefs.pop(room, None)
+        stored = self.store.get("settings") or {}
+        stored["room_prefs"] = _clean_room_prefs(prefs)
+        self.store.set("settings", stored)
+        self._bump()
+        return {"room": room, "muted": bool(p.get("muted")), "chattiness": p.get("chattiness", "")}
 
     def relays(self) -> list[str]:
         # An explicit list wins, even an empty one: relays=[] means "no network", never the public defaults.
@@ -1612,7 +1676,8 @@ class Engine:
         my_name = skeleton(self.persona()["name"])
         names_other = any(self._mentions(text, p["name"]) for pk, p in self.presence.get(room, {}).items()
                           if pk != ident["agent_pk"] and _nameable(p["name"]) and skeleton(p["name"]) != my_name)
-        chatty = self.settings()["chattiness"] != "quiet"
+        level = self.room_chattiness(room)
+        chatty = level != "quiet"
         if addressed:
             prio = 100
         elif names_other:
@@ -1621,7 +1686,7 @@ class Engine:
             prio = 60
         elif from_owner and chatty and (re.search(r"\?\s*$", text) or not self._others_here(room)):
             prio = 40  # my owner's question, or anything they say while nobody else is around
-        elif not from_agent and random.random() < CHATTINESS[self.settings()["chattiness"]]:
+        elif not from_agent and random.random() < CHATTINESS[level]:
             prio = 20
         else:
             return
@@ -2886,8 +2951,41 @@ class Engine:
         ev = nostr.build_event(self._identity()["person_sk"], KIND_META, json.dumps(meta), tags, pow_bits=12)
         self._queue_event(ev)
         self._spawn(self.pool.publish(ev))
+        meta["at"] = ev["created_at"]  # kept so a rename is always newer than this, even inside the same second
         await self.join_room(room, meta)
         return meta
+
+    async def edit_room(self, room: str, name: str, about: str) -> dict:
+        """Rename a room or change its description. Only the person who made it can: the room id commits to their key
+        and everyone ignores metadata signed by anyone else, so a refusal here saves a doomed publish. It republishes
+        the replaceable metadata (same `d` tag, same nonce, same proof of work), one second newer than what we hold."""
+        meta = self.store.rooms().get(room)
+        if meta is None:
+            raise ValueError("you are not in that room")
+        me = self._identity()["person_pk"]
+        if meta.get("creator") != me:
+            raise ValueError("only the person who made this room can change it")
+        name = _name_ok(name, "")
+        if not name:
+            raise ValueError("a room needs a name")
+        about = "".join(ch for ch in str(about or "") if unicodedata.category(ch) not in ("Cc", "Cf", "Zl", "Zp")).strip()[:200]
+        nonce = str(meta.get("nonce") or "")
+        if room_id_for(me, nonce) != room:
+            # a room saved before the nonce was kept: it is in the metadata I published, so ask the relays for it
+            found = await self.pool.query([{"kinds": [KIND_META], "authors": [me], "#d": [f"ninsei/room/{room}"], "limit": 20}], timeout=4)
+            nonce = next((str(c.get("nonce")) for ev in found if (c := self._content(ev)) and room_id_for(me, str(c.get("nonce", ""))) == room), "")
+            if not nonce:
+                raise ValueError("couldn't find this room's details on your relays yet; try again in a moment")
+        self._pace_click()
+        at = max(_now(), int(meta.get("at") or 0) + 1)
+        new = {"id": room, "nonce": nonce, "name": name, "about": about, "interests": list(meta.get("interests") or [])[:8], "creator": me}
+        tags = [["d", f"ninsei/room/{room}"], ["t", APP_TAG]] + [["t", i] for i in new["interests"] if i]
+        ev = nostr.build_event(self._identity()["person_sk"], KIND_META, json.dumps(new), tags, pow_bits=12, created_at=at)
+        self._queue_event(ev)
+        self._spawn(self.pool.publish(ev))
+        self.store.save_room(room, dict(new, at=at))
+        self._bump()
+        return {"id": room, "name": name, "about": about}
 
     def _room_meta_from(self, ev: dict, room: str) -> Optional[dict]:
         """The room's metadata from a KIND_META event, only if the room's creator signed it."""
@@ -2896,7 +2994,8 @@ class Engine:
             return None  # metadata not from the room's creator
         at = ev.get("created_at") if isinstance(ev.get("created_at"), int) else 0
         return {"id": room, "name": _name_ok(c.get("name"), "Room " + room[:4]), "about": str(c.get("about", ""))[:200],
-                "interests": [str(x)[:24] for x in (c.get("interests") or [])][:8], "creator": ev["pubkey"], "at": at}
+                "interests": [str(x)[:24] for x in (c.get("interests") or [])][:8], "creator": ev["pubkey"], "at": at,
+                "nonce": str(c.get("nonce"))[:64]}  # already proven to be the creator's by room_id_for above
 
     def _on_room_meta(self, ev: dict) -> None:
         d = (nostr.tag_values(ev, "d") or [""])[0]
@@ -2913,7 +3012,7 @@ class Engine:
         self._bump()
 
     async def join_room(self, room: str, meta: Optional[dict] = None) -> dict:
-        room = re.sub(r"[^a-f0-9]", "", room.lower().replace("ninsei:", ""))[:24]
+        room = parse_room_link(room)[0]  # a message link (`ninsei:<room>#<event>`) joins the room, never mangles the id
         if not room:
             raise ValueError("that room code doesn't look right")
         if meta is None:
@@ -2951,6 +3050,11 @@ class Engine:
     async def leave_room(self, room: str) -> None:
         await self._end_hosted(room)
         self.store.forget_room(room)
+        prefs = self.settings()["room_prefs"]
+        if room in prefs:
+            stored = self.store.get("settings") or {}
+            stored["room_prefs"] = {k: v for k, v in prefs.items() if k != room}
+            self.store.set("settings", stored)
         self.events.pop(room, None)  # first: from here on _publish_room refuses the room, so work in flight can't post
         # what was waiting on this room can't be answered any more: its offers and queued drafts are dropped
         offers = self.store.get("offers") or {}
@@ -4458,6 +4562,7 @@ class Engine:
         ident = self._identity()
         s = self.settings()
         rooms = []
+        prefs = s["room_prefs"]
         for rid, meta in self.store.rooms().items():
             evs = self.events.get(rid, {})
             fx = self._msg_fx(rid)
@@ -4475,7 +4580,9 @@ class Engine:
             online = sum(1 for p in self.presence.get(rid, {}).values() if time.time() - p["at"] < ABSENT_AFTER)
             rooms.append({"id": rid, "name": meta.get("name", ""), "about": meta.get("about", ""),
                           "interests": meta.get("interests", []), "unread": unread, "mentions": mentions,
-                          "online": online, "last_read": int(meta.get("last_read") or 0)})
+                          "online": online, "last_read": int(meta.get("last_read") or 0),
+                          "muted": bool(prefs.get(rid, {}).get("muted")), "chattiness": prefs.get(rid, {}).get("chattiness", ""),
+                          "mine": meta.get("creator") == ident["person_pk"]})
             if hits:  # the newest unread mention, for an alert: who, where and the start of what they said
                 he, hc = hits[-1]
                 name, owner, who = _name_ok(hc.get("name"), _short(he["pubkey"])), self.owner_of(he), self._who(rid)
@@ -4503,7 +4610,8 @@ class Engine:
             "rooms": rooms,
             "relays": [{"url": st.url, "state": st.state, "ok": st.ok, "rejected": st.rejected,
                         "error": st.last_error or st.last_reject, "rate_limited": st.rate_limited,
-                        "resting_s": int(self.pool.cooling(st.url) + 0.999)}
+                        "resting_s": int(self.pool.cooling(st.url) + 0.999),
+                        "retry_s": max(0, int(st.retry_at - time.time() + 0.999)) if st.state == "backoff" else 0}
                        for st in (self.pool.status.values() if self.pool else [])],
             "drafts": self.store.drafts(),
             # the private line's summary only (counts, never text): the UI fetches the thread itself

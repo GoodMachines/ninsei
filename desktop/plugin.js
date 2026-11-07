@@ -759,6 +759,7 @@ function mentionAlerts(store) {
       const lm = r.last_mention
       if (seen === null || !(r.id in seen) || !(r.mentions > seen[r.id]) || !lm || told[r.id] === lm.id) continue
       if (store.isShowing(r.id)) continue
+      if (r.muted) continue   // a muted room makes no toast and no OS notification (its mentions still show inside it)
       told[r.id] = lm.id
       const title = (lm.impostor ? 'Someone calling themselves ' : '') + cleanSnippet(lm.name, 32) + ' mentioned you in ' + cleanSnippet(r.name, 40)
       const snippet = cleanSnippet(lm.text, 60)
@@ -943,6 +944,80 @@ function linkAt(text, i) {
   return { url, href: u.href }
 }
 
+// A link to a room or to one message in it, `ninsei:<room>` or `ninsei:<room>#<message>`, at text[i] or null. Its text is
+// the link itself, like every other link, and it opens inside Ninsei, never a browser.
+function roomLinkAt(text, i) {
+  if (i > 0 && /[\p{L}\p{N}]/u.test(text.charAt(i - 1))) return null
+  const m = /^ninsei:([0-9a-f]{16})(?:#([0-9a-f]{64}))?(?![0-9a-f])/i.exec(text.slice(i, i + 90))
+  return m ? { text: m[0], room: m[1].toLowerCase(), event: m[2] ? m[2].toLowerCase() : '' } : null
+}
+
+// What a pasted code or link names: { room, event } ('' when absent); the same reading as the engine's parse_room_link.
+function parseRoomLink(s) {
+  const t = String(s == null ? '' : s).trim().slice(0, 200).replace(/^ninsei:/i, '')
+  const k = t.indexOf('#')
+  const room = (k < 0 ? t : t.slice(0, k)).toLowerCase().replace(/[^a-f0-9]/g, '').slice(0, 24)
+  const ev = k < 0 ? '' : t.slice(k + 1).trim().toLowerCase()
+  return { room, event: /^[0-9a-f]{64}$/.test(ev) ? ev : '' }
+}
+
+// A message to scroll to once its room is open (from a pasted or clicked message link).
+const PENDING_JUMP = { room: '', id: '', until: 0 }
+const JUMP_WATCH = new Set()   // open timelines, told when a new jump is wanted
+function wantJump(room, id) {
+  PENDING_JUMP.room = room; PENDING_JUMP.id = id; PENDING_JUMP.until = Date.now() + 15000
+  JUMP_WATCH.forEach(f => f())
+}
+
+// Is every relay down (with some configured)? { retry } is the seconds to the soonest next try, or null. Not the
+// cleared "offline" case (no relays set), which has its own notice; a relay still on its first try is not down yet.
+function relaysDown(snap) {
+  const rs = (snap && snap.relays) || []
+  const set = snap && snap.settings && snap.settings.relays
+  if (!rs.length || !Array.isArray(set) || set.length === 0) return null
+  if (!rs.every(r => r.state === 'backoff' || (r.state === 'connecting' && r.error))) return null
+  const waits = rs.filter(r => r.state === 'backoff').map(r => r.retry_s || 0)
+  return { retry: waits.length ? Math.min.apply(null, waits) : 0 }
+}
+
+// Fuzzy match for the quick switcher: how well does `q` fit `label`? -1 for no fit. The letters of q must appear in
+// order (no case, no accents); a prefix, word starts and runs of consecutive letters score higher; shorter wins ties.
+function fuzzyScore(q, label) {
+  const a = foldText(q).f.replace(/\s+/g, ''), b = foldText(label).f
+  if (!a) return 0
+  let score = 0, at = 0, run = 0
+  for (let i = 0; i < a.length; i++) {
+    const k = b.indexOf(a[i], at)
+    if (k < 0) return -1
+    run = k === at && i > 0 ? run + 1 : 0
+    score += 1 + run * 2 + (k === 0 ? 6 : /[\s\-_.#]/.test(b[k - 1]) ? 3 : 0)
+    at = k + 1
+  }
+  return score * 100 - b.length
+}
+
+// Three dots that bounce one after another, each a spring (a kick up that settles back with a little overshoot), not a
+// CSS ease loop. Still dots under reduced motion.
+function Dots() {
+  const els = useRef([])
+  useEffect(() => {
+    if (motion.reduced()) return
+    const springs = []
+    const timers = []
+    const bounce = () => els.current.forEach((el, i) => {
+      timers.push(P.setTimeout(() => {
+        if (!el) return
+        springs.push(motion.spring({ from: -4, to: 0, k: SPRING.pop.k, c: SPRING.pop.c,
+          onUpdate: x => { el.style.transform = Math.abs(x) < 0.02 ? '' : 'translateY(' + x.toFixed(2) + 'px)'; el.style.opacity = String(clamp(1 + x * 0.12, 0.35, 1)) } }))
+      }, i * 140))
+    })
+    bounce()
+    const iv = P.setInterval(bounce, 1100)
+    return () => { springs.forEach(s => s.stop()); timers.forEach(t => typeof t === 'function' && t()); if (typeof iv === 'function') iv(); else if (iv != null && typeof clearInterval === 'function') clearInterval(iv) }
+  }, [])
+  return [0, 1, 2].map(i => jsx('i', { ref: el => { els.current[i] = el } }, i))
+}
+
 // Is there a closing mark for an emphasis opened just before `from`, on the same line?
 function emphasisCloses(text, from, ch, dbl) {
   const nl = text.indexOf('\n', from)
@@ -978,6 +1053,9 @@ function richInline(text, names) {
     } else if ((ch === 'h' || ch === 'H') && links < RICH_MAX_LINKS) {
       const l = linkAt(text, i)
       if (l) { links++; push({ t: 'link', text: l.url, href: l.href }); i += l.url.length; continue }
+    } else if ((ch === 'n' || ch === 'N') && links < RICH_MAX_LINKS) {
+      const rl = roomLinkAt(text, i)
+      if (rl) { links++; push({ t: 'room', text: rl.text, room: rl.room, event: rl.event }); i += rl.text.length; continue }
     } else if (ch === '*' || ch === '_') {
       const dbl = ch === '*' && text[i + 1] === '*'
       const w = dbl ? 2 : 1
@@ -1299,22 +1377,25 @@ const CSS = TOKENS + `
 .hx .h-agent{--tint:var(--h-accent);--tint:oklch(from var(--h-fg) l 0.15 var(--hue,28))}
 
 /* page grid: left rail, centre, right rail. Collapses by container width, not viewport. */
-.h-page{container-type:inline-size;height:100%;min-height:0}
+.h-page{container-type:inline-size;position:relative;height:100%;min-height:0}
 .h-grid{display:grid;grid-template-columns:220px minmax(0,1fr) 240px;height:100%;min-height:0}
 .h-left,.h-right{min-height:0;overflow-y:auto;padding:14px 10px}
 .h-left{border-right:1px solid var(--h-line)}
 .h-right{border-left:1px solid var(--h-line)}
 .h-center{display:flex;flex-direction:column;min-height:0;min-width:0}
 .h-grid[data-embedded]{grid-template-columns:minmax(0,1fr) 240px}
+.h-navbar{display:none}
 .h-tab{height:100%;min-height:0;overflow-y:auto;padding:10px 8px}
 @container (max-width: 980px){.h-grid{grid-template-columns:200px minmax(0,1fr)}.h-grid[data-embedded]{grid-template-columns:minmax(0,1fr)}.h-right{display:none}.h-grid[data-people=open] .h-right{display:block;position:absolute;right:0;top:0;bottom:0;width:260px;z-index:5;background:var(--h-bg);box-shadow:-12px 0 24px -16px var(--h-shadow)}
 .h-grid[data-people=open] .h-scrim{display:block;position:absolute;inset:0;z-index:4;background:color-mix(in srgb,var(--h-bg) 55%,transparent)}.h-grid[data-people=open] .h-right-bar{display:flex;justify-content:flex-end;margin:-6px -2px 4px}}
-@container (max-width: 680px){.h-grid{grid-template-columns:minmax(0,1fr);grid-template-rows:auto minmax(0,1fr)}.h-grid[data-embedded]{grid-template-rows:minmax(0,1fr)}
-.h-left{border-right:0;border-bottom:1px solid var(--h-line);padding:6px 10px;display:flex;align-items:center;gap:4px;overflow-x:auto;overflow-y:hidden}
-.h-left .h-brand{padding:0 6px 0 0;flex:none}.h-left .h-brand>div{display:none}
-.h-left .h-nav{flex-direction:row;margin:0;flex:none}.h-left .h-navrow{width:auto;white-space:nowrap}
-.h-left .h-navhead{padding:0;flex:none;order:9}.h-left .h-navhead .h-sec{display:none}
-.h-head{padding:10px 12px;flex-wrap:wrap}.h-timeline,.h-composer{padding-left:12px;padding-right:12px}}
+@container (max-width: 720px){.h-grid,.h-grid[data-embedded]{grid-template-columns:minmax(0,1fr)}
+.h-left{display:none}
+.h-grid[data-nav=open] .h-left{display:block;position:absolute;left:0;top:0;bottom:0;width:min(280px,86%);z-index:6;background:var(--h-bg);border-right:1px solid var(--h-line);box-shadow:12px 0 24px -16px var(--h-shadow)}
+.h-grid[data-nav=open] .h-scrim-nav{display:block;position:absolute;inset:0;z-index:5;background:color-mix(in srgb,var(--h-bg) 55%,transparent)}
+.h-navbar{display:flex;align-items:center;gap:6px;padding:6px 10px;border-bottom:1px solid var(--h-line);flex:none}
+.h-head{padding:10px 12px;flex-wrap:wrap}.h-timeline,.h-composer{padding-left:12px;padding-right:12px}
+.h-grid[data-people=open] .h-right{left:0;right:0;top:auto;width:auto;max-height:72%;border-left:0;border-top:1px solid var(--h-line2);border-radius:14px 14px 0 0;box-shadow:0 -12px 28px -16px var(--h-shadow)}
+.h-composer{padding-bottom:max(14px,env(safe-area-inset-bottom))}}
 .h-grid{position:relative}
 .h-scrim,.h-right-bar{display:none}
 
@@ -1330,6 +1411,7 @@ const CSS = TOKENS + `
 .h-navrow:hover{background:var(--h-hover);color:var(--h-fg)}
 .h-navrow[data-on=true]{background:var(--h-raise);color:var(--h-fg)}
 .h-navrow .h-dot{width:6px;height:6px;border-radius:50%;background:var(--h-accent);flex:none}
+.h-navrow .h-dot-quiet{background:var(--h-fg3)}
 .h-navrow .h-count{font-size:10.5px;color:var(--h-fg3);font-variant-numeric:tabular-nums}
 .h-hash{color:var(--h-fg3);width:14px;text-align:center;flex:none}
 .h-navhead{display:flex;align-items:center;justify-content:space-between;padding:0 8px 4px}
@@ -1417,6 +1499,7 @@ const CSS = TOKENS + `
 .h-jump-btn:focus-visible,.h-link:focus-visible,.h-search-in:focus-visible{outline:2px solid var(--h-accent);outline-offset:1px}
 .h-link{color:var(--h-accent);text-decoration:underline;text-underline-offset:2px;overflow-wrap:anywhere;word-break:break-all}
 .h-link:hover{text-decoration-thickness:2px}
+button.h-link{background:none;border:0;padding:0;font:inherit;cursor:pointer;text-align:left}
 .h-code{font-family:var(--h-mono);font-size:.92em;padding:1px 5px;border-radius:5px;background:var(--h-raise);border:1px solid var(--h-line)}
 .h-fence{margin:4px 0;padding:8px 10px;max-width:100%;overflow-x:auto;border-radius:8px;background:var(--h-raise);border:1px solid var(--h-line);font-family:var(--h-mono);font-size:12.5px;line-height:1.45;white-space:pre-wrap;overflow-wrap:anywhere}
 .h-fence code{font-family:inherit}
@@ -1440,6 +1523,20 @@ const CSS = TOKENS + `
 .h-ac{position:absolute;left:0;right:0;bottom:calc(100% + 6px);z-index:30;max-height:240px;overflow:auto;padding:4px;border:1px solid var(--h-line2);border-radius:10px;background:var(--h-card);box-shadow:var(--h-shadow)}
 .h-ac-opt{display:flex;align-items:center;gap:8px;min-width:0;padding:5px 8px;border-radius:7px;cursor:pointer}
 .h-ac-opt[aria-selected=true]{background:color-mix(in oklch,var(--h-accent) 18%,transparent)}
+.h-menuwrap{position:relative;display:inline-flex}
+.h-menu-down{top:calc(100% + 6px);bottom:auto;left:auto;right:0;min-width:270px}
+.h-menu-h{padding:6px 9px 2px}.h-menu-sep{height:1px;margin:4px 2px;background:var(--h-line)}
+.h-menu-tick{display:inline-grid;place-items:center;width:14px;flex:none;margin-top:2px}
+.h-menu>button[aria-checked=true] b{color:var(--h-accent)}.h-menu>button:focus-visible{outline:2px solid var(--h-accent);outline-offset:-2px}
+.h-qs-scrim{position:absolute;inset:0;z-index:50;display:flex;justify-content:center;align-items:flex-start;padding:12vh 12px 0;background:color-mix(in srgb,var(--h-bg) 60%,transparent)}
+.h-qs{width:min(520px,100%);max-height:min(60vh,440px);display:flex;flex-direction:column;border:1px solid var(--h-line2);border-radius:12px;background:var(--h-card);box-shadow:0 18px 48px -16px var(--h-shadow);overflow:hidden}
+.h-qs-in{border:0;border-bottom:1px solid var(--h-line);outline:0;background:transparent;color:var(--h-fg);font:inherit;padding:12px 14px}
+.h-qs-in::placeholder{color:var(--h-fg3)}
+.h-qs-list{overflow-y:auto;overscroll-behavior:contain;padding:4px}.h-qs-none{padding:14px}
+.h-qs-opt{display:flex;align-items:center;gap:9px;min-width:0;padding:7px 10px;border-radius:8px;cursor:pointer}
+.h-qs-opt[aria-selected=true]{background:color-mix(in oklch,var(--h-accent) 18%,transparent)}
+.h-empty-s{padding:14px 10px;gap:6px;flex:none}
+@media (pointer:coarse){.h-bar-btn{width:38px;height:36px}.h-bar{top:-20px}}
 .h-ac-opt .h-initial{width:22px;height:22px;font-size:11px}
 .h-ac-opt b{font-weight:600}
 .h-ac-sub{color:var(--h-fg3);font-size:12px}
@@ -1496,9 +1593,7 @@ const CSS = TOKENS + `
 .h-lmsg:hover .h-lactions,.h-lactions:focus-within{opacity:1}
 .h-lmsg [data-status=failed]{color:var(--h-bad)}
 .h-typing{display:inline-flex;gap:4px;align-items:center;padding:9px 12px;border-radius:4px 12px 12px 12px;background:var(--h-raise);border:1px solid var(--h-line);width:max-content}
-.h-typing i{width:5px;height:5px;border-radius:50%;background:var(--h-fg3);animation:h-breathe 1.1s cubic-bezier(.45,.05,.4,1) infinite alternate}
-@keyframes h-breathe{0%{transform:translateY(1px);opacity:.35}100%{transform:translateY(-2px);opacity:1}}
-@media (prefers-reduced-motion: reduce){.h-typing i{animation:none}}
+.h-typing i{width:5px;height:5px;border-radius:50%;background:var(--h-fg3);display:block}
 .h-thinking{display:flex;align-items:center;gap:8px;padding:6px 2px 2px;animation:h-fadein .3s ease-out}
 @media (prefers-reduced-motion: reduce){.h-thinking{animation:none}.hx .h-spin{animation:none!important}}
 .h-thinking .h-typing{padding:6px 9px}
@@ -4287,11 +4382,30 @@ function RoomView(props) {
   const jumpRef = useRef(null)
   const bottomRef = useRef(null)
   useEffect(() => { setSearching(false) }, [room.id])
+  const openSearch = useCallback(() => {
+    setSearching(true)
+    P.setTimeout(() => { const i = typeof document !== 'undefined' && document.querySelector && document.querySelector('.h-search-in'); if (i && i.focus) i.focus() }, 0)
+  }, [])
+  // Cmd/Ctrl+F (the page asks) opens search; Escape closes it unless something nearer the keys took the Escape
+  useEffect(() => {
+    HOTKEYS.search = openSearch
+    return () => { if (HOTKEYS.search === openSearch) HOTKEYS.search = null }
+  }, [openSearch])
   const closeSearch = useCallback(() => {
     setSearching(false)
     const b = typeof document !== 'undefined' && document.querySelector && document.querySelector('.h-head [data-search-btn]')
     if (b && b.focus) b.focus()
   }, [])
+  useEffect(() => {
+    if (!searching) return
+    const esc = e => {
+      if (e.key !== 'Escape' || e.defaultPrevented) return
+      if (document.querySelector('[role=dialog], .h-grid[data-people=open], .h-grid[data-nav=open]')) return
+      e.preventDefault()
+      closeSearch()
+    }
+    return P.listen(document, 'keydown', esc)
+  }, [searching])
   // Sending: your message shows at once, faint; a send the engine refuses becomes Retry / Discard in place
   const submit = useCallback((text, replyTo) => {
     if (bottomRef.current) bottomRef.current()
@@ -4326,7 +4440,7 @@ function RoomView(props) {
     if (t && t.focus) t.focus()
   }, [])
   return jsxs(Fragment, { children: [
-    jsx(RoomHeader, { store, room, snap, onPeople: props.onPeople, searching, onSearch: () => (searching ? closeSearch() : setSearching(true)) }),
+    jsx(RoomHeader, { store, room, snap, onPeople: props.onPeople, searching, onSearch: () => (searching ? closeSearch() : openSearch()) }),
     searching && jsx(SearchPanel, { room, onClose: closeSearch, onPick: id => !!(jumpRef.current && jumpRef.current(id, true)) }, room.id),
     jsx(Timeline, { store, snap, room, book, onReply, newAfter: readMark.current.ts, jumpRef, bottomRef, onRetry, onDiscard, editReq, onEditDone, onFocusComposer }),
     jsxs('div', { className: 'h-composer', children: [
@@ -4346,6 +4460,11 @@ function RoomView(props) {
 function RoomHeader(props) {
   const { store, room, snap } = props
   const [confirm, setConfirm] = useState(false)
+  const [menu, setMenu] = useState(false)
+  const [editing, setEditing] = useState(false)
+  const menuBtn = useRef(null)
+  const rm = (snap.rooms || []).find(r => r.id === room.id) || {}
+  const closeMenu = back => { setMenu(false); if (back) P.setTimeout(() => menuBtn.current && menuBtn.current.focus && menuBtn.current.focus(), 0) }
   const mine = new Set((snap.settings && snap.settings.interests) || [])
   const online = (room.members || []).filter(p => p.online).length
   const copyCode = async () => {
@@ -4356,6 +4475,7 @@ function RoomHeader(props) {
     jsxs('div', { className: 'h-grow h-col', style: { gap: 3 }, children: [
       jsxs('div', { className: 'h-row', children: [
         jsx('h2', { className: 'h-trunc', children: room.name }),
+        rm.muted && jsx(K.Tip, { label: 'Muted: no alerts from this room', children: jsx('span', { className: 'h-faint', role: 'img', 'aria-label': 'Muted', children: jsx(K.Icon, { name: 'bell-slash', size: 12 }) }) }),
         jsx('span', { className: 'h-faint h-small', children: online + ' here' })
       ] }),
       (room.about || (room.interests || []).length > 0) && jsxs('div', { className: 'h-row', style: { gap: 8, flexWrap: 'wrap' }, children: [
@@ -4369,6 +4489,12 @@ function RoomHeader(props) {
       children: jsxs(Fragment, { children: [jsx(K.Icon, { name: 'link', size: 13 }), 'Share code'] }) }) }),
     props.onPeople && jsx(K.Button, { variant: 'ghost', size: 'icon', 'aria-label': 'People', onClick: props.onPeople, className: 'h-peoplebtn',
       children: jsx(K.Icon, { name: 'organization', size: 14 }) }),
+    jsxs('div', { className: 'h-menuwrap', children: [
+      jsx(K.Tip, { label: 'Room options', children: jsx(K.Button, { variant: 'ghost', size: 'icon', 'aria-label': 'Room options', 'aria-haspopup': 'menu', 'aria-expanded': menu,
+        ref: menuBtn, onClick: () => setMenu(!menu), children: jsx(K.Icon, { name: 'ellipsis', size: 14 }) }) }),
+      menu && jsx(RoomMenu, { store, room, rm, snap, anchor: menuBtn, onClose: closeMenu, onEdit: () => setEditing(true) })
+    ] }),
+    editing && jsx(RoomEditDialog, { store, room, onClose: () => setEditing(false) }),
     jsx(K.Tip, { label: 'Leave room', children: jsx(K.Button, { variant: 'ghost', size: 'icon', 'aria-label': 'Leave room', onClick: () => setConfirm(true),
       children: jsx(K.Icon, { name: 'sign-out', size: 14 }) }) }),
     jsx(Modal, { open: confirm, onClose: () => setConfirm(false), title: 'Leave ' + room.name + '?',
@@ -4525,6 +4651,28 @@ function Timeline(props) {
     const node = editReq && el && [].find.call(el.querySelectorAll('[data-mid]'), n => n.getAttribute('data-mid') === editReq.id)
     if (node) springIntoView(node)
   }, [editReq])
+  // A pasted or clicked message link: once the room is open, scroll to that message (older pages are loaded
+  // one by one, up to six, to reach it) and flash it; say so if it isn't to be found.
+  const hops = useRef(0)
+  const tryJump = useRef(null)
+  tryJump.current = () => {
+    const w = PENDING_JUMP
+    if (w.room !== room.id || !w.id) return
+    if (Date.now() > w.until) { w.room = ''; w.id = ''; return }
+    if (msgs.some(m => m.id === w.id)) {
+      const id = w.id
+      w.room = ''; w.id = ''; hops.current = 0
+      P.setTimeout(() => jump(id, true), 120)
+    } else if (er.more && hops.current < 6 && !loadingMore) {
+      hops.current++
+      loadEarlier()
+    } else if (!er.more || hops.current >= 6) {
+      w.room = ''; w.id = ''; hops.current = 0
+      P.toast('info', 'That message isn’t in the history this computer has for the room.')
+    }
+  }
+  useEffect(() => { tryJump.current() }, [msgs, er.more, loadingMore])
+  useEffect(() => { const f = () => tryJump.current(); JUMP_WATCH.add(f); return () => { JUMP_WATCH.delete(f) } }, [])
   const toLatest = () => { const el = scroller.current; if (el) springScrollTo(el, el.scrollHeight - el.clientHeight) }
 
   const k = away === null ? -1 : msgs.findIndex(m => m.id === away)
@@ -4534,7 +4682,7 @@ function Timeline(props) {
   return jsxs('div', { className: 'h-tlwrap', children: [
     jsx('div', { className: 'h-scroll', ref: scroller, onScroll, children: jsxs('div', { className: 'h-timeline', role: 'log', 'aria-live': 'polite', children: [
       er.more && jsx(EarlierButton, { onClick: keeper.loadMore, busy: loadingMore }),
-      items.length === 0 && jsx('div', { className: 'h-empty', children: 'Quiet in here. Say hello, or start a game of Tall Tales.' }),
+      items.length === 0 && jsx(EmptyState, { icon: 'smiley', title: 'Say hi, or start a game', hint: 'Nothing has been said here yet. Write the first message, or start a game from the box below.' }),
       items.map(it => jsx(TimelineItem, Object.assign({ it, store, snap, room, book, animate: fresh(it.key) }, actions), it.key)),
       jsx(Thinking, { room })
     ] }) }),
@@ -4581,7 +4729,7 @@ function Thinking(props) {
   const text = parts.join('. ')
   return jsxs('div', { className: 'h-thinking', role: 'status', 'aria-label': text, children: [
     jsx('div', { className: 'h-row', style: { gap: 2 }, children: busy.slice(0, 3).map(a => jsx(Face, { face: a.face, pk: a.pk, state: a.state, size: 22, name: a.name }, a.pk)) }),
-    jsxs('div', { className: 'h-typing', children: [0, 1, 2].map(i => jsx('i', { style: { animationDelay: (i * 0.16) + 's' } }, i)) }),
+    jsx('div', { className: 'h-typing', children: jsx(Dots, {}) }),
     jsx('span', { className: 'h-faint h-small', children: text })
   ] })
 }
@@ -4698,6 +4846,23 @@ function Message(props) {
   const [asking, setAsking] = useState(false)
   const editBtn = useRef(null)
   const viaKey = useRef(false)   // editing began with the Up arrow in the composer: focus returns there
+  // Touch: a long press on a message shows its actions (there is no hover); a tap elsewhere hides them
+  const [touchBar, setTouchBar] = useState(false)
+  const press = useRef(null)
+  const stopPress = () => { if (press.current) { press.current.off(); press.current = null } }
+  const onPointerDown = e => {
+    if (e.pointerType !== 'touch') return
+    stopPress()
+    press.current = { x: e.clientX, y: e.clientY, off: P.setTimeout(() => { press.current = null; setTouchBar(true) }, 480) }
+  }
+  const onPointerMove = e => { const p = press.current; if (p && Math.abs(e.clientX - p.x) + Math.abs(e.clientY - p.y) > 10) stopPress() }
+  useEffect(() => {
+    if (!touchBar) return
+    const away = e => { if (node.current && !node.current.contains(e.target)) setTouchBar(false) }
+    const off = P.listen(document, 'pointerdown', away)
+    return () => off()
+  }, [touchBar])
+  useEffect(() => stopPress, [])
   const own = !!(props.store && m.mine && !agent && !m.deleted && !m.optimistic)
   const who = { kind: agent ? 'agent' : 'person', pk: m.pk, name: m.name, face: m.face, owner_name: m.owner_name }
   const text = jsx(MessageBody, { m, book: props.book })
@@ -4737,9 +4902,19 @@ function Message(props) {
     jsx(K.Tip, { label: 'Delete', children: jsx('button', { type: 'button', className: 'h-bar-btn', 'aria-label': 'Delete your message',
       onClick: () => setAsking(true), children: jsx(K.Icon, { name: 'trash', size: 14 }) }) }, 'delete')
   ] : null
+  const copyText = async () => {
+    const ok = await P.copy(String(m.text || ''))
+    P.toast(ok ? 'info' : 'error', ok ? 'Message text copied.' : 'Could not reach the clipboard.')
+  }
+  const copyLink = async () => {
+    const link = 'ninsei:' + props.roomId + '#' + m.id
+    const ok = await P.copy(link)
+    P.toast(ok ? 'info' : 'error', ok ? 'Link to this message copied. Anyone in the room can open it in Ninsei.' : 'Could not reach the clipboard. The link is ' + link)
+  }
   const react = (emoji, on) => props.store.post('/react', { room: props.roomId, target: m.id, emoji, on }).catch(() => {})
   const mineSet = (m.reactions || []).filter(r => r.mine).map(r => r.emoji)
-  return jsxs('div', { className: cx('h-msg', agent && 'h-agent'), ref: node, 'data-role': m.role, 'data-first': props.first, 'data-mid': m.id, 'data-bar': picking,
+  return jsxs('div', { className: cx('h-msg', agent && 'h-agent'), ref: node, 'data-role': m.role, 'data-first': props.first, 'data-mid': m.id, onPointerDown, onPointerMove, onPointerUp: stopPress, onPointerCancel: stopPress,
+    onContextMenu: e => { if (touchBar || press.current) e.preventDefault() }, 'data-bar': picking || touchBar,
     'data-faint': faint || undefined, 'aria-busy': m.delivery === 'sending' || undefined, 'data-impostor': !!imp, 'data-mentioned': !!m.mentions_me, style: agent ? { '--hue': f.hue } : undefined, children: [
       jsx('div', { className: 'h-gutter', children: props.first ? jsx(ProfileButton, { who, label: 'Show ' + m.name + '’s card',
         children: agent ? jsx(Face, { face: m.face, pk: m.pk, state: 'activity: idle', size: 28, name: m.name }) : jsx(PersonMark, { pk: m.pk, name: m.name, flagged: !!imp }) })
@@ -4763,7 +4938,7 @@ function Message(props) {
           m.delivery === 'failed' && props.onDiscard && jsx(K.Button, { variant: 'ghost', size: 'sm', onClick: () => props.onDiscard(m), children: 'Discard' })
         ] })
       ] }),
-      props.store && !m.deleted && !m.optimistic && jsx(MessageBar, { m, picking, setPicking, mine: mineSet, onReply: props.onReply, extra,
+      props.store && !m.deleted && !m.optimistic && jsx(MessageBar, { m, picking, setPicking, mine: mineSet, onReply: props.onReply, extra, onCopyText: copyText, onCopyLink: props.roomId ? copyLink : null,
         onPick: emoji => react(emoji, !mineSet.includes(emoji)) }),
       asking && jsx(DeleteConfirm, { open: true, onConfirm: doDelete, onClose: () => setAsking(false) })
     ] })
@@ -4834,6 +5009,10 @@ function MessageBar(props) {
       'aria-haspopup': 'menu', 'aria-expanded': picking, onClick: () => setPicking(!picking), children: jsx(K.Icon, { name: 'smiley', size: 14 }) }) }),
     props.onReply && jsx(K.Tip, { label: 'Reply', children: jsx('button', { type: 'button', className: 'h-bar-btn', 'aria-label': 'Reply to ' + m.name,
       onClick: () => props.onReply(m), children: jsx(K.Icon, { name: 'reply', size: 14 }) }) }),
+    props.onCopyText && jsx(K.Tip, { label: 'Copy text', children: jsx('button', { type: 'button', className: 'h-bar-btn', 'aria-label': 'Copy message text',
+      onClick: props.onCopyText, children: jsx(K.Icon, { name: 'copy', size: 14 }) }) }),
+    props.onCopyLink && jsx(K.Tip, { label: 'Copy link to message', children: jsx('button', { type: 'button', className: 'h-bar-btn', 'aria-label': 'Copy link to this message',
+      onClick: props.onCopyLink, children: jsx(K.Icon, { name: 'link', size: 14 }) }) }),
     props.extra,
     picking && jsx(ReactionPicker, { mine: props.mine, onClose: close, onPick: emoji => { props.onPick(emoji); close() } })
   ] })
@@ -4928,11 +5107,20 @@ function richNode(t, i) {
   if (t.t === 'code') return jsx('code', { className: 'h-code', children: t.text }, i)
   let node
   if (t.t === 'link') node = jsx(RichLink, { href: t.href, text: t.text })
+  else if (t.t === 'room') node = jsx(RoomLink, { room: t.room, event: t.event, text: t.text })
   else if (t.t === 'mention') node = jsx('span', { className: 'h-at', 'data-me': t.me, children: t.text })
   else node = t.text
   if (t.i) node = jsx('em', { children: node })
   if (t.b) node = jsx('strong', { children: node })
   return jsx(Fragment, { children: node }, i)
+}
+
+// A `ninsei:` link opens inside Ninsei: the room (and the message in it, when the link names one). It shows the
+// link itself. For a room you haven't joined it opens the Join dialog with the code filled in, so nobody joins by a click.
+function RoomLink(props) {
+  const open = useContext(LinkContext)
+  return jsx('button', { type: 'button', className: 'h-link h-roomlink', title: props.event ? 'Open this message' : 'Open this room',
+    onClick: e => { e.preventDefault(); if (open) open(props.room, props.event) }, children: props.text })
 }
 
 // A link shows the address itself, never other words. Desktop hands it to the system browser through the host
@@ -5003,7 +5191,9 @@ function SearchPanel(props) {
       role: 'combobox', 'aria-expanded': list.length > 0, 'aria-controls': 'h-search-list', 'aria-autocomplete': 'list',
       'aria-activedescendant': list.length && !ctx ? 'h-sr-' + active : undefined,
       onChange: e => { setCtx(null); setQ(e.target.value) }, onKeyDown }),
-    jsx('div', { className: 'h-faint h-small h-search-status', role: 'status', children: status }),
+    jsx('div', { className: 'h-faint h-small h-search-status', role: 'status', children: results !== null && term && list.length === 0 ? '' : status }),
+    results !== null && term && list.length === 0 && !error && jsx(EmptyState, { compact: true, icon: 'search', title: 'Nothing found for “' + term.slice(0, 40) + '”',
+      hint: 'Search covers every message this computer has for the room. Try fewer or different words.' }),
     ctx
       ? jsxs('div', { className: 'h-search-ctx', children: [
           jsx(K.Button, { variant: 'ghost', size: 'sm', onClick: () => setCtx(null), children: 'Back to results' }),
@@ -5299,7 +5489,7 @@ function TypingRow(props) {
   const ref = useEnter(true)
   return jsxs('div', { className: 'h-typingrow', ref, children: [
     jsx('span', { className: 'h-row', style: { gap: 2 }, 'aria-hidden': true, children: props.list.slice(0, 3).map(t => jsx(PersonMark, { pk: t.pk, name: t.name, size: 16, flagged: !!t.impostor }, t.pk)) }),
-    jsx('span', { className: 'h-typing h-typing-s', 'aria-hidden': true, children: [0, 1, 2].map(i => jsx('i', { style: { animationDelay: (i * 0.16) + 's' } }, i)) }),
+    jsx('span', { className: 'h-typing h-typing-s', 'aria-hidden': true, children: jsx(Dots, {}) }),
     jsx('span', { className: 'h-trunc', children: props.text })
   ] })
 }
@@ -5317,7 +5507,8 @@ function mentionCandidates(room) {
 
 // The list under the box for "@" and ":" alike: `options` are { key, left, name, sub }, `sel` the highlighted one.
 function SuggestMenu(props) {
-  return jsx('div', { className: 'h-ac', id: props.id, role: 'listbox', 'aria-label': props.label, children: props.options.map((c, i) =>
+  const ref = useEnter(true)
+  return jsx('div', { className: 'h-ac', ref, id: props.id, role: 'listbox', 'aria-label': props.label, children: props.options.map((c, i) =>
     jsxs('div', { id: props.id + '-' + i, role: 'option', className: 'h-ac-opt', 'aria-selected': i === props.sel,
       onMouseDown: e => { e.preventDefault(); props.onChoose(c) }, onMouseEnter: () => props.onHover(i), children: [
         c.left,
@@ -5455,7 +5646,7 @@ function Composer(props) {
 }
 
 function GamesMenu(props) {
-  const ref = useRef(null)
+  const ref = useEnter(true)
   useEffect(() => {
     const away = e => { if (ref.current && !ref.current.contains(e.target)) props.onClose() }
     const esc = e => { if (e.key === 'Escape') props.onClose() }
@@ -5550,6 +5741,212 @@ function MyAgentCard(props) {
         jsx('div', { className: 'h-faint', children: snap.budget.pct >= 1 ? 'resting until tomorrow' : 'tokens today' })
       ] })
     ] })
+  ] })
+}
+
+// ===== ui/52_tools.js ===========================================================================
+
+// ---------------------------------------------------------------------------------------------
+// room options (mute, chattiness, rename), the quick switcher, the reconnecting banner, empty states and the
+// narrow-width drawers. Everything here is local to this page except renaming a room you made.
+// ---------------------------------------------------------------------------------------------
+
+// Keys the page offers to whatever is on screen: the room view sets `search` while it is mounted.
+const HOTKEYS = { search: null }
+// How a `ninsei:` link in a message opens: (room, event) -> the app decides (open the room, or the Join dialog).
+const LinkContext = createContext(null)
+
+// A quiet "nothing here yet" with a hint and, optionally, the one thing to do about it. It settles in on a spring.
+function EmptyState(props) {
+  const ref = useEnter(true)
+  return jsxs('div', { className: cx('h-empty', props.compact && 'h-empty-s'), ref, children: [
+    props.icon && jsx(K.Icon, { name: props.icon, size: props.compact ? 16 : 22 }),
+    jsx('b', { children: props.title }),
+    props.hint && jsx('div', { style: { maxWidth: 420 }, children: props.hint }),
+    props.action && jsx('div', { className: 'h-actions', children: props.action })
+  ] })
+}
+
+// A panel that slides in from an edge on a spring, only when the page is narrow enough to have made it a drawer
+// (its CSS position is absolute then). `from` is the starting offset in px.
+function useSlide(ref, open, from) {
+  const first = useRef(true)
+  useEffect(() => {
+    const el = ref.current
+    if (first.current) { first.current = false; return }
+    if (!open || !el || motion.reduced()) return
+    const cs = typeof getComputedStyle === 'function' ? getComputedStyle(el) : null
+    if (!cs || cs.position !== 'absolute') return
+    const sp = motion.spring({ from: 0, to: 1, k: SPRING.enter.k, c: SPRING.enter.c, onUpdate: x => {
+      el.style.opacity = String(clamp(x * 1.25, 0, 1))
+      el.style.transform = x >= 0.999 && x <= 1.001 ? '' : 'translate(' + ((1 - x) * from.x).toFixed(1) + 'px,' + ((1 - x) * from.y).toFixed(1) + 'px)'
+    }, onRest: () => { el.style.opacity = ''; el.style.transform = '' } })
+    return () => { sp.stop(); el.style.opacity = ''; el.style.transform = '' }
+  }, [open])
+}
+
+// ---- room options -------------------------------------------------------------------------------
+
+const CHATTY_LABEL = { quiet: 'Quiet', normal: 'Normal', lively: 'Lively' }
+
+// The menu under the header's "Room options" button: mute, how chatty your agent is here, and (only if you made
+// the room) rename. Arrow keys move, Enter chooses, Escape closes and gives focus back to the button.
+function RoomMenu(props) {
+  const { store, room, rm, snap } = props
+  const ref = useEnter(true)
+  const items = useRef([])
+  const [idx, setIdx] = useState(0)
+  useEffect(() => { const el = items.current[idx]; if (el && el.focus) el.focus() }, [idx])
+  useEffect(() => {
+    const away = e => { if (ref.current && !ref.current.contains(e.target) && !(props.anchor.current && props.anchor.current.contains(e.target))) props.onClose(false) }
+    const off = P.listen(document, 'pointerdown', away)
+    return () => off()
+  }, [])
+  const global = (snap.settings && snap.settings.chattiness) || 'normal'
+  const pref = body => { props.onClose(true); store.post('/rooms/prefs', Object.assign({ room: room.id }, body)).catch(() => {}) }
+  const entries = [
+    { key: 'mute', role: 'menuitem', icon: rm.muted ? 'bell' : 'bell-slash', label: rm.muted ? 'Unmute this room' : 'Mute this room',
+      hint: rm.muted ? 'Alerts and the unread count come back.' : 'No alerts, no notifications, no count. A quiet dot only.',
+      run: () => pref({ muted: !rm.muted }) },
+    { key: 'h', header: 'Your agent here' },
+    { key: 'c-', role: 'menuitemradio', checked: !rm.chattiness, label: 'Follow Settings (' + CHATTY_LABEL[global].toLowerCase() + ')', run: () => pref({ chattiness: '' }) }
+  ].concat(['quiet', 'normal', 'lively'].map(k => ({ key: 'c-' + k, role: 'menuitemradio', checked: rm.chattiness === k, label: CHATTY_LABEL[k],
+    hint: k === 'quiet' ? 'Answers only when named or asked by you.' : k === 'lively' ? 'Joins in more often.' : '',
+    run: () => pref({ chattiness: k }) })))
+  if (rm.mine) entries.push({ key: 'sep' }, { key: 'edit', role: 'menuitem', icon: 'edit', label: 'Rename or change the description', run: () => { props.onClose(false); props.onEdit() } })
+  const focusable = entries.filter(e => e.role)
+  const onKeyDown = e => {
+    const n = focusable.length
+    if (e.key === 'ArrowDown') { e.preventDefault(); setIdx((idx + 1) % n) }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); setIdx((idx + n - 1) % n) }
+    else if (e.key === 'Home') { e.preventDefault(); setIdx(0) }
+    else if (e.key === 'End') { e.preventDefault(); setIdx(n - 1) }
+    else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); props.onClose(true) }
+    else if (e.key === 'Tab') props.onClose(false)
+  }
+  let at = -1
+  return jsx('div', { className: 'h-menu h-menu-down', ref, role: 'menu', 'aria-label': 'Room options', onKeyDown, children: entries.map(e => {
+    if (e.header) return jsx('div', { className: 'h-menu-h h-sec', role: 'presentation', children: e.header }, e.key)
+    if (!e.role) return jsx('div', { className: 'h-menu-sep', role: 'separator' }, e.key)
+    const i = ++at
+    return jsxs('button', { type: 'button', role: e.role, 'aria-checked': e.role === 'menuitemradio' ? !!e.checked : undefined, tabIndex: i === idx ? 0 : -1,
+      ref: el => { items.current[i] = el }, onClick: e.run, onMouseEnter: () => setIdx(i), children: [
+        e.icon ? jsx(K.Icon, { name: e.icon, size: 14 }) : jsx('span', { className: 'h-menu-tick', 'aria-hidden': true, children: e.checked ? jsx(K.Icon, { name: 'check', size: 13 }) : null }),
+        jsxs('span', { className: 'h-grow', children: [jsx('b', { children: e.label }), e.hint && jsx('span', { className: 'h-faint h-small h-gm-line', children: e.hint })] })
+      ] }, e.key)
+  }) })
+}
+
+// Rename a room or change its description. Only the person who made it sees this (the engine refuses anyone else).
+function RoomEditDialog(props) {
+  const { store, room } = props
+  const [name, setName] = useState(room.name || '')
+  const [about, setAbout] = useState(room.about || '')
+  const [busy, setBusy] = useState(false)
+  const save = async () => {
+    setBusy(true)
+    try { await store.post('/rooms/edit', { room: room.id, name: name.trim(), about: about.trim() }, 'Room updated'); props.onClose() } catch (_) { setBusy(false) }
+  }
+  return jsx(Modal, { open: true, onClose: props.onClose, title: 'Rename or describe this room',
+    description: 'Everyone in the room sees the new words. They are public, and relays or other apps may keep the earlier ones.',
+    footer: [
+      jsx(K.Button, { variant: 'ghost', onClick: props.onClose, children: 'Cancel' }, 'c'),
+      jsx(K.Button, { variant: 'primary', disabled: busy || !name.trim(), onClick: save, children: busy ? 'Saving…' : 'Save' }, 's')
+    ],
+    children: jsxs('div', { className: 'h-col', style: { gap: 12 }, children: [
+      jsx(Field, { label: 'Name', id: 'h-re-name', children: jsx(K.Input, { id: 'h-re-name', value: name, maxLength: 32, autoFocus: true,
+        onChange: e => setName(e.target.value), onKeyDown: e => { if (e.key === 'Enter' && name.trim() && !busy) save() } }) }),
+      jsx(Field, { label: 'What it is about', id: 'h-re-about', children: jsx(K.Input, { id: 'h-re-about', value: about, maxLength: 200,
+        onChange: e => setAbout(e.target.value), onKeyDown: e => { if (e.key === 'Enter' && name.trim() && !busy) save() } }) })
+    ] }) })
+}
+
+// ---- quick switcher ------------------------------------------------------------------------------
+
+// What the switcher can go to: the Lobby, your Hermes, Settings, your rooms, your friends (and old conversations),
+// and Requests when there are some. Plain data; `pick` in App does the going.
+function switcherItems(snap) {
+  const out = [
+    { key: 'lobby', kind: 'lobby', icon: 'compass', label: 'Lobby', sub: 'Find rooms' },
+    { key: 'hermes', kind: 'hermes', icon: 'lock', label: 'Your Hermes', sub: 'Private line' },
+    { key: 'settings', kind: 'settings', icon: 'gear', label: 'Settings', sub: '' }
+  ]
+  for (const r of snap.rooms || []) out.push({ key: 'r-' + r.id, kind: 'room', id: r.id, icon: 'hash', label: r.name || 'Room', sub: r.muted ? 'Room, muted' : 'Room' })
+  const dms = snap.dms || {}
+  for (const t of dms.threads || []) out.push({ key: 'd-' + t.pk, kind: 'dm', id: t.pk, icon: 'person', label: t.name || 'Someone', sub: t.friend === false ? 'Not friends' : 'Friend' })
+  if (dms.requests > 0) out.push({ key: 'requests', kind: 'requests', icon: 'organization', label: 'Friend requests', sub: dms.requests + (dms.requests === 1 ? ' waiting' : ' waiting') })
+  return out
+}
+
+function filterSwitcher(items, q) {
+  const term = String(q || '').trim()
+  if (!term) return items
+  return items.map(it => ({ it, s: fuzzyScore(term, it.label) })).filter(x => x.s >= 0).sort((a, b) => b.s - a.s).map(x => x.it)
+}
+
+// Cmd/Ctrl+K: type a few letters, arrows move, Enter goes, Escape closes. Opens on a spring.
+function QuickSwitcher(props) {
+  const [q, setQ] = useState('')
+  const [sel, setSel] = useState(0)
+  const ref = useEnter(true)
+  const input = useRef(null)
+  const from = useRef(typeof document !== 'undefined' ? document.activeElement : null)
+  useEffect(() => {
+    if (input.current && input.current.focus) input.current.focus()
+    return () => { const b = from.current; if (b && b.isConnected && b.focus) try { b.focus() } catch (_) { /* gone */ } }
+  }, [])
+  const list = useMemo(() => filterSwitcher(switcherItems(props.snap), q), [props.snap, q])
+  useEffect(() => { setSel(0) }, [q])
+  useEffect(() => {
+    const el = typeof document !== 'undefined' && document.getElementById && document.getElementById('h-qs-' + sel)
+    if (el && el.scrollIntoView) el.scrollIntoView({ block: 'nearest' })
+  }, [sel, list])
+  const onKeyDown = e => {
+    if (e.nativeEvent && e.nativeEvent.isComposing) return
+    const n = list.length
+    if (e.key === 'ArrowDown' && n) { e.preventDefault(); setSel((sel + 1) % n) }
+    else if (e.key === 'ArrowUp' && n) { e.preventDefault(); setSel((sel + n - 1) % n) }
+    else if (e.key === 'Enter') { e.preventDefault(); if (list[sel]) props.onPick(list[sel]) }
+    else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); props.onClose() }
+    else if (e.key === 'Tab') e.preventDefault()
+  }
+  return jsx('div', { className: 'h-qs-scrim', onMouseDown: e => { if (e.target === e.currentTarget) props.onClose() }, children:
+    jsxs('div', { className: 'h-qs', ref, role: 'dialog', 'aria-modal': true, 'aria-label': 'Quick switcher', children: [
+      jsx('input', { className: 'h-qs-in', ref: input, value: q, maxLength: 60, placeholder: 'Go to a room, a friend, Lobby or Settings', 'aria-label': 'Go to',
+        role: 'combobox', 'aria-expanded': list.length > 0, 'aria-controls': 'h-qs-list', 'aria-autocomplete': 'list',
+        'aria-activedescendant': list.length ? 'h-qs-' + sel : undefined, onChange: e => setQ(e.target.value), onKeyDown }),
+      list.length === 0
+        ? jsx('div', { className: 'h-faint h-small h-qs-none', role: 'status', children: 'Nothing called that.' })
+        : jsx('div', { className: 'h-qs-list', id: 'h-qs-list', role: 'listbox', 'aria-label': 'Places', children: list.map((it, i) =>
+          jsxs('div', { id: 'h-qs-' + i, role: 'option', className: 'h-qs-opt', 'aria-selected': i === sel, onMouseEnter: () => setSel(i),
+            onMouseDown: e => { e.preventDefault(); props.onPick(it) }, children: [
+              it.kind === 'dm' ? jsx(PersonMark, { pk: it.id, name: it.label, size: 18 })
+                : it.icon === 'hash' ? jsx('span', { className: 'h-hash', 'aria-hidden': true, children: '#' }) : jsx(K.Icon, { name: it.icon, size: 14 }),
+              jsx('b', { className: 'h-grow h-trunc', children: it.label }),
+              it.sub && jsx('span', { className: 'h-faint h-small', children: it.sub })
+            ] }, it.key)) })
+    ] }) })
+}
+
+// ---- reconnecting ---------------------------------------------------------------------------------
+
+// Shown while every relay is down. It counts down to the next try and goes away by itself when one is back
+// (the snapshot stops saying they are all down). Messages you send meanwhile wait and go out later.
+function ReconnectBanner(props) {
+  const at = useMemo(() => Date.now() / 1000, [props.snap])
+  const now = useNow(1000, true)
+  const left = Math.max(0, Math.ceil(at + props.retry - now))
+  const ref = useEnter(true)
+  return jsx('div', { style: { padding: '8px 18px 0' }, ref, children: jsx(Notice, { icon: 'warning', role: 'status',
+    children: 'Reconnecting to relays… ' + (left > 0 ? 'next try in ' + left + ' s.' : 'trying now.') + ' What you send waits and goes out when one is back.' }) })
+}
+
+// The bar that holds the menu button on a narrow page (hidden by CSS otherwise): the sidebar is a drawer there.
+function NavBar(props) {
+  return jsxs('div', { className: 'h-navbar', children: [
+    jsx(K.Button, { variant: 'ghost', size: 'icon', 'aria-label': 'Open the sidebar', 'aria-expanded': !!props.open, onClick: props.onToggle, children: jsx(K.Icon, { name: 'menu', size: 15 }) }),
+    jsx('b', { className: 'h-grow h-trunc', children: 'Ninsei' }),
+    jsx(K.Button, { variant: 'ghost', size: 'icon', 'aria-label': 'Go to…', onClick: props.onSwitch, children: jsx(K.Icon, { name: 'search', size: 14 }) })
   ] })
 }
 
@@ -5677,7 +6074,7 @@ function LineTyping() {
   const ref = useEnter(true)
   return jsx('div', { ref, children: jsxs('div', { className: 'h-msg h-lmsg', 'data-role': 'hermes', 'data-first': true, children: [
     jsx('div', { className: 'h-gutter', children: jsx(HermesMark, { size: 28 }) }),
-    jsxs('div', { className: 'h-typing', role: 'status', 'aria-label': 'Your Hermes is working', children: [0, 1, 2].map(i => jsx('i', { style: { animationDelay: (i * 0.16) + 's' } }, i)) })
+    jsx('div', { className: 'h-typing', role: 'status', 'aria-label': 'Your Hermes is working', children: jsx(Dots, {}) })
   ] }) })
 }
 
@@ -5914,11 +6311,8 @@ function DmView(props) {
       er.more && jsx(EarlierButton, { onClick: keeper.loadMore, busy: loadingMore }),
       err && jsx(Notice, { icon: 'warning', role: 'alert', children: err }),
       !data && !err && jsx('div', { className: 'h-empty', children: 'Opening the conversation…' }),
-      data && data.friend && msgs.length === 0 && mine.length === 0 && jsxs('div', { className: 'h-empty', children: [
-        jsx(K.Icon, { name: 'lock', size: 22 }),
-        jsx('b', { children: 'Say hello to ' + name }),
-        jsx('div', { style: { maxWidth: 420 }, children: 'Only the two of you can read what you write here. It is encrypted on its way, and your agent never sees it.' })
-      ] }),
+      data && data.friend && msgs.length === 0 && mine.length === 0 && jsx(EmptyState, { icon: 'lock', title: 'Say hello to ' + name,
+        hint: 'Only the two of you can read what you write here. It is encrypted on its way, and your agent never sees it.' }),
       items.map(it => (it.kind === 'day' ? jsx(DmItem, { it, animate: false }, it.key) : it.kind === 'msg' && jsx(DmItem, { it, animate: fresh(it.key), onRetry: retry, onDiscard: discard }, it.key)))
     ] }) }),
     data && data.friend && jsx('div', { className: 'h-composer', children: jsx(Composer, { store, room: composeRoom, snap, dm: dmSend }) }),
@@ -5982,12 +6376,11 @@ function DmAbout() {
   ] })
 }
 
-function DmEmpty() {
-  return jsxs('div', { className: 'h-empty', children: [
-    jsx(K.Icon, { name: 'lock', size: 22 }),
-    jsx('b', { children: 'Private messages, for friends' }),
-    jsx('div', { style: { maxWidth: 420 }, children: 'Open anyone’s card in a room and press Add friend. Once they accept, you can message each other. Only the two of you can read it, and your agent never sees it.' })
-  ] })
+function DmEmpty(props) {
+  const has = props.snap && props.snap.dms && (props.snap.dms.threads || []).length > 0
+  return jsx(EmptyState, { icon: 'lock', title: has ? 'Pick a friend to message' : 'No friends yet',
+    hint: has ? 'Only the two of you can read what you write. It is encrypted on its way, and your agent never sees it.'
+      : 'Open anyone’s card in a room and press Add friend. Once they accept, you can message each other. Only the two of you can read it, and your agent never sees it.' })
 }
 
 // ===== ui/60_tales.js ===========================================================================
@@ -6594,7 +6987,8 @@ function Lobby(props) {
         jsx('h3', { className: 'h-grow', children: 'Rooms' }),
         lobby.at ? jsx('span', { className: 'h-faint h-small', children: 'updated ' + fmtAgo(lobby.at) }) : null
       ] }),
-      rooms.length === 0 ? jsx('div', { className: 'h-faint', children: busy ? 'Asking the relays…' : 'No public rooms found yet. Start one and it shows up here for others.' })
+      rooms.length === 0 ? (busy ? jsx('div', { className: 'h-faint', children: 'Asking the relays…' })
+        : jsx(EmptyState, { compact: true, icon: 'compass', title: 'No public rooms yet', hint: 'Start one from the + beside Rooms and it shows up here, under its interests, for others to find.' }))
         : jsx('div', { className: 'h-list', children: rooms.map(r => jsx(LobbyRoom, { r, joining: joining === r.id, onJoin: () => join(r), onOpen: () => openRoom(store, r.id) }, r.id)) })
     ] }),
     jsxs('section', { className: 'h-col', style: { gap: 10 }, children: [
@@ -6758,11 +7152,66 @@ function App(props) {
       if (back && back.isConnected && back.focus) try { back.focus() } catch (_) { /* gone */ }
     }
   }, [people])
-  const go = v => nav().set(v)
+  // The sidebar is a drawer on a narrow page; going anywhere closes it
+  const [drawer, setDrawer] = useState(false)
+  const leftRef = useRef(null)
+  const go = v => { nav().set(v); setDrawer(false) }
+  const dmKey = store.dm()
+  useEffect(() => { setDrawer(false) }, [view, roomKey, dmKey])
+  useSlide(leftRef, drawer, { x: -28, y: 0 })
+  useSlide(rightRef, people, { x: 0, y: 40 })
+  useEffect(() => {
+    if (!drawer) return
+    const esc = e => { if (e.key === 'Escape' && !e.defaultPrevented && !document.querySelector('[role=dialog]')) { e.preventDefault(); setDrawer(false) } }
+    const off = P.listen(document, 'keydown', esc)
+    const btn = leftRef.current && leftRef.current.querySelector('button')
+    if (btn && btn.getClientRects().length > 0 && btn.focus) btn.focus()
+    return off
+  }, [drawer])
+  // Quick switcher and a Join dialog opened by a message link
+  const [switching, setSwitching] = useState(false)
+  const switchingRef = useRef(false)
+  switchingRef.current = switching
+  const [joinFor, setJoinFor] = useState('')
+  const rootRef = useRef(null)
+  const live = useRef(false)
+  // Cmd/Ctrl+K and Cmd/Ctrl+F belong to Ninsei only while focus (or your last click) is inside it, so the host's own
+  // shortcuts keep working everywhere else. F does nothing unless a room is open (then the host's find still runs).
+  useEffect(() => {
+    const mark = e => { const r = rootRef.current; live.current = !!(r && e.target && r.contains && r.contains(e.target)) }
+    const key = e => {
+      if (!(e.metaKey || e.ctrlKey) || e.altKey || e.shiftKey || e.isComposing) return
+      const k = String(e.key || '').toLowerCase()
+      if (k !== 'k' && k !== 'f') return
+      const r = rootRef.current
+      const a = document.activeElement
+      const idle = !a || a === document.body
+      if (!r || !(idle ? live.current : r.contains(a))) return
+      if (k === 'k') { e.preventDefault(); e.stopPropagation(); setSwitching(!switchingRef.current) }
+      else if (HOTKEYS.search && !switchingRef.current) { e.preventDefault(); e.stopPropagation(); HOTKEYS.search() }
+    }
+    const offs = [P.listen(document, 'pointerdown', mark, true), P.listen(document, 'focusin', mark), P.listen(window, 'keydown', key, { capture: true })]
+    return () => offs.forEach(f => f())
+  }, [])
   // Settings is a view of this page on the dashboard and a page of Desktop's own Settings on Desktop (as in the Rail)
   const openSettings = () => { if (P.kind === 'dashboard') go('settings'); else P.openSettings() }
   // "Message" on a person's card: their private conversation, in the centre
   const openDm = pk => { store.setDm(pk); go('dm') }
+  // a `ninsei:` link in a message: a room you are in opens (at the message, if it names one); any other opens the Join dialog
+  const openLink = (room, event) => {
+    const joined = ((store.get().snap || {}).rooms || []).some(r => r.id === room)
+    if (!joined) { setJoinFor(room + (event ? '#' + event : '')); return }
+    if (event) wantJump(room, event)
+    store.setRoom(room); go('room')
+  }
+  const pick = it => {
+    setSwitching(false)
+    if (it.kind === 'room') { store.setRoom(it.id); go('room') }
+    else if (it.kind === 'dm') { store.setDm(it.id); go('dm') }
+    else if (it.kind === 'requests') { store.setDm(DM_REQUESTS); go('dm') }
+    else if (it.kind === 'settings') openSettings()
+    else go(it.kind)
+  }
   const embedded = !!props.embedded  // Desktop's room tab: the sidebar's Ninsei tab is the rail
   const snap = st.snap
   // what each person looks like, for every PersonMark below (pictures only while "Show profile pictures" is on)
@@ -6783,7 +7232,7 @@ function App(props) {
     let center
     const dmPk = store.dm()
     if (view === 'hermes') center = jsx(LineView, { store, snap })
-    else if (view === 'dm') center = dmPk === DM_REQUESTS ? jsx(DmRequests, { store, snap }) : dmPk ? jsx(DmView, { store, snap, pk: dmPk, onPeople: togglePeople }, dmPk) : jsx(DmEmpty, {})
+    else if (view === 'dm') center = dmPk === DM_REQUESTS ? jsx(DmRequests, { store, snap }) : dmPk ? jsx(DmView, { store, snap, pk: dmPk, onPeople: togglePeople }, dmPk) : jsx(DmEmpty, { snap })
     else if (view === 'settings') center = jsx('div', { className: 'h-scroll', children: jsxs('div', { className: 'h-pane', children: [jsx('h1', { children: 'Settings' }, 'h'), jsx(SettingsForm, { store, snap, inset: true }, 's')] }) })
     else if (showRoom && room) center = jsx(RoomView, { store, snap, room, onPeople: togglePeople }, room.id)
     else if (showRoom) center = jsx('div', { className: 'h-empty', children: 'Opening the room…' })
@@ -6791,9 +7240,13 @@ function App(props) {
     else center = jsx(Welcome, { store, snap, onLobby: () => go('lobby') })
 
     // ProfileLayer: a click on a name or face, in the room or the people column, opens that card
-    inner = jsx(PeopleContext.Provider, { value: looks, children: jsx(RoomReactions, { snap, room: showRoom ? room : null, children: jsx(ProfileLayer, { room: showRoom ? room : null, snap, store, openSettings, openDm, children: jsxs('div', { className: 'h-grid', 'data-people': people ? 'open' : 'closed', 'data-embedded': embedded || undefined, children: [
-      !embedded && jsx('nav', { className: 'h-left', 'aria-label': 'Ninsei rooms', children: jsx(Rail, { store, snap, view, go, roomId }) }),
+    const down = !st.error ? relaysDown(snap) : null
+    inner = jsx(LinkContext.Provider, { value: openLink, children: jsx(PeopleContext.Provider, { value: looks, children: jsx(RoomReactions, { snap, room: showRoom ? room : null, children: jsx(ProfileLayer, { room: showRoom ? room : null, snap, store, openSettings, openDm, children: jsxs('div', { className: 'h-grid', 'data-people': people ? 'open' : 'closed', 'data-nav': drawer ? 'open' : 'closed', 'data-embedded': embedded || undefined, children: [
+      !embedded && jsx('nav', { className: 'h-left', ref: leftRef, 'aria-label': 'Ninsei rooms', children: jsx(Rail, { store, snap, view, go, roomId }) }),
+      drawer && jsx('div', { className: 'h-scrim h-scrim-nav', 'aria-hidden': true, onClick: () => setDrawer(false) }),
       jsxs('main', { className: 'h-center', children: [
+        !embedded && jsx(NavBar, { open: drawer, onToggle: () => setDrawer(!drawer), onSwitch: () => setSwitching(true) }),
+        down && jsx(ReconnectBanner, { snap, retry: down.retry }),
         st.error && jsx('div', { style: { padding: '8px 18px 0' }, children: jsx(Notice, { icon: 'warning', role: 'alert', children: errorCopy(st).title + '. Showing the last state we had.' }) }),
         !st.error && view !== 'settings' && Array.isArray(snap.settings.relays) && snap.settings.relays.length === 0 &&
           jsx('div', { style: { padding: '8px 18px 0' }, children: jsx(Notice, { icon: 'warning', role: 'status', children: jsxs('div', { className: 'h-row', style: { justifyContent: 'space-between', gap: 10 }, children: [
@@ -6807,11 +7260,13 @@ function App(props) {
           onClick: closePeople, children: jsx(K.Icon, { name: 'close', size: 14 }) }) }),
         view === 'hermes' ? jsx(LineAbout, { snap }) : view === 'dm' ? jsx(DmAbout, {}) : room && showRoom ? jsx(People, { room, snap, store }) : jsx(MyAgentCard, { snap })
       ] })
-    ] }) }) }) })
+    ] }) }) }) }) })
   }
-  return jsxs('div', { className: 'hx h-page', 'data-platform': P.kind, children: [
+  return jsxs('div', { className: 'hx h-page', ref: rootRef, 'data-platform': P.kind, children: [
     P.inlineStyle && jsx('style', { children: CSS }),
-    inner
+    inner,
+    snap && snap.settings.onboarded && switching && jsx(QuickSwitcher, { snap, onPick: pick, onClose: () => setSwitching(false) }),
+    snap && snap.settings.onboarded && joinFor && jsx(JoinDialog, { store, initial: joinFor, onClose: () => setJoinFor(''), onDone: id => { setJoinFor(''); store.setRoom(id); go('room') } })
   ] })
 }
 
@@ -6940,9 +7395,11 @@ function Rail(props) {
       (snap.rooms || []).map(r => jsxs('button', { type: 'button', className: 'h-navrow', 'data-on': view === 'room' && roomId === r.id,
         'aria-current': view === 'room' && roomId === r.id ? 'page' : undefined, onClick: () => open(r.id), children: [
           jsx('span', { className: 'h-hash', children: '#' }),
-          jsx('span', { className: 'h-grow h-trunc', style: { fontWeight: r.unread ? 600 : 400 }, children: r.name }),
+          jsx('span', { className: 'h-grow h-trunc', style: { fontWeight: r.unread && !r.muted ? 600 : 400, opacity: r.muted ? 0.65 : 1 }, children: r.name }),
+          r.muted && jsx(K.Tip, { label: 'Muted', children: jsx('span', { className: 'h-faint', role: 'img', 'aria-label': 'Muted', children: jsx(K.Icon, { name: 'bell-slash', size: 12 }) }) }),
           (drafts[r.id] || waiting[r.id]) && jsx(K.Tip, { label: waiting[r.id] ? 'Your agent is waiting on you' : 'Draft waiting to send', children: jsx(K.Icon, { name: waiting[r.id] ? 'clock' : 'edit', size: 12 }) }),
-          r.mentions > 0 ? jsx('span', { className: 'h-mentions', 'aria-label': r.mentions + (r.mentions === 1 ? ' mention' : ' mentions') + ' of you', children: '@' + (r.mentions > 9 ? '9+' : r.mentions) })
+          r.muted ? (r.unread > 0 && jsx('span', { className: 'h-dot h-dot-quiet', 'aria-label': 'unread, muted' }))
+          : r.mentions > 0 ? jsx('span', { className: 'h-mentions', 'aria-label': r.mentions + (r.mentions === 1 ? ' mention' : ' mentions') + ' of you', children: '@' + (r.mentions > 9 ? '9+' : r.mentions) })
             : r.unread > 0 && jsx('span', { className: 'h-dot', 'aria-label': r.unread + ' unread' }),
           jsxs('span', { className: 'h-count', title: r.online + ' online', children: [r.online || '', r.online > 0 && jsx('span', { className: 'h-vh', children: ' online' }, 's')] })
         ] }, r.id))
@@ -6985,18 +7442,20 @@ function NewRoomDialog(props) {
 }
 
 function JoinDialog(props) {
-  const [code, setCode] = useState('')
+  const [code, setCode] = useState(props.initial || '')
   const [busy, setBusy] = useState(false)
   const join = async () => {
     setBusy(true)
     try {
+      const link = parseRoomLink(code)
       const meta = await props.store.post('/rooms/join', { room: code.trim() })
+      if (link.event) wantJump(meta.id, link.event)
       // a code names a room, not where it lives: nothing on my relays means a typo or different relays
       if (meta.found === false) P.toast('info', 'Nothing here yet on your relays. Check the code, or ask whoever shared it which relays they use (Settings, Relays).')
       props.onDone(meta.id)
     } catch (_) { setBusy(false) }
   }
-  return jsx(Modal, { open: true, onClose: props.onClose, title: 'Join by code', description: 'Paste a code like ninsei:203f22bcfd1b4b2f.',
+  return jsx(Modal, { open: true, onClose: props.onClose, title: 'Join by code', description: 'Paste a code like ninsei:203f22bcfd1b4b2f, or a link to a message in a room.',
     footer: [
       jsx(K.Button, { variant: 'ghost', onClick: props.onClose, children: 'Cancel' }, 'c'),
       jsx(K.Button, { variant: 'primary', disabled: busy || !code.trim(), onClick: join, children: busy ? 'Joining…' : 'Join' }, 'j')
@@ -7114,7 +7573,7 @@ function makePlatform(ctx) {
     },
     setTimeout: (fn, ms) => ctx.setTimeout(fn, ms),
     setInterval: (fn, ms) => ctx.setInterval(fn, ms),
-    listen: (target, type, fn) => ctx.addEventListener(target, type, fn),
+    listen: (target, type, fn, opts) => ctx.addEventListener(target, type, fn, opts),
     prefs: {
       get: (k, d) => { try { return ctx.storage.get(k, d) } catch (_) { return d } },
       set: (k, v) => { try { ctx.storage.set(k, v) } catch (_) { /* storage unavailable */ } }

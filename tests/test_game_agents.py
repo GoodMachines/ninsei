@@ -354,6 +354,7 @@ def test_each_game_in_the_menu_starts_only_from_its_own_start_button():
 const started = []
 const P = { listen: () => () => {} }
 globalThis.document = {}
+const useEnter = () => ({ current: null })
 function gameName(m) { return m === 'agent' ? 'Who is the Agent' : 'Tall Tales' }
 const r = mount(GamesMenu, { onClose() {}, onStart: m => started.push(m), gameOn: false })
 const groups = []

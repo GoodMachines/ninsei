@@ -150,11 +150,8 @@ function DmView(props) {
       er.more && jsx(EarlierButton, { onClick: keeper.loadMore, busy: loadingMore }),
       err && jsx(Notice, { icon: 'warning', role: 'alert', children: err }),
       !data && !err && jsx('div', { className: 'h-empty', children: 'Opening the conversation…' }),
-      data && data.friend && msgs.length === 0 && mine.length === 0 && jsxs('div', { className: 'h-empty', children: [
-        jsx(K.Icon, { name: 'lock', size: 22 }),
-        jsx('b', { children: 'Say hello to ' + name }),
-        jsx('div', { style: { maxWidth: 420 }, children: 'Only the two of you can read what you write here. It is encrypted on its way, and your agent never sees it.' })
-      ] }),
+      data && data.friend && msgs.length === 0 && mine.length === 0 && jsx(EmptyState, { icon: 'lock', title: 'Say hello to ' + name,
+        hint: 'Only the two of you can read what you write here. It is encrypted on its way, and your agent never sees it.' }),
       items.map(it => (it.kind === 'day' ? jsx(DmItem, { it, animate: false }, it.key) : it.kind === 'msg' && jsx(DmItem, { it, animate: fresh(it.key), onRetry: retry, onDiscard: discard }, it.key)))
     ] }) }),
     data && data.friend && jsx('div', { className: 'h-composer', children: jsx(Composer, { store, room: composeRoom, snap, dm: dmSend }) }),
@@ -218,10 +215,9 @@ function DmAbout() {
   ] })
 }
 
-function DmEmpty() {
-  return jsxs('div', { className: 'h-empty', children: [
-    jsx(K.Icon, { name: 'lock', size: 22 }),
-    jsx('b', { children: 'Private messages, for friends' }),
-    jsx('div', { style: { maxWidth: 420 }, children: 'Open anyone’s card in a room and press Add friend. Once they accept, you can message each other. Only the two of you can read it, and your agent never sees it.' })
-  ] })
+function DmEmpty(props) {
+  const has = props.snap && props.snap.dms && (props.snap.dms.threads || []).length > 0
+  return jsx(EmptyState, { icon: 'lock', title: has ? 'Pick a friend to message' : 'No friends yet',
+    hint: has ? 'Only the two of you can read what you write. It is encrypted on its way, and your agent never sees it.'
+      : 'Open anyone’s card in a room and press Add friend. Once they accept, you can message each other. Only the two of you can read it, and your agent never sees it.' })
 }

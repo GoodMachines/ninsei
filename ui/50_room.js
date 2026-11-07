@@ -110,11 +110,30 @@ function RoomView(props) {
   const jumpRef = useRef(null)
   const bottomRef = useRef(null)
   useEffect(() => { setSearching(false) }, [room.id])
+  const openSearch = useCallback(() => {
+    setSearching(true)
+    P.setTimeout(() => { const i = typeof document !== 'undefined' && document.querySelector && document.querySelector('.h-search-in'); if (i && i.focus) i.focus() }, 0)
+  }, [])
+  // Cmd/Ctrl+F (the page asks) opens search; Escape closes it unless something nearer the keys took the Escape
+  useEffect(() => {
+    HOTKEYS.search = openSearch
+    return () => { if (HOTKEYS.search === openSearch) HOTKEYS.search = null }
+  }, [openSearch])
   const closeSearch = useCallback(() => {
     setSearching(false)
     const b = typeof document !== 'undefined' && document.querySelector && document.querySelector('.h-head [data-search-btn]')
     if (b && b.focus) b.focus()
   }, [])
+  useEffect(() => {
+    if (!searching) return
+    const esc = e => {
+      if (e.key !== 'Escape' || e.defaultPrevented) return
+      if (document.querySelector('[role=dialog], .h-grid[data-people=open], .h-grid[data-nav=open]')) return
+      e.preventDefault()
+      closeSearch()
+    }
+    return P.listen(document, 'keydown', esc)
+  }, [searching])
   // Sending: your message shows at once, faint; a send the engine refuses becomes Retry / Discard in place
   const submit = useCallback((text, replyTo) => {
     if (bottomRef.current) bottomRef.current()
@@ -149,7 +168,7 @@ function RoomView(props) {
     if (t && t.focus) t.focus()
   }, [])
   return jsxs(Fragment, { children: [
-    jsx(RoomHeader, { store, room, snap, onPeople: props.onPeople, searching, onSearch: () => (searching ? closeSearch() : setSearching(true)) }),
+    jsx(RoomHeader, { store, room, snap, onPeople: props.onPeople, searching, onSearch: () => (searching ? closeSearch() : openSearch()) }),
     searching && jsx(SearchPanel, { room, onClose: closeSearch, onPick: id => !!(jumpRef.current && jumpRef.current(id, true)) }, room.id),
     jsx(Timeline, { store, snap, room, book, onReply, newAfter: readMark.current.ts, jumpRef, bottomRef, onRetry, onDiscard, editReq, onEditDone, onFocusComposer }),
     jsxs('div', { className: 'h-composer', children: [
@@ -169,6 +188,11 @@ function RoomView(props) {
 function RoomHeader(props) {
   const { store, room, snap } = props
   const [confirm, setConfirm] = useState(false)
+  const [menu, setMenu] = useState(false)
+  const [editing, setEditing] = useState(false)
+  const menuBtn = useRef(null)
+  const rm = (snap.rooms || []).find(r => r.id === room.id) || {}
+  const closeMenu = back => { setMenu(false); if (back) P.setTimeout(() => menuBtn.current && menuBtn.current.focus && menuBtn.current.focus(), 0) }
   const mine = new Set((snap.settings && snap.settings.interests) || [])
   const online = (room.members || []).filter(p => p.online).length
   const copyCode = async () => {
@@ -179,6 +203,7 @@ function RoomHeader(props) {
     jsxs('div', { className: 'h-grow h-col', style: { gap: 3 }, children: [
       jsxs('div', { className: 'h-row', children: [
         jsx('h2', { className: 'h-trunc', children: room.name }),
+        rm.muted && jsx(K.Tip, { label: 'Muted: no alerts from this room', children: jsx('span', { className: 'h-faint', role: 'img', 'aria-label': 'Muted', children: jsx(K.Icon, { name: 'bell-slash', size: 12 }) }) }),
         jsx('span', { className: 'h-faint h-small', children: online + ' here' })
       ] }),
       (room.about || (room.interests || []).length > 0) && jsxs('div', { className: 'h-row', style: { gap: 8, flexWrap: 'wrap' }, children: [
@@ -192,6 +217,12 @@ function RoomHeader(props) {
       children: jsxs(Fragment, { children: [jsx(K.Icon, { name: 'link', size: 13 }), 'Share code'] }) }) }),
     props.onPeople && jsx(K.Button, { variant: 'ghost', size: 'icon', 'aria-label': 'People', onClick: props.onPeople, className: 'h-peoplebtn',
       children: jsx(K.Icon, { name: 'organization', size: 14 }) }),
+    jsxs('div', { className: 'h-menuwrap', children: [
+      jsx(K.Tip, { label: 'Room options', children: jsx(K.Button, { variant: 'ghost', size: 'icon', 'aria-label': 'Room options', 'aria-haspopup': 'menu', 'aria-expanded': menu,
+        ref: menuBtn, onClick: () => setMenu(!menu), children: jsx(K.Icon, { name: 'ellipsis', size: 14 }) }) }),
+      menu && jsx(RoomMenu, { store, room, rm, snap, anchor: menuBtn, onClose: closeMenu, onEdit: () => setEditing(true) })
+    ] }),
+    editing && jsx(RoomEditDialog, { store, room, onClose: () => setEditing(false) }),
     jsx(K.Tip, { label: 'Leave room', children: jsx(K.Button, { variant: 'ghost', size: 'icon', 'aria-label': 'Leave room', onClick: () => setConfirm(true),
       children: jsx(K.Icon, { name: 'sign-out', size: 14 }) }) }),
     jsx(Modal, { open: confirm, onClose: () => setConfirm(false), title: 'Leave ' + room.name + '?',
@@ -348,6 +379,28 @@ function Timeline(props) {
     const node = editReq && el && [].find.call(el.querySelectorAll('[data-mid]'), n => n.getAttribute('data-mid') === editReq.id)
     if (node) springIntoView(node)
   }, [editReq])
+  // A pasted or clicked message link: once the room is open, scroll to that message (older pages are loaded
+  // one by one, up to six, to reach it) and flash it; say so if it isn't to be found.
+  const hops = useRef(0)
+  const tryJump = useRef(null)
+  tryJump.current = () => {
+    const w = PENDING_JUMP
+    if (w.room !== room.id || !w.id) return
+    if (Date.now() > w.until) { w.room = ''; w.id = ''; return }
+    if (msgs.some(m => m.id === w.id)) {
+      const id = w.id
+      w.room = ''; w.id = ''; hops.current = 0
+      P.setTimeout(() => jump(id, true), 120)
+    } else if (er.more && hops.current < 6 && !loadingMore) {
+      hops.current++
+      loadEarlier()
+    } else if (!er.more || hops.current >= 6) {
+      w.room = ''; w.id = ''; hops.current = 0
+      P.toast('info', 'That message isn’t in the history this computer has for the room.')
+    }
+  }
+  useEffect(() => { tryJump.current() }, [msgs, er.more, loadingMore])
+  useEffect(() => { const f = () => tryJump.current(); JUMP_WATCH.add(f); return () => { JUMP_WATCH.delete(f) } }, [])
   const toLatest = () => { const el = scroller.current; if (el) springScrollTo(el, el.scrollHeight - el.clientHeight) }
 
   const k = away === null ? -1 : msgs.findIndex(m => m.id === away)
@@ -357,7 +410,7 @@ function Timeline(props) {
   return jsxs('div', { className: 'h-tlwrap', children: [
     jsx('div', { className: 'h-scroll', ref: scroller, onScroll, children: jsxs('div', { className: 'h-timeline', role: 'log', 'aria-live': 'polite', children: [
       er.more && jsx(EarlierButton, { onClick: keeper.loadMore, busy: loadingMore }),
-      items.length === 0 && jsx('div', { className: 'h-empty', children: 'Quiet in here. Say hello, or start a game of Tall Tales.' }),
+      items.length === 0 && jsx(EmptyState, { icon: 'smiley', title: 'Say hi, or start a game', hint: 'Nothing has been said here yet. Write the first message, or start a game from the box below.' }),
       items.map(it => jsx(TimelineItem, Object.assign({ it, store, snap, room, book, animate: fresh(it.key) }, actions), it.key)),
       jsx(Thinking, { room })
     ] }) }),
@@ -404,7 +457,7 @@ function Thinking(props) {
   const text = parts.join('. ')
   return jsxs('div', { className: 'h-thinking', role: 'status', 'aria-label': text, children: [
     jsx('div', { className: 'h-row', style: { gap: 2 }, children: busy.slice(0, 3).map(a => jsx(Face, { face: a.face, pk: a.pk, state: a.state, size: 22, name: a.name }, a.pk)) }),
-    jsxs('div', { className: 'h-typing', children: [0, 1, 2].map(i => jsx('i', { style: { animationDelay: (i * 0.16) + 's' } }, i)) }),
+    jsx('div', { className: 'h-typing', children: jsx(Dots, {}) }),
     jsx('span', { className: 'h-faint h-small', children: text })
   ] })
 }
@@ -521,6 +574,23 @@ function Message(props) {
   const [asking, setAsking] = useState(false)
   const editBtn = useRef(null)
   const viaKey = useRef(false)   // editing began with the Up arrow in the composer: focus returns there
+  // Touch: a long press on a message shows its actions (there is no hover); a tap elsewhere hides them
+  const [touchBar, setTouchBar] = useState(false)
+  const press = useRef(null)
+  const stopPress = () => { if (press.current) { press.current.off(); press.current = null } }
+  const onPointerDown = e => {
+    if (e.pointerType !== 'touch') return
+    stopPress()
+    press.current = { x: e.clientX, y: e.clientY, off: P.setTimeout(() => { press.current = null; setTouchBar(true) }, 480) }
+  }
+  const onPointerMove = e => { const p = press.current; if (p && Math.abs(e.clientX - p.x) + Math.abs(e.clientY - p.y) > 10) stopPress() }
+  useEffect(() => {
+    if (!touchBar) return
+    const away = e => { if (node.current && !node.current.contains(e.target)) setTouchBar(false) }
+    const off = P.listen(document, 'pointerdown', away)
+    return () => off()
+  }, [touchBar])
+  useEffect(() => stopPress, [])
   const own = !!(props.store && m.mine && !agent && !m.deleted && !m.optimistic)
   const who = { kind: agent ? 'agent' : 'person', pk: m.pk, name: m.name, face: m.face, owner_name: m.owner_name }
   const text = jsx(MessageBody, { m, book: props.book })
@@ -560,9 +630,19 @@ function Message(props) {
     jsx(K.Tip, { label: 'Delete', children: jsx('button', { type: 'button', className: 'h-bar-btn', 'aria-label': 'Delete your message',
       onClick: () => setAsking(true), children: jsx(K.Icon, { name: 'trash', size: 14 }) }) }, 'delete')
   ] : null
+  const copyText = async () => {
+    const ok = await P.copy(String(m.text || ''))
+    P.toast(ok ? 'info' : 'error', ok ? 'Message text copied.' : 'Could not reach the clipboard.')
+  }
+  const copyLink = async () => {
+    const link = 'ninsei:' + props.roomId + '#' + m.id
+    const ok = await P.copy(link)
+    P.toast(ok ? 'info' : 'error', ok ? 'Link to this message copied. Anyone in the room can open it in Ninsei.' : 'Could not reach the clipboard. The link is ' + link)
+  }
   const react = (emoji, on) => props.store.post('/react', { room: props.roomId, target: m.id, emoji, on }).catch(() => {})
   const mineSet = (m.reactions || []).filter(r => r.mine).map(r => r.emoji)
-  return jsxs('div', { className: cx('h-msg', agent && 'h-agent'), ref: node, 'data-role': m.role, 'data-first': props.first, 'data-mid': m.id, 'data-bar': picking,
+  return jsxs('div', { className: cx('h-msg', agent && 'h-agent'), ref: node, 'data-role': m.role, 'data-first': props.first, 'data-mid': m.id, onPointerDown, onPointerMove, onPointerUp: stopPress, onPointerCancel: stopPress,
+    onContextMenu: e => { if (touchBar || press.current) e.preventDefault() }, 'data-bar': picking || touchBar,
     'data-faint': faint || undefined, 'aria-busy': m.delivery === 'sending' || undefined, 'data-impostor': !!imp, 'data-mentioned': !!m.mentions_me, style: agent ? { '--hue': f.hue } : undefined, children: [
       jsx('div', { className: 'h-gutter', children: props.first ? jsx(ProfileButton, { who, label: 'Show ' + m.name + '’s card',
         children: agent ? jsx(Face, { face: m.face, pk: m.pk, state: 'activity: idle', size: 28, name: m.name }) : jsx(PersonMark, { pk: m.pk, name: m.name, flagged: !!imp }) })
@@ -586,7 +666,7 @@ function Message(props) {
           m.delivery === 'failed' && props.onDiscard && jsx(K.Button, { variant: 'ghost', size: 'sm', onClick: () => props.onDiscard(m), children: 'Discard' })
         ] })
       ] }),
-      props.store && !m.deleted && !m.optimistic && jsx(MessageBar, { m, picking, setPicking, mine: mineSet, onReply: props.onReply, extra,
+      props.store && !m.deleted && !m.optimistic && jsx(MessageBar, { m, picking, setPicking, mine: mineSet, onReply: props.onReply, extra, onCopyText: copyText, onCopyLink: props.roomId ? copyLink : null,
         onPick: emoji => react(emoji, !mineSet.includes(emoji)) }),
       asking && jsx(DeleteConfirm, { open: true, onConfirm: doDelete, onClose: () => setAsking(false) })
     ] })
@@ -657,6 +737,10 @@ function MessageBar(props) {
       'aria-haspopup': 'menu', 'aria-expanded': picking, onClick: () => setPicking(!picking), children: jsx(K.Icon, { name: 'smiley', size: 14 }) }) }),
     props.onReply && jsx(K.Tip, { label: 'Reply', children: jsx('button', { type: 'button', className: 'h-bar-btn', 'aria-label': 'Reply to ' + m.name,
       onClick: () => props.onReply(m), children: jsx(K.Icon, { name: 'reply', size: 14 }) }) }),
+    props.onCopyText && jsx(K.Tip, { label: 'Copy text', children: jsx('button', { type: 'button', className: 'h-bar-btn', 'aria-label': 'Copy message text',
+      onClick: props.onCopyText, children: jsx(K.Icon, { name: 'copy', size: 14 }) }) }),
+    props.onCopyLink && jsx(K.Tip, { label: 'Copy link to message', children: jsx('button', { type: 'button', className: 'h-bar-btn', 'aria-label': 'Copy link to this message',
+      onClick: props.onCopyLink, children: jsx(K.Icon, { name: 'link', size: 14 }) }) }),
     props.extra,
     picking && jsx(ReactionPicker, { mine: props.mine, onClose: close, onPick: emoji => { props.onPick(emoji); close() } })
   ] })
@@ -751,11 +835,20 @@ function richNode(t, i) {
   if (t.t === 'code') return jsx('code', { className: 'h-code', children: t.text }, i)
   let node
   if (t.t === 'link') node = jsx(RichLink, { href: t.href, text: t.text })
+  else if (t.t === 'room') node = jsx(RoomLink, { room: t.room, event: t.event, text: t.text })
   else if (t.t === 'mention') node = jsx('span', { className: 'h-at', 'data-me': t.me, children: t.text })
   else node = t.text
   if (t.i) node = jsx('em', { children: node })
   if (t.b) node = jsx('strong', { children: node })
   return jsx(Fragment, { children: node }, i)
+}
+
+// A `ninsei:` link opens inside Ninsei: the room (and the message in it, when the link names one). It shows the
+// link itself. For a room you haven't joined it opens the Join dialog with the code filled in, so nobody joins by a click.
+function RoomLink(props) {
+  const open = useContext(LinkContext)
+  return jsx('button', { type: 'button', className: 'h-link h-roomlink', title: props.event ? 'Open this message' : 'Open this room',
+    onClick: e => { e.preventDefault(); if (open) open(props.room, props.event) }, children: props.text })
 }
 
 // A link shows the address itself, never other words. Desktop hands it to the system browser through the host
@@ -826,7 +919,9 @@ function SearchPanel(props) {
       role: 'combobox', 'aria-expanded': list.length > 0, 'aria-controls': 'h-search-list', 'aria-autocomplete': 'list',
       'aria-activedescendant': list.length && !ctx ? 'h-sr-' + active : undefined,
       onChange: e => { setCtx(null); setQ(e.target.value) }, onKeyDown }),
-    jsx('div', { className: 'h-faint h-small h-search-status', role: 'status', children: status }),
+    jsx('div', { className: 'h-faint h-small h-search-status', role: 'status', children: results !== null && term && list.length === 0 ? '' : status }),
+    results !== null && term && list.length === 0 && !error && jsx(EmptyState, { compact: true, icon: 'search', title: 'Nothing found for “' + term.slice(0, 40) + '”',
+      hint: 'Search covers every message this computer has for the room. Try fewer or different words.' }),
     ctx
       ? jsxs('div', { className: 'h-search-ctx', children: [
           jsx(K.Button, { variant: 'ghost', size: 'sm', onClick: () => setCtx(null), children: 'Back to results' }),
@@ -1122,7 +1217,7 @@ function TypingRow(props) {
   const ref = useEnter(true)
   return jsxs('div', { className: 'h-typingrow', ref, children: [
     jsx('span', { className: 'h-row', style: { gap: 2 }, 'aria-hidden': true, children: props.list.slice(0, 3).map(t => jsx(PersonMark, { pk: t.pk, name: t.name, size: 16, flagged: !!t.impostor }, t.pk)) }),
-    jsx('span', { className: 'h-typing h-typing-s', 'aria-hidden': true, children: [0, 1, 2].map(i => jsx('i', { style: { animationDelay: (i * 0.16) + 's' } }, i)) }),
+    jsx('span', { className: 'h-typing h-typing-s', 'aria-hidden': true, children: jsx(Dots, {}) }),
     jsx('span', { className: 'h-trunc', children: props.text })
   ] })
 }
@@ -1140,7 +1235,8 @@ function mentionCandidates(room) {
 
 // The list under the box for "@" and ":" alike: `options` are { key, left, name, sub }, `sel` the highlighted one.
 function SuggestMenu(props) {
-  return jsx('div', { className: 'h-ac', id: props.id, role: 'listbox', 'aria-label': props.label, children: props.options.map((c, i) =>
+  const ref = useEnter(true)
+  return jsx('div', { className: 'h-ac', ref, id: props.id, role: 'listbox', 'aria-label': props.label, children: props.options.map((c, i) =>
     jsxs('div', { id: props.id + '-' + i, role: 'option', className: 'h-ac-opt', 'aria-selected': i === props.sel,
       onMouseDown: e => { e.preventDefault(); props.onChoose(c) }, onMouseEnter: () => props.onHover(i), children: [
         c.left,
@@ -1278,7 +1374,7 @@ function Composer(props) {
 }
 
 function GamesMenu(props) {
-  const ref = useRef(null)
+  const ref = useEnter(true)
   useEffect(() => {
     const away = e => { if (ref.current && !ref.current.contains(e.target)) props.onClose() }
     const esc = e => { if (e.key === 'Escape') props.onClose() }

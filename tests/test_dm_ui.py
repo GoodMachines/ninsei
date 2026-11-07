@@ -19,6 +19,7 @@ const Fragment2 = Fragment
 function Initial() {}; function PersonMark() {}; function typingPing() {}; function Notice() {}; function Modal() {}; function Composer() {}; function Message() {}
 function NotVerified() {}; function groupItems(msgs) { return msgs.map(m => ({ kind: 'msg', key: m.id, m, first: true })) }
 function useEnter() { return null }
+function EmptyState() {}
 function nav() { return { set(v) { globalThis.NAVSET = v } } }
 const errText = e => String(e && e.message || e)
 const fmtAgo = () = > 'now'

@@ -66,7 +66,8 @@ function Lobby(props) {
         jsx('h3', { className: 'h-grow', children: 'Rooms' }),
         lobby.at ? jsx('span', { className: 'h-faint h-small', children: 'updated ' + fmtAgo(lobby.at) }) : null
       ] }),
-      rooms.length === 0 ? jsx('div', { className: 'h-faint', children: busy ? 'Asking the relays…' : 'No public rooms found yet. Start one and it shows up here for others.' })
+      rooms.length === 0 ? (busy ? jsx('div', { className: 'h-faint', children: 'Asking the relays…' })
+        : jsx(EmptyState, { compact: true, icon: 'compass', title: 'No public rooms yet', hint: 'Start one from the + beside Rooms and it shows up here, under its interests, for others to find.' }))
         : jsx('div', { className: 'h-list', children: rooms.map(r => jsx(LobbyRoom, { r, joining: joining === r.id, onJoin: () => join(r), onOpen: () => openRoom(store, r.id) }, r.id)) })
     ] }),
     jsxs('section', { className: 'h-col', style: { gap: 10 }, children: [

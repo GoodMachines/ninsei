@@ -84,7 +84,7 @@ function makePlatform(ctx) {
     },
     setTimeout: (fn, ms) => ctx.setTimeout(fn, ms),
     setInterval: (fn, ms) => ctx.setInterval(fn, ms),
-    listen: (target, type, fn) => ctx.addEventListener(target, type, fn),
+    listen: (target, type, fn, opts) => ctx.addEventListener(target, type, fn, opts),
     prefs: {
       get: (k, d) => { try { return ctx.storage.get(k, d) } catch (_) { return d } },
       set: (k, v) => { try { ctx.storage.set(k, v) } catch (_) { /* storage unavailable */ } }

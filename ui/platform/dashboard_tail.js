@@ -42,7 +42,7 @@
     },
     setTimeout(fn, ms) { const t = window.setTimeout(fn, ms); return () => window.clearTimeout(t) },
     setInterval(fn, ms) { const t = window.setInterval(fn, ms); return () => window.clearInterval(t) },
-    listen(target, type, fn) { target.addEventListener(type, fn); return () => target.removeEventListener(type, fn) },
+    listen(target, type, fn, opts) { target.addEventListener(type, fn, opts); return () => target.removeEventListener(type, fn, opts) },
     prefs: {
       get(k, d) { try { const v = window.localStorage.getItem('ninsei.' + k); return v == null ? d : JSON.parse(v) } catch (_) { return d } },
       set(k, v) { try { window.localStorage.setItem('ninsei.' + k, JSON.stringify(v)) } catch (_) { /* private mode */ } }
@@ -55,6 +55,11 @@
   // a handful of line icons, drawn on a 16px grid with the current text colour
   const ICONS = {
     add: 'M8 3v10M3 8h10',
+    menu: 'M2.5 4.5h11M2.5 8h11M2.5 11.5h11',
+    ellipsis: 'M3.5 8h.01M8 8h.01M12.5 8h.01',
+    check: 'M3 8.5l3.2 3.2L13 4.8',
+    bell: 'M4 11V7a4 4 0 0 1 8 0v4l1 1.5H3zM6.5 14h3',
+    'bell-slash': 'M4 11V7a4 4 0 0 1 6.2-3.3M12 7v4l1 1.5H3.8M6.5 14h3M2 2l12 12',
     link: 'M6.5 9.5l3-3M7 4.5l1-1a2.8 2.8 0 0 1 4 4l-1 1M9 11.5l-1 1a2.8 2.8 0 0 1-4-4l1-1',
     compass: 'M8 1.8a6.2 6.2 0 1 0 0 12.4A6.2 6.2 0 0 0 8 1.8zM10.6 5.4L9.2 9.2 5.4 10.6 6.8 6.8z',
     gear: 'M8 5.6a2.4 2.4 0 1 0 0 4.8 2.4 2.4 0 0 0 0-4.8zM8 1.5v1.6M8 12.9v1.6M1.5 8h1.6M12.9 8h1.6M3.4 3.4l1.1 1.1M11.5 11.5l1.1 1.1M3.4 12.6l1.1-1.1M11.5 4.5l1.1-1.1',

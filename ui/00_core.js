@@ -723,6 +723,7 @@ function mentionAlerts(store) {
       const lm = r.last_mention
       if (seen === null || !(r.id in seen) || !(r.mentions > seen[r.id]) || !lm || told[r.id] === lm.id) continue
       if (store.isShowing(r.id)) continue
+      if (r.muted) continue   // a muted room makes no toast and no OS notification (its mentions still show inside it)
       told[r.id] = lm.id
       const title = (lm.impostor ? 'Someone calling themselves ' : '') + cleanSnippet(lm.name, 32) + ' mentioned you in ' + cleanSnippet(r.name, 40)
       const snippet = cleanSnippet(lm.text, 60)
@@ -907,6 +908,80 @@ function linkAt(text, i) {
   return { url, href: u.href }
 }
 
+// A link to a room or to one message in it, `ninsei:<room>` or `ninsei:<room>#<message>`, at text[i] or null. Its text is
+// the link itself, like every other link, and it opens inside Ninsei, never a browser.
+function roomLinkAt(text, i) {
+  if (i > 0 && /[\p{L}\p{N}]/u.test(text.charAt(i - 1))) return null
+  const m = /^ninsei:([0-9a-f]{16})(?:#([0-9a-f]{64}))?(?![0-9a-f])/i.exec(text.slice(i, i + 90))
+  return m ? { text: m[0], room: m[1].toLowerCase(), event: m[2] ? m[2].toLowerCase() : '' } : null
+}
+
+// What a pasted code or link names: { room, event } ('' when absent); the same reading as the engine's parse_room_link.
+function parseRoomLink(s) {
+  const t = String(s == null ? '' : s).trim().slice(0, 200).replace(/^ninsei:/i, '')
+  const k = t.indexOf('#')
+  const room = (k < 0 ? t : t.slice(0, k)).toLowerCase().replace(/[^a-f0-9]/g, '').slice(0, 24)
+  const ev = k < 0 ? '' : t.slice(k + 1).trim().toLowerCase()
+  return { room, event: /^[0-9a-f]{64}$/.test(ev) ? ev : '' }
+}
+
+// A message to scroll to once its room is open (from a pasted or clicked message link).
+const PENDING_JUMP = { room: '', id: '', until: 0 }
+const JUMP_WATCH = new Set()   // open timelines, told when a new jump is wanted
+function wantJump(room, id) {
+  PENDING_JUMP.room = room; PENDING_JUMP.id = id; PENDING_JUMP.until = Date.now() + 15000
+  JUMP_WATCH.forEach(f => f())
+}
+
+// Is every relay down (with some configured)? { retry } is the seconds to the soonest next try, or null. Not the
+// cleared "offline" case (no relays set), which has its own notice; a relay still on its first try is not down yet.
+function relaysDown(snap) {
+  const rs = (snap && snap.relays) || []
+  const set = snap && snap.settings && snap.settings.relays
+  if (!rs.length || !Array.isArray(set) || set.length === 0) return null
+  if (!rs.every(r => r.state === 'backoff' || (r.state === 'connecting' && r.error))) return null
+  const waits = rs.filter(r => r.state === 'backoff').map(r => r.retry_s || 0)
+  return { retry: waits.length ? Math.min.apply(null, waits) : 0 }
+}
+
+// Fuzzy match for the quick switcher: how well does `q` fit `label`? -1 for no fit. The letters of q must appear in
+// order (no case, no accents); a prefix, word starts and runs of consecutive letters score higher; shorter wins ties.
+function fuzzyScore(q, label) {
+  const a = foldText(q).f.replace(/\s+/g, ''), b = foldText(label).f
+  if (!a) return 0
+  let score = 0, at = 0, run = 0
+  for (let i = 0; i < a.length; i++) {
+    const k = b.indexOf(a[i], at)
+    if (k < 0) return -1
+    run = k === at && i > 0 ? run + 1 : 0
+    score += 1 + run * 2 + (k === 0 ? 6 : /[\s\-_.#]/.test(b[k - 1]) ? 3 : 0)
+    at = k + 1
+  }
+  return score * 100 - b.length
+}
+
+// Three dots that bounce one after another, each a spring (a kick up that settles back with a little overshoot), not a
+// CSS ease loop. Still dots under reduced motion.
+function Dots() {
+  const els = useRef([])
+  useEffect(() => {
+    if (motion.reduced()) return
+    const springs = []
+    const timers = []
+    const bounce = () => els.current.forEach((el, i) => {
+      timers.push(P.setTimeout(() => {
+        if (!el) return
+        springs.push(motion.spring({ from: -4, to: 0, k: SPRING.pop.k, c: SPRING.pop.c,
+          onUpdate: x => { el.style.transform = Math.abs(x) < 0.02 ? '' : 'translateY(' + x.toFixed(2) + 'px)'; el.style.opacity = String(clamp(1 + x * 0.12, 0.35, 1)) } }))
+      }, i * 140))
+    })
+    bounce()
+    const iv = P.setInterval(bounce, 1100)
+    return () => { springs.forEach(s => s.stop()); timers.forEach(t => typeof t === 'function' && t()); if (typeof iv === 'function') iv(); else if (iv != null && typeof clearInterval === 'function') clearInterval(iv) }
+  }, [])
+  return [0, 1, 2].map(i => jsx('i', { ref: el => { els.current[i] = el } }, i))
+}
+
 // Is there a closing mark for an emphasis opened just before `from`, on the same line?
 function emphasisCloses(text, from, ch, dbl) {
   const nl = text.indexOf('\n', from)
@@ -942,6 +1017,9 @@ function richInline(text, names) {
     } else if ((ch === 'h' || ch === 'H') && links < RICH_MAX_LINKS) {
       const l = linkAt(text, i)
       if (l) { links++; push({ t: 'link', text: l.url, href: l.href }); i += l.url.length; continue }
+    } else if ((ch === 'n' || ch === 'N') && links < RICH_MAX_LINKS) {
+      const rl = roomLinkAt(text, i)
+      if (rl) { links++; push({ t: 'room', text: rl.text, room: rl.room, event: rl.event }); i += rl.text.length; continue }
     } else if (ch === '*' || ch === '_') {
       const dbl = ch === '*' && text[i + 1] === '*'
       const w = dbl ? 2 : 1
