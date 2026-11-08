@@ -40,9 +40,9 @@ out({ label: text(root.tree).includes('Start from one of your Hermes agents'), n
       hint: text(root.tree).includes('Nothing is saved until you press Save') })
 """)
     assert r["label"] and r["n"] == 3 and r["hint"]
-    assert r["texts"][1] == "Archie the Watcherthis oneKeeps an eye on things"
-    assert r["texts"][0] == "default" and r["texts"][2] == "bookmark-botNo personality set"
-    assert r["here"] == [r["texts"][1]]
+    assert r["texts"][0] == "Archie the Watcherthis oneKeeps an eye on things"      # the profile in use leads the row
+    assert r["texts"][1] == "default" and r["texts"][2] == "bookmark-botNo personality set"
+    assert r["here"] == [r["texts"][0]]
     assert r["tree"] is None and r["failedTree"] is None          # no profiles, or the list failed: the row is simply not there
 
 
@@ -224,7 +224,7 @@ out({ shown, before, posted: posts.map(p => [p.persona, p.persona_source]) })
 
 
 def test_the_page_styles_the_picker_and_box_and_respects_narrow_widths_and_reduced_motion():
-    for sel in (".h-hermes-list{", ".h-hermes-item{", ".h-persona{", ".h-persona-flags{", "@keyframes h-persona-in", "minmax(150px,1fr)"):
+    for sel in (".h-hermes-list{", ".h-hermes-item{", ".h-persona{", ".h-persona-flags{", "@keyframes h-persona-in"):
         assert sel in STYLE, sel
     assert "prefers-reduced-motion: reduce){.h-persona{animation:none}" in STYLE
     assert "cubic-bezier(.34,1.45,.5,1)" in STYLE.split(".h-hermes-item{", 1)[1].split("\n", 1)[0]

@@ -66,7 +66,28 @@ function HermesPicker(props) {
     P.rest('/profiles/hermes').then(r => { if (live) setList((r && r.profiles) || []) }, () => { if (live) setList([]) })
     return () => { live = false }
   }, [])
+  // one sideways row: which edges still have cards past them (drives the fade; only set while it overflows)
+  const rowRef = useRef(null)
+  const [edge, setEdge] = useState('')
+  const measure = () => {
+    const el = rowRef.current
+    if (!el) return
+    const more = el.scrollWidth - el.clientWidth > 2
+    const next = !more ? '' : el.scrollLeft <= 2 ? 'end' : el.scrollLeft + el.clientWidth >= el.scrollWidth - 2 ? 'start' : 'both'
+    setEdge(prev => prev === next ? prev : next)
+  }
+  useEffect(() => {
+    measure()
+    if (typeof window === 'undefined') return undefined
+    // the panel can change width without the window resizing (a docked pane, Settings opening)
+    const ro = typeof ResizeObserver === 'function' && rowRef.current ? new ResizeObserver(measure) : null
+    if (ro) ro.observe(rowRef.current)
+    window.addEventListener('resize', measure)
+    return () => { window.removeEventListener('resize', measure); if (ro) ro.disconnect() }
+  }, [list, open])
   if (!list || !list.length) return null
+  // the profile in use first, so the likely choice shows without scrolling; the rest keep their order
+  const ordered = list.filter(p => p.current).concat(list.filter(p => !p.current))
   const pick = async p => {
     if (busy) return
     setBusy(p.name)
@@ -83,7 +104,7 @@ function HermesPicker(props) {
       toggle
     ] }),
     open && jsxs('div', { id: 'h-hermes-pick', className: 'h-col', role: 'group', 'aria-labelledby': 'h-hermes-label', style: { gap: 8 }, children: [
-      jsx('div', { className: 'h-hermes-list', children: list.map(p =>
+      jsx('div', { className: 'h-hermes-list', ref: rowRef, 'data-edge': edge, onScroll: measure, role: 'group', 'aria-label': 'Your Hermes agents, scroll sideways for more', children: ordered.map(p =>
         jsxs('button', { type: 'button', className: 'h-hermes-item', 'data-here': !!p.current, 'data-busy': busy === p.name, disabled: !!busy,
           title: p.description || p.name, onClick: () => pick(p), children: [
           jsxs('span', { className: 'h-hermes-top', children: [
