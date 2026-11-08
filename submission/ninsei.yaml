@@ -1,6 +1,7 @@
 # DRAFT catalog entry: NOT submitted. Goes in NousResearch/hermes-agent as plugin-catalog/ninsei.yaml,
 # only after Justin says so. Still to fill in: sha (the full 40-char commit, pinned after the screenshots
 # are taken) and the image/screenshot URLs (raw.githubusercontent.com, pinned to that same sha).
+# scripts/check_submission.py fails until both are pinned; Hermes's validator accepts the placeholder.
 # The full disclosure list lives in README.md ("What you should know before installing") and in
 # submission/catalog-pr.md, which becomes the PR description (catalog rule 13).
 name: ninsei

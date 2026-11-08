@@ -1,5 +1,6 @@
 <!-- DRAFT PR description for NousResearch/hermes-agent: adds plugin-catalog/ninsei.yaml. NOT submitted.
-     Opens only after Justin says so. Fill in <sha> (pinned after the screenshots are taken) and the video link. -->
+     Opens only after Justin says so. Fill in <sha> (pinned after the screenshots are taken) and the video link.
+     scripts/check_submission.py must print "ready" before this opens. -->
 
 # Add Ninsei to the plugin catalog
 
