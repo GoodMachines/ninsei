@@ -259,7 +259,10 @@ button.h-link{background:none;border:0;padding:0;font:inherit;cursor:pointer;tex
 .h-presence[data-s=dnd]{background:var(--h-bad)}
 .h-statusbtn{display:flex;align-items:center;gap:6px;max-width:100%;min-width:0;padding:1px 4px;margin:0 -4px;border:0;border-radius:6px;background:transparent;color:inherit;font:inherit;cursor:pointer;text-align:left}
 .h-statusbtn:hover{background:var(--h-hover)}.h-statusbtn:focus-visible{outline:2px solid var(--h-accent);outline-offset:1px}
-.h-mystatus{display:block;min-width:0}.h-mystatus .h-menu{position:static;min-width:0;max-width:none;margin:6px 0 10px;box-shadow:none}.h-mystatus .h-menu .h-gm-line{display:block;white-space:normal}
+.h-mystatus{display:block;min-width:0}
+/* A popover: fixed, placed by usePopover next to its button, never narrower than 280px (the sidebar is) */
+.h-pop{position:fixed;top:0;left:0;bottom:auto;right:auto;z-index:60;width:300px;min-width:280px;max-width:none;overflow:auto;box-shadow:var(--h-shadow)}
+.h-pop .h-gm-line{display:block;white-space:normal}
 .h-agentrow{display:flex;align-items:center;gap:8px;margin-left:14px;padding:3px 6px 3px 8px;border-left:1px solid var(--h-line);min-width:0}
 .h-statepill{font-size:10.5px;color:var(--h-fg3)}
 .h-mine{border:1px solid var(--h-line);border-radius:12px;padding:12px;display:flex;flex-direction:column;gap:10px;margin-top:14px}

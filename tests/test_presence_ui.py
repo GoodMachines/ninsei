@@ -241,6 +241,7 @@ def test_the_alert_code_gates_every_toast_on_dnd():
 
 PICKER_JS = const_block(TOOLS, "STATUS_CHOICES") + fn(TOOLS, "MyStatus") + fn(TOOLS, "StatusMenu") + STATUS_FNS + """
 const useEnter = () => ({ current: null })
+const usePopover = () => {}      // placed by usePopover: tested in test_walkthrough_fixes.py
 const STATE_LABEL = { idle: 'idle', working: 'thinking', speaking: 'speaking', waiting: 'waiting', error: 'error', absent: 'away' }
 const stateWord = s => String(s || '').split(':').pop().trim()
 globalThis.P = { listen: () => () => {}, setTimeout: f => { f(); return () => {} } }

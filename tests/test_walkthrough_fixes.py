@@ -196,3 +196,62 @@ def test_the_timeline_draws_the_starter_in_place_of_an_empty_timeline_and_the_co
     assert "RoomStarter" in fn(ROOM_JS, "Timeline")
     comp = fn(ROOM_JS, "Composer")
     assert "'aria-label': 'Games'" in comp and "K.Tip, { label: 'Games'" in comp
+
+
+TOOLS_JS = src("52_tools.js")
+CORE_JS = src("00_core.js")
+POPOVER_JS = fn(CORE_JS, "clamp") + fn(TOOLS_JS, "placePopover") + fn(TOOLS_JS, "usePopover") + """
+const useLayoutEffect = useEffect
+"""
+
+
+@needs_node
+def test_a_popover_stays_inside_the_page_flipping_or_shifting_and_never_narrower_than_280():
+    r = run_node(POPOVER_JS + """
+const page = { left: 0, top: 0, right: 900, bottom: 600 }
+const at = (a, h) => placePopover(Object.assign({ top: 0, bottom: 0 }, a), { width: 300, height: h || 260 }, page)
+out({
+  narrowSidebar: at({ left: 14, right: 144, top: 20, bottom: 36 }),        // a 130px column: the popover is wider than its anchor
+  rightEdge: at({ left: 800, right: 890, top: 20, bottom: 36 }),           // would overflow right: shifts left
+  bottomEdge: at({ left: 14, right: 144, top: 560, bottom: 576 }),         // no room below: flips above
+  tall: at({ left: 14, right: 144, top: 300, bottom: 316 }, 900),          // taller than either side: takes the bigger side, scrolls
+  tinyPage: placePopover({ left: 5, right: 60, top: 10, bottom: 26 }, { width: 300, height: 200 }, { left: 0, top: 0, right: 250, bottom: 400 })
+})
+""")
+    n = r["narrowSidebar"]
+    assert n["width"] >= 280 and n["left"] == 14 and n["top"] == 42 and not n["flipped"]
+    e = r["rightEdge"]
+    assert e["left"] + e["width"] <= 900 - 8 and e["left"] >= 8
+    b = r["bottomEdge"]
+    assert b["flipped"] and b["top"] + 260 <= 560 - 6 and b["top"] >= 8
+    t = r["tall"]
+    assert t["maxHeight"] < 900 and t["top"] >= 8 and t["top"] + t["maxHeight"] <= 600 - 8
+    assert r["tinyPage"]["width"] == 250 - 16        # the room cannot give 280: it takes what there is, inside the page
+
+
+@needs_node
+def test_the_status_popover_is_placed_before_paint_relative_to_the_page_container():
+    r = run_node(POPOVER_JS + """
+globalThis.window = {}
+globalThis.document = { documentElement: { clientWidth: 1000, clientHeight: 700 } }
+globalThis.P = { listen: (t, type, fn) => { listened.push(type); return () => {} } }
+const listened = []
+const page = { getBoundingClientRect: () => ({ left: 100, top: 50, right: 1000, bottom: 650 }) }
+const anchor = { current: { getBoundingClientRect: () => ({ left: 120, right: 250, top: 70, bottom: 86 }), closest: sel => (sel === '.h-page' ? page : null) } }
+const el = { style: {}, offsetWidth: 300, scrollHeight: 280 }
+function Probe(props) { usePopover(props.ref, props.anchor); return null }
+mount(Probe, { ref: { current: el }, anchor })
+out({ style: el.style, listened })
+""")
+    s = r["style"]
+    assert s["left"] == "20px" and s["top"] == "42px" and s["width"] == "300px"   # (120-100, 86+6-50): page-relative
+    assert r["listened"] == ["resize"]
+
+
+def test_the_status_picker_is_a_popover_not_an_inline_block():
+    menu = fn(TOOLS_JS, "StatusMenu")
+    assert "usePopover(ref, props.anchor)" in menu and "h-menu h-pop" in menu and "h-menu-down" not in menu
+    css = src("20_style.js")
+    pop = [ln for ln in css.splitlines() if ln.startswith(".h-pop{")][0]
+    assert "position:fixed" in pop and "min-width:280px" in pop
+    assert ".h-mystatus .h-menu{position:static" not in css       # 0c9643e's inline version is gone

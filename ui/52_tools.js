@@ -49,6 +49,50 @@ const STATUS_CHOICES = [
   { id: 'invisible', label: 'Invisible', hint: 'You show as away. Your agent still works.' }
 ]
 
+// Where a popover goes, in px: under `anchor` (its rect), as wide as `want` (at least `min` when the room allows),
+// kept inside `bounds` with `pad` to spare. It flips above the anchor when there is no room below, and
+// shifts sideways instead of overflowing; a popover taller than either side gets the bigger side and scrolls.
+function placePopover(anchor, size, bounds, opts) {
+  const o = Object.assign({ want: 300, min: 280, pad: 8, gap: 6 }, opts)
+  const room = bounds.right - bounds.left - o.pad * 2
+  const width = Math.max(Math.min(room, o.min), Math.min(o.want, room))
+  const left = clamp(anchor.left, bounds.left + o.pad, Math.max(bounds.left + o.pad, bounds.right - width - o.pad))
+  const below = bounds.bottom - o.pad - (anchor.bottom + o.gap)
+  const above = anchor.top - o.gap - (bounds.top + o.pad)
+  const flip = size.height > below && above > below
+  const space = Math.max(0, flip ? above : below)
+  const height = Math.min(size.height, space)
+  const top = flip ? anchor.top - o.gap - height : anchor.bottom + o.gap
+  return { left, top, width, maxHeight: Math.floor(space), flipped: flip }
+}
+
+// Puts a popover (position: fixed) next to its anchor button. `.h-page` is a size container, which makes it the
+// containing block of a fixed child, so the numbers are relative to it; outside one they are the viewport's.
+// Runs before paint and again on resize.
+function usePopover(ref, anchor) {
+  useLayoutEffect(() => {
+    const el = ref.current, a = anchor && anchor.current
+    if (!el || !a || !a.getBoundingClientRect) return
+    const put = () => {
+      const page = a.closest && a.closest('.h-page')
+      const base = page ? page.getBoundingClientRect() : { left: 0, top: 0, right: 0, bottom: 0 }
+      const vw = (document.documentElement && document.documentElement.clientWidth) || 1e5
+      const vh = (document.documentElement && document.documentElement.clientHeight) || 1e5
+      const view = page ? { left: Math.max(0, base.left), top: Math.max(0, base.top), right: Math.min(vw, base.right), bottom: Math.min(vh, base.bottom) }
+        : { left: 0, top: 0, right: vw, bottom: vh }
+      const r = a.getBoundingClientRect()
+      el.style.maxHeight = ''
+      const pos = placePopover(r, { width: el.offsetWidth, height: el.scrollHeight }, view)
+      el.style.width = pos.width + 'px'
+      el.style.maxHeight = pos.maxHeight + 'px'
+      el.style.left = (pos.left - base.left) + 'px'
+      el.style.top = (pos.top - base.top) + 'px'
+    }
+    put()
+    return P.listen(window, 'resize', put)
+  }, [])
+}
+
 // The sidebar header's line, "Maya & Ada · idle", is a button: it shows your status as a dot (the word is its label)
 // and opens the picker. People in your rooms see this status; Invisible hides it.
 function MyStatus(props) {
@@ -73,6 +117,7 @@ function MyStatus(props) {
 function StatusMenu(props) {
   const { store, st } = props
   const ref = useEnter(true)
+  usePopover(ref, props.anchor)
   const items = useRef([])
   const [idx, setIdx] = useState(Math.max(0, STATUS_CHOICES.findIndex(c => c.id === st.mode)))
   useEffect(() => { const el = items.current[idx]; if (el && el.focus) el.focus() }, [idx])
@@ -90,7 +135,7 @@ function StatusMenu(props) {
     else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); props.onClose(true) }
     else if (e.key === 'Tab') props.onClose(false)
   }
-  return jsxs('div', { className: 'h-menu h-menu-down', ref, role: 'menu', 'aria-label': 'Your status', onKeyDown, children: [
+  return jsxs('div', { className: 'h-menu h-pop', ref, role: 'menu', 'aria-label': 'Your status', onKeyDown, children: [
     jsx('div', { className: 'h-menu-h h-sec', role: 'presentation', children: 'Your status' }),
     jsx('div', { className: 'h-menu-h h-faint h-small', role: 'presentation', children: 'People in your rooms see it. You show as ' + (STATUS_LABEL[st.shown] || 'Away') + ' now.' }),
     STATUS_CHOICES.map((c, i) => jsxs('button', { type: 'button', role: 'menuitemradio', 'aria-checked': c.id === st.mode, tabIndex: i === idx ? 0 : -1,
