@@ -2677,7 +2677,7 @@ class Engine:
             raise ValueError("your agent can't reach a model from this Hermes process")
         # Reserve the room before the first await (there is none here): a second call (a double click, the
         # dashboard and Desktop at once) would otherwise pass the check above too.
-        slot = {"mode": mode, "task": None}
+        slot = {"mode": mode, "rounds": max(1, min(int(rounds), game.MAX_ROUNDS)), "task": None}
         self._starting_games[room] = slot
         self._start_errors.pop(room, None)
         slot["task"] = self._spawn(self._run_start(room, rounds, mode, slot))
@@ -2717,12 +2717,12 @@ class Engine:
             return None
         ident = self._identity()
         name = self.persona().get("name") or "Agent"
-        return {"gid": "", "host": ident["agent_pk"], "host_name": name, "rounds": game.ROUNDS, "mode": slot["mode"],
+        return {"gid": "", "host": ident["agent_pk"], "host_name": name, "rounds": slot["rounds"], "mode": slot["mode"],
                 "my_picks": [], "n": 0, "phase": "starting", "q": "", "ends_at": 0, "secs": 0, "options": [],
                 "reveal": None, "scores": {}, "fakes_in": 0, "votes_in": 0, "my_fake": "", "my_vote": "",
                 "started_at": int(time.time()), "aborted": False, "last_at": time.time(), "players": [],
                 "agents": [], "rules": {"fake": game.FAKE_SECONDS, "vote": game.VOTE_SECONDS,
-                                        "reveal": game.REVEAL_SECONDS, "rounds": game.ROUNDS},
+                                        "reveal": game.REVEAL_SECONDS, "rounds": slot["rounds"]},
                 "team_names": {ident["person_pk"]: _name_ok(self.settings()["display_name"], "You")},
                 "blocked": [], "you_host": True}
 
