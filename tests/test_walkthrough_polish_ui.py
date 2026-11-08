@@ -310,7 +310,7 @@ def test_hermes_picker_is_one_scrolling_row_with_the_current_profile_first():
     rule = STYLE.split(".h-hermes-list{", 1)[1].split("}", 1)[0]
     assert "display:flex" in rule and "flex-flow:row nowrap" in rule and "grid" not in rule
     assert "overflow-x:auto" in rule and "overflow-y:hidden" in rule and "scroll-snap-type:x proximity" in rule
-    assert "scroll-padding" in rule
+    assert "scroll-padding:0 40px" in rule   # wider than the 36px edge fade, so a focused card's ring is never faded
     item = STYLE.split(".h-hermes-item{", 1)[1].split("}", 1)[0]
     assert "flex:0 0 190px" in item and "scroll-snap-align:start" in item
     assert ".h-hermes-list[data-edge=end]{" in STYLE and "mask-image" in STYLE

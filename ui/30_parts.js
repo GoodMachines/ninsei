@@ -79,8 +79,11 @@ function HermesPicker(props) {
   useEffect(() => {
     measure()
     if (typeof window === 'undefined') return undefined
+    // the panel can change width without the window resizing (a docked pane, Settings opening)
+    const ro = typeof ResizeObserver === 'function' && rowRef.current ? new ResizeObserver(measure) : null
+    if (ro) ro.observe(rowRef.current)
     window.addEventListener('resize', measure)
-    return () => window.removeEventListener('resize', measure)
+    return () => { window.removeEventListener('resize', measure); if (ro) ro.disconnect() }
   }, [list, open])
   if (!list || !list.length) return null
   // the profile in use first, so the likely choice shows without scrolling; the rest keep their order

@@ -2220,7 +2220,7 @@ button.h-link{background:none;border:0;padding:0;font:inherit;cursor:pointer;tex
 .h-seg button[data-on=true]{background:var(--h-raise);color:var(--h-fg)}
 .h-ta{width:100%;border:1px solid var(--h-line2);border-radius:8px;background:transparent;color:var(--h-fg);font:inherit;padding:8px 10px;resize:vertical;outline:0}
 .h-ta:focus{border-color:color-mix(in oklch,var(--h-accent) 60%,var(--h-line2))}
-.h-hermes-list{display:flex;flex-flow:row nowrap;gap:6px;overflow-x:auto;overflow-y:hidden;overscroll-behavior-x:contain;scroll-snap-type:x proximity;scroll-padding:0 12px;padding:3px 3px 6px;margin:-3px;scrollbar-width:thin}
+.h-hermes-list{display:flex;flex-flow:row nowrap;gap:6px;overflow-x:auto;overflow-y:hidden;overscroll-behavior-x:contain;scroll-snap-type:x proximity;scroll-padding:0 40px;padding:3px 3px 6px;margin:-3px;scrollbar-width:thin}
 .h-hermes-list[data-edge=end]{-webkit-mask-image:linear-gradient(to right,#000 calc(100% - 36px),transparent);mask-image:linear-gradient(to right,#000 calc(100% - 36px),transparent)}
 .h-hermes-list[data-edge=start]{-webkit-mask-image:linear-gradient(to left,#000 calc(100% - 36px),transparent);mask-image:linear-gradient(to left,#000 calc(100% - 36px),transparent)}
 .h-hermes-list[data-edge=both]{-webkit-mask-image:linear-gradient(to right,transparent,#000 36px,#000 calc(100% - 36px),transparent);mask-image:linear-gradient(to right,transparent,#000 36px,#000 calc(100% - 36px),transparent)}
@@ -2617,8 +2617,11 @@ function HermesPicker(props) {
   useEffect(() => {
     measure()
     if (typeof window === 'undefined') return undefined
+    // the panel can change width without the window resizing (a docked pane, Settings opening)
+    const ro = typeof ResizeObserver === 'function' && rowRef.current ? new ResizeObserver(measure) : null
+    if (ro) ro.observe(rowRef.current)
     window.addEventListener('resize', measure)
-    return () => window.removeEventListener('resize', measure)
+    return () => { window.removeEventListener('resize', measure); if (ro) ro.disconnect() }
   }, [list, open])
   if (!list || !list.length) return null
   // the profile in use first, so the likely choice shows without scrolling; the rest keep their order
