@@ -11,6 +11,8 @@ from test_game_agents import Llm, _long, _table
 from test_hostile import ROOM, bare, settle  # noqa: F401  (fixture re-export)
 
 TALES = src("60_tales.js")
+CORE = src("00_core.js")
+LABELS = fn(CORE, "squashName") + fn(CORE, "shownName") + fn(CORE, "withHostNames") + fn(CORE, "whoLabel")
 
 
 async def test_final_scores_list_only_teams_that_took_part_and_a_late_joiner_gets_no_card(bare, monkeypatch):
@@ -40,7 +42,7 @@ async def test_final_scores_list_only_teams_that_took_part_and_a_late_joiner_get
 
 @needs_node
 def test_the_scoreboard_never_lists_a_team_that_did_not_play():
-    r = run_node("const nameBook = () => ({})\n" + fn(TALES, "teamName") + fn(TALES, "Scoreboard") + """
+    r = run_node("const nameBook = () => ({})\n" + LABELS + fn(TALES, "teamName") + fn(TALES, "Scoreboard") + """
 const room = { members: [{ pk: 'me', you: true }] }
 const game = { scores: { a: 3 }, players: ['a', 'b'], team_names: { a: 'Jordan', b: 'Pia', me: 'Me' } }
 const row = Scoreboard({ game, room })
@@ -486,3 +488,40 @@ def test_the_shipped_retired_list_holds_only_room_ids():
     from ninsei_engine import engine as eng_mod
     assert eng_mod.RETIRED_ROOMS and all(len(r) == 16 and int(r, 16) >= 0 for r in eng_mod.RETIRED_ROOMS)
     assert eng_mod.COMMONS_ID not in eng_mod.RETIRED_ROOMS
+
+
+@needs_node
+def test_a_lookalike_seat_never_wears_the_real_name_in_a_game_label():
+    """Live repro: a third seat renamed itself "Maya" (agent Echo); the room flags it, the scoreboard did not."""
+    r = run_node(LABELS + fn(TALES, "teamName") + fn(TALES, "Scoreboard") + fn(CORE, "nameBook") + """
+const room = { members: [
+  { pk: 'maya', name: 'Maya', agents: [{ pk: 'ada', name: 'Ada' }] },
+  { pk: 'fake', name: 'Maya', impostor: true, agents: [{ pk: 'echo', name: 'Echo' }] },
+  { pk: 'sam', name: 'Sam', you: true, agents: [] }] }
+const book = nameBook(room, null)
+// team_names comes from the engine and carries the claimed name bare: the book's flag still wins
+const game = { scores: { maya: 2, fake: 1 }, players: ['maya', 'fake'], team_names: { maya: 'Maya', fake: 'Maya', gone: 'Maya', left: 'Ivy' } }
+const row = Scoreboard({ game, room })
+out({ board: row.props.children.map(c => c.props.children[0].props.children),
+  gone: teamName(game, book, 'gone'), left: teamName(game, book, 'left'),
+  who: whoLabel(book, 'fake'), echo: whoLabel(book, 'echo'), real: whoLabel(book, 'maya'),
+  host: whoLabel(withHostNames(book, { x: 'Maya' }), 'x') })
+""")
+    assert r["board"] == ["Maya + Ada", "Maya (not verified) + Echo"]
+    assert r["gone"] == "Maya (not verified)" and r["left"] == "Ivy"
+    assert r["who"] == "Maya (not verified)" and r["echo"] == "Echo (Maya (not verified)'s agent)"
+    assert r["real"] == "Maya" and r["host"] == "Maya (not verified)"
+
+
+def test_every_game_name_goes_through_the_shared_label_helpers():
+    assert "withHostNames" in fn(TALES, "teamName") and "shownName" in fn(TALES, "teamName")
+    assert "rv.names" not in TALES.replace("withHostNames(props.book, rv.names)", "")
+    assert "book[pk].name" not in TALES and ".name ||" not in fn(TALES, "teamName")
+
+
+def test_team_names_flag_a_lookalike_with_the_rooms_own_rule():
+    from ninsei_engine.engine import Engine
+    who = {"ident": {"person_pk": "me"}, "my_name": "Sam", "person": {"a": "Maya", "b": "Maya"}}
+    eng = Engine.__new__(Engine)
+    eng._holder = lambda w, n, agent=False: "a"
+    assert eng._flagged_name(who, "a") == "Maya" and eng._flagged_name(who, "b") == "Maya (not verified)"

@@ -1240,12 +1240,37 @@ function matchRanges(text, q, max) {
   return out
 }
 
+// A name as the room shows it: a lookalike (another key already holds the name) never wears it bare.
+// Every label a game draws comes from here, so one flag rule covers the scoreboard, reveals and lists.
+function shownName(book, pk, fallback) {
+  const b = book && book[pk]
+  if (!b) return fallback || 'someone'
+  return (b.name || fallback || 'someone') + (b.impostor ? ' (not verified)' : '')
+}
+
+// Names a host's reveal or the engine's team list carry for people who left the room. They fill gaps only, and a
+// name that a key still in the book holds is a lookalike: it gets the same flag, never the real name bare.
+function withHostNames(book, names) {
+  const out = Object.assign({}, book)
+  const held = new Set(Object.keys(book || {}).filter(pk => book[pk].name && !book[pk].impostor).map(pk => squashName(book[pk].name)))
+  Object.keys(names || {}).forEach(pk => {
+    if (out[pk]) return
+    const name = String(names[pk])
+    out[pk] = { name, impostor: held.has(squashName(name)) }
+  })
+  return out
+}
+
 function whoLabel(book, pk) {
   const b = book[pk]
   if (!b) return 'someone'
   if (b.you) return 'you'
-  if (b.agent) return b.yours ? b.name + ' (your agent)' : b.name + ' (' + b.ownerName + "'s agent)"
-  return b.name
+  if (b.agent) {
+    const owner = book[b.owner]
+    const ownerName = owner && owner.impostor ? b.ownerName + ' (not verified)' : b.ownerName
+    return shownName(book, pk) + (b.yours ? ' (your agent)' : ' (' + ownerName + "'s agent)")
+  }
+  return shownName(book, pk)
 }
 
 // ===== ui/05_media.js ===========================================================================
@@ -7870,8 +7895,7 @@ function FlagPhase(props) {
 function WhoRevealPhase(props) {
   const { game } = props
   const rv = game.reveal || {}
-  const book = Object.assign({}, props.book)
-  Object.keys(rv.names || {}).forEach(pk => { if (!book[pk]) book[pk] = { name: String(rv.names[pk]) } })
+  const book = withHostNames(props.book, rv.names)
   const authors = rv.authors || {}
   const kinds = rv.kinds || {}
   const flags = rv.picks || {}
@@ -7907,8 +7931,7 @@ function RevealPhase(props) {
   const { game } = props
   const rv = game.reveal || {}
   // Names the host sent fill gaps for players who have left the room since.
-  const book = Object.assign({}, props.book)
-  Object.keys(rv.names || {}).forEach(pk => { if (!book[pk]) book[pk] = { name: String(rv.names[pk]) } })
+  const book = withHostNames(props.book, rv.names)
   const authors = rv.authors || {}
   const picks = rv.picks || {}
   const points = rv.points || {}
@@ -7934,10 +7957,13 @@ function RevealPhase(props) {
   ] })
 }
 
+// "Maya + Echo": a lookalike seat carries the room's "not verified" flag on whichever part of the name it wears.
+// The book decides; game.team_names (this engine's own list, flagged the same way) only fills in people who left.
 function teamName(game, book, pk) {
-  const person = (game.team_names && game.team_names[pk]) || (book[pk] && book[pk].name) || 'Someone'
-  const agent = Object.values(book).find(b => b.agent && b.owner === pk)
-  return agent ? person + ' + ' + agent.name : person
+  const full = withHostNames(book, game.team_names)
+  const person = shownName(full, pk, 'Someone')
+  const agent = Object.keys(full).find(k => full[k].agent && full[k].owner === pk)
+  return agent ? person + ' + ' + shownName(full, agent) : person
 }
 
 function Scoreboard(props) {

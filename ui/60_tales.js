@@ -258,8 +258,7 @@ function FlagPhase(props) {
 function WhoRevealPhase(props) {
   const { game } = props
   const rv = game.reveal || {}
-  const book = Object.assign({}, props.book)
-  Object.keys(rv.names || {}).forEach(pk => { if (!book[pk]) book[pk] = { name: String(rv.names[pk]) } })
+  const book = withHostNames(props.book, rv.names)
   const authors = rv.authors || {}
   const kinds = rv.kinds || {}
   const flags = rv.picks || {}
@@ -295,8 +294,7 @@ function RevealPhase(props) {
   const { game } = props
   const rv = game.reveal || {}
   // Names the host sent fill gaps for players who have left the room since.
-  const book = Object.assign({}, props.book)
-  Object.keys(rv.names || {}).forEach(pk => { if (!book[pk]) book[pk] = { name: String(rv.names[pk]) } })
+  const book = withHostNames(props.book, rv.names)
   const authors = rv.authors || {}
   const picks = rv.picks || {}
   const points = rv.points || {}
@@ -322,10 +320,13 @@ function RevealPhase(props) {
   ] })
 }
 
+// "Maya + Echo": a lookalike seat carries the room's "not verified" flag on whichever part of the name it wears.
+// The book decides; game.team_names (this engine's own list, flagged the same way) only fills in people who left.
 function teamName(game, book, pk) {
-  const person = (game.team_names && game.team_names[pk]) || (book[pk] && book[pk].name) || 'Someone'
-  const agent = Object.values(book).find(b => b.agent && b.owner === pk)
-  return agent ? person + ' + ' + agent.name : person
+  const full = withHostNames(book, game.team_names)
+  const person = shownName(full, pk, 'Someone')
+  const agent = Object.keys(full).find(k => full[k].agent && full[k].owner === pk)
+  return agent ? person + ' + ' + shownName(full, agent) : person
 }
 
 function Scoreboard(props) {

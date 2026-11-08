@@ -2242,6 +2242,10 @@ class Engine:
     def _sorted(self, room: str) -> list[dict]:
         return sorted(self.events.get(room, {}).values(), key=self._order)
 
+    def _flagged_name(self, who: dict, pk: str) -> str:
+        name, holds = self._owner_label(who, pk)
+        return name if holds else f"{name} (not verified)"
+
     def _person_name(self, room: str, pk: str, who: Optional[dict] = None) -> str:
         return self._owner_label(who or self._who(room), pk)[0]
 
@@ -3391,7 +3395,9 @@ class Engine:
         if self._hidden:
             self._scrub_hidden(view)
         who = self._who(room, evs)
-        view["team_names"] = {pk: self._person_name(room, pk, who)
+        # built from this engine's own book (never the host's), and a lookalike key keeps the room's flag in its
+        # name: the UI prefers its live book and uses this only for people who have left the room
+        view["team_names"] = {pk: self._flagged_name(who, pk)
                               for pk in list(dict.fromkeys(list(view["scores"]) + view["players"]))[:24] + [ident["person_pk"]]
                               if pk not in self._hidden}
         # Your own team's fakes can't be voted for (the host enforces it too). Blocked by who wrote them, from
