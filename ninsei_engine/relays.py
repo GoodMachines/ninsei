@@ -117,6 +117,7 @@ class RelayPool:
         self.status = {u: RelayStatus(u) for u in self.urls}
         self._ws: dict[str, object] = {}
         self._tasks: dict[str, asyncio.Task] = {}
+        self._failed: set[str] = set()   # relays whose first connection of this pool has ended (failed or dropped)
         self._subs: dict[str, Subscription] = {}
         self._seen: dict[str, float] = {}
         self._max_seen = max_seen
@@ -220,6 +221,7 @@ class RelayPool:
                     self._cool(url)   # "too many requests" / "unavailable" at the door: wait as for a rate limit
             finally:
                 self._ws.pop(url, None)
+                self._failed.add(url)   # past its first try: a query no longer waits for it to connect
                 for fut in self._pending_ok.pop(url, {}).values():
                     if not fut.done():
                         fut.set_result((False, SYNTH + "disconnected"))
@@ -714,7 +716,23 @@ class RelayPool:
             await asyncio.sleep(self._flush_gap)
 
     async def query(self, filters: list[dict], *, timeout: float = 4.0) -> list[dict]:
-        """One-shot fetch: subscribe, collect until every open relay sent EOSE (or timeout), close."""
+        """One-shot fetch: the events of `query_ex`, oldest first. An empty list can also mean that no relay
+        answered; a caller that must tell the two apart uses `query_ex`."""
+        return (await self.query_ex(filters, timeout=timeout))[0]
+
+    def _first_try(self, url: str) -> bool:
+        """True while this relay's first connection of this pool is still being made (its task may not even have
+        run yet: `start()` only schedules it). A relay that has failed or dropped once is not waited for again."""
+        return url in self._tasks and url not in self._failed and url not in self._ws \
+            and self.status[url].state in ("idle", "connecting")
+
+    async def query_ex(self, filters: list[dict], *, timeout: float = 4.0) -> tuple[list[dict], set[str]]:
+        """One-shot fetch: (events oldest first, the relays that answered with EOSE). Waits, within `timeout`, for
+        every open relay to answer and for every relay still on its first connection attempt to connect and answer.
+        The query sits in the pool's subscriptions, so a relay that connects meanwhile gets it from `_run`'s replay:
+        still one REQ per relay. Started right after `start()`, it no longer returns [] at once for want of an open
+        socket. An empty set means nobody answered (offline, all in backoff, all silent): "nothing there" and
+        "nobody was asked" are different answers, and only the first may be recorded as known."""
         got: dict[str, dict] = {}
         sub_id = "q" + format(random.getrandbits(40), "x")
 
@@ -724,11 +742,15 @@ class RelayPool:
         # one-shot queries must not be deduped against live traffic
         sub = Subscription(sub_id, filters, collect, dedupe=False, seen_ids=set())
         self._subs[sub_id] = sub
-        targets = list(self._ws.items())
-        for url, ws in targets:
+        for url, ws in list(self._ws.items()):
             await self._send_req(url, ws, sub)
+
+        def waiting() -> bool:
+            return any(u not in sub.eose and (u in self._ws or self._first_try(u)) for u in self.urls)
+
         end = time.monotonic() + timeout
-        while time.monotonic() < end and len(sub.eose) < len(targets):
+        while time.monotonic() < end and waiting():
             await asyncio.sleep(0.05)
+        answered = set(sub.eose)
         await self.unsubscribe(sub_id)
-        return sorted(got.values(), key=lambda e: e["created_at"])
+        return sorted(got.values(), key=lambda e: e["created_at"]), answered

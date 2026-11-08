@@ -8118,7 +8118,8 @@ function Lobby(props) {
       jsxs('div', { className: 'h-row', children: [
         jsx(K.Button, { variant: 'secondary', size: 'sm', 'aria-expanded': open, onClick: toggleAll, children: open ? 'Hide all public rooms' : 'Browse all public rooms' }),
         open && jsx(K.Button, { variant: 'ghost', size: 'sm', disabled: browsing, onClick: loadAll, children: browsing ? 'Looking…' : 'Refresh this list' }),
-        open && browse && browse.cached && jsx('span', { className: 'h-faint h-small', children: 'Just asked: try again in ' + browse.wait + ' s' })
+        open && browse && browse.unanswered && jsx('span', { className: 'h-faint h-small', children: 'No relay answered yet: try again in a moment' }),
+        open && browse && browse.cached && !browse.unanswered && jsx('span', { className: 'h-faint h-small', children: 'Just asked: try again in ' + browse.wait + ' s' })
       ] }),
       open && browsing && !browse && jsx('div', { className: 'h-faint', children: 'Asking the relays…' }),
       open && browse && jsx(BrowseList, { store, snap, rooms: browse.rooms || [], onJoin: join, joining })

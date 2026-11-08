@@ -386,13 +386,13 @@ async def test_browse_all_asks_the_relays_once_per_open_filters_like_the_lobby_a
     maya, sam = engines["Maya"], engines["Sam"]
     made = await run(maya, maya.create_room, "shader club", "", ["shaders"])
     queries = []
-    real = sam.pool.query
+    real = sam.pool.query_ex   # the engine's queries go through query_ex (it says whether any relay answered)
 
     async def counting(filters, **kw):
         queries.append(filters)
         return await real(filters, **kw)
 
-    sam.pool.query = counting
+    sam.pool.query_ex = counting
     out = await run(sam, sam.browse_rooms)
     names = [r["name"] for r in out["rooms"]]
     assert "shader club" in names and "Commons" in names and out["cached"] is False

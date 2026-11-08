@@ -146,6 +146,8 @@ ART_OK_MAX = 20000         # people kept as "seen in a room I'm in" (a bounded L
 ART_QUERY_FILTERS = 4      # filters in one one-shot picture query (well under a relay's 8)
 ART_SETTLE = 3             # seconds to gather new people before asking the relays again
 ART_REQ_GAP = 30           # at least this long between two such requests
+ART_RELAY_RETRY = 600      # a relay whose own picture catch-up failed is asked again no sooner than this
+LOBBY_RETRY_WAIT = 60      # seconds a Lobby refresh nobody answered waits for a relay to open, for its one retry
 ART_PUBLISH_PER_10MIN = 5  # picture or face changes I publish in ten minutes
 ART_BATCH = 8              # pictures one /avatars call returns
 NAME_IDLE_EVICT = 3 * 86400  # when the registry is full, holders not seen for this long make room
@@ -728,6 +730,14 @@ class Engine:
         self._art_last = 0.0
         self._art_sent: Optional[tuple] = None   # the author list the last request went out with
         self._art_pool = None                    # the pool that list went to
+        # relay url -> the people whose older pictures and faces that relay has answered for (EOSE) on this pool.
+        # Only an answer counts: a query no relay answered leaves its people unasked, to be asked again.
+        self._art_relays: dict[str, set] = {}
+        self._art_relay_fail: dict[str, float] = {}   # relay url -> when its own catch-up last failed
+        self._art_busy = False                   # a catch-up is running (the minute tick then waits its turn)
+        self._art_relay_busy: set[str] = set()   # relays with a catch-up of their own running
+        self._art_retried = False                # the one quick retry of an unanswered catch-up has been used
+        self._lobby_retry = False                # a Lobby refresh nobody answered has its one retry waiting
         self.typing: dict[str, dict[str, float]] = {}   # room -> person pk -> when their last signal arrived
         self._typing_at: dict[str, float] = {}          # room -> when I last signaled typing
 
@@ -1215,7 +1225,7 @@ class Engine:
             for sid in list(self._room_subs | {"rooms", "art"}):
                 await self.pool.unsubscribe(sid)
             self._room_subs.clear()
-            self._art_sent = None
+            self._art_reset()
             return
         since = _now() - HISTORY_DAYS * 86400
         # Every filter counts toward a relay's per-request limit, not only the history ones: the live filter,
@@ -1238,7 +1248,7 @@ class Engine:
         self._room_subs = wanted
         if self._art_pool is not self.pool:   # a new pool: ask for everyone's pictures and faces once. A join or a
             self._art_pool = self.pool        # leave keeps what was asked: only the people who are new get a query
-            self._art_sent = None
+            self._art_reset()
         await self._art_subscribe()
 
     async def reconnect(self) -> None:
@@ -3492,9 +3502,12 @@ class Engine:
             raise ValueError("that room code doesn't look right")
         if meta is None:
             # the creator isn't known yet: ask widely, so a few newer forgeries can't push the real one out
-            found = await self.pool.query([{"kinds": [KIND_META], "#d": [f"ninsei/room/{room}"], "limit": 50}], timeout=4)
+            found, answered = await self._query([{"kinds": [KIND_META], "#d": [f"ninsei/room/{room}"], "limit": 50}],
+                                                timeout=4)
             meta = {"id": room, "name": "Room " + room[:4], "about": "", "interests": []}
-            found_meta = False
+            # nobody answered: the code isn't "not found", the relays weren't asked (the `rooms` subscription's
+            # metadata filter fills the name in once one connects)
+            found_meta = not answered
             for ev in found:
                 m = self._room_meta_from(ev, room)
                 if m and m["at"] >= int(meta.get("at") or 0):
@@ -3705,10 +3718,14 @@ class Engine:
         self._browse_busy = True
         self._browse_at = time.monotonic()   # counted from the start: a failed try waits too
         try:
-            evs = await self.pool.query([{"kinds": [KIND_META], "#t": [APP_TAG], "since": _now() - BROWSE_DAYS * 86400,
-                                          "limit": BROWSE_LIMIT}], timeout=6)
+            evs, answered = await self._query([{"kinds": [KIND_META], "#t": [APP_TAG], "since": _now() - BROWSE_DAYS * 86400,
+                                                "limit": BROWSE_LIMIT}], timeout=6)
         finally:
             self._browse_busy = False
+        if not answered:
+            # no relay answered (none open yet, all down): nothing was learned, so the cooldown is given back
+            self._browse_at = -1e9
+            return {**self._browse, "cached": True, "wait": 0, "unanswered": True}
         mine = set(self.settings()["interests"])
         rooms, seen = [], set()
         for ev in sorted(evs, key=lambda e: -e["created_at"]):
@@ -3728,8 +3745,17 @@ class Engine:
         return {**self._browse, "cached": False, "wait": BROWSE_COOLDOWN}
 
     async def refresh_lobby(self) -> dict:
-        evs = await self.pool.query([{"kinds": [KIND_META], "#t": [APP_TAG], "since": _now() - 21 * 86400,
-                                      "limit": 300}], timeout=5)
+        """The Lobby's rooms and people. When no relay answered (the dashboard's first call starts the engine, and
+        the Lobby asks at once), `at` stays where it was (0 at startup, so the Lobby asks again when it next opens)
+        and one retry waits for a relay to open."""
+        evs, answered = await self._query([{"kinds": [KIND_META], "#t": [APP_TAG], "since": _now() - 21 * 86400,
+                                            "limit": 300}], timeout=5)
+        if not answered:
+            if not self._lobby_retry:
+                self._lobby_retry = True
+                self._spawn(self._lobby_again(self.pool))
+            if self.lobby.get("at"):
+                return self.lobby   # keep the last list the relays gave rather than replace it with nothing
         if COMMONS_EVENT and not any(e["id"] == COMMONS_EVENT["id"] for e in evs):
             evs.append(COMMONS_EVENT)  # always listed, even when the relays dropped its old details
         mine = set(self.settings()["interests"])
@@ -3772,9 +3798,23 @@ class Engine:
         # active rooms first: a room where people are talking beats a perfect match nobody is in
         room_key = lambda r: (not r["live"], -len(r["overlap"]), -r["talkers"], -r["msgs"], -r["at"])
         key = lambda x: (-len(x["overlap"]), -x["at"])
-        self.lobby = {"rooms": sorted(rooms, key=room_key)[:40], "people": sorted(people, key=key)[:40], "at": now}
+        self.lobby = {"rooms": sorted(rooms, key=room_key)[:40], "people": sorted(people, key=key)[:40],
+                      "at": now if answered else 0}
         self._bump()
         return self.lobby
+
+    async def _lobby_again(self, pool) -> None:
+        """The one retry of a Lobby refresh nobody answered: once a relay of the same pool is open. It can't
+        schedule another (`_lobby_retry` stays set while it runs)."""
+        try:
+            if not hasattr(pool, "wait_open") or not await pool.wait_open(LOBBY_RETRY_WAIT) \
+                    or self.pool is not pool or not pool.open_count():
+                return
+            await self.refresh_lobby()
+        except Exception:
+            log.exception("ninsei: the Lobby retry failed")
+        finally:
+            self._lobby_retry = False
 
     async def _room_activity(self, rooms: list[str]) -> dict[str, dict]:
         """Messages and distinct people per room over the last day, from the relays. Hidden people don't count."""
@@ -3972,6 +4012,7 @@ class Engine:
         while True:
             await self._presence_once()
             self._dm_touch()
+            self._art_touch()
             await asyncio.sleep(PRESENCE_EVERY)
 
     def _beat_soon(self) -> None:
@@ -4438,6 +4479,8 @@ class Engine:
         self._art_ok.pop(pk, None)
         if self._art_sent:   # so that seeing them again later counts as new, and gets its one query
             self._art_sent = tuple(a for a in self._art_sent if a != pk)
+        for asked in self._art_relays.values():
+            asked.discard(pk)
         self.typing = {r: {k: v for k, v in tp.items() if k != pk} for r, tp in self.typing.items()}
         self.store.art_forget(pk)
 
@@ -4451,8 +4494,15 @@ class Engine:
                 if pk != me:
                     have.pop("avatar", None)
         else:
-            self._art_sent = None
+            self._art_reset()
             self._art_soon(now=True)
+
+    def _art_reset(self) -> None:
+        """Forget what was asked (a new pool, pictures switched back on, no rooms left): everyone is asked again."""
+        self._art_sent = None
+        self._art_relays = {}
+        self._art_relay_fail = {}
+        self._art_retried = False
 
     def _art_authors(self) -> list[str]:
         """Whose pictures and faces to ask for: me, then the people of my rooms by latest activity, at most
@@ -4488,23 +4538,102 @@ class Engine:
         people changed. The live `art` subscription starts at now, so a relay never resends what it sent before
         (a reconnect, a join or a leave replays nothing); the people who are new in the list get one one-shot query
         for just them. It takes every copy of an event (`dedupe=False`): the pool's own seen-set would swallow a
-        re-asked picture that was dropped the first time (pictures were off, the person was hidden)."""
+        re-asked picture that was dropped the first time (pictures were off, the person was hidden).
+
+        A person counts as asked only once a relay has answered (EOSE) the query for them: at startup the query
+        can run before any relay is open, and a person marked asked then would have no picture until they publish
+        again (the live request starts at now). A catch-up nobody answered gets one quick retry (ART_REQ_GAP
+        apart); after that `_art_touch` asks each relay that opens, once."""
         self._art_last = time.time()
         if not self.pool or not self.settings()["onboarded"] or not self.store.rooms():
             return
         authors = self._art_authors()
-        if self._art_sent == tuple(authors):
+        asked = set().union(*self._art_relays.values())
+        fresh = [a for a in authors if a not in asked]
+        if self._art_sent == tuple(authors) and not fresh:
             return
-        known = set(self._art_sent or ())
-        self._art_sent = tuple(authors)
-        fresh = [a for a in authors if a not in known]
-        await self.pool.subscribe("art", self._art_filters(authors, int(_now())), self._on_art, dedupe=False)
-        for i in range(0, len(fresh), ART_AUTHORS_PER_FILTER * ART_QUERY_FILTERS):
-            try:
-                for ev in await self.pool.query(self._art_filters(fresh[i:i + ART_AUTHORS_PER_FILTER * ART_QUERY_FILTERS]), timeout=6.0):
+        pool = self.pool
+        if self._art_sent != tuple(authors):
+            self._art_sent = tuple(authors)
+            await pool.subscribe("art", self._art_filters(authors, int(_now())), self._on_art, dedupe=False)
+        unanswered = False
+        self._art_busy = True
+        try:
+            step = ART_AUTHORS_PER_FILTER * ART_QUERY_FILTERS
+            for i in range(0, len(fresh), step):
+                chunk = fresh[i:i + step]
+                try:
+                    evs, answered = await self._query(self._art_filters(chunk), timeout=6.0)
+                except Exception:
+                    log.exception("ninsei: the picture query failed")
+                    evs, answered = [], set()
+                if self.pool is not pool:
+                    return   # a new pool asks everyone again
+                for ev in evs:
                     self._take_art(ev)
-            except Exception:
-                log.exception("ninsei: the picture query failed")
+                for url in answered:
+                    self._art_relays.setdefault(url, set()).update(chunk)
+                unanswered = unanswered or not answered
+        finally:
+            self._art_busy = False
+        if not unanswered:
+            self._art_retried = False
+        elif not self._art_retried:
+            self._art_retried = True
+            self._art_soon()
+
+    def _art_touch(self) -> None:
+        """Called every minute. An open relay that hasn't answered the catch-up for some of the people in the live
+        `art` request (it connected after the catch-up ran, or nobody answered then) gets one query of its own, for
+        just those people. When every open relay is caught up nothing is sent. A relay whose own catch-up failed
+        waits ART_RELAY_RETRY, and one that asked us to slow down is skipped: per-IP limits (damus) stay calm."""
+        if not self.pool or not self._art_sent or self._art_busy or not self.settings()["onboarded"] \
+                or not hasattr(self.pool, "query_relay"):
+            return
+        st = getattr(self.pool, "status", {}) or {}
+        cooling = getattr(self.pool, "cooling", None)
+        now = time.time()
+        for url, s in list(st.items()):
+            if getattr(s, "state", "") != "open" or url in self._art_relay_busy or (cooling and cooling(url)):
+                continue
+            if now - self._art_relay_fail.get(url, -1e18) < ART_RELAY_RETRY * self.ts:
+                continue
+            have = self._art_relays.get(url, set())
+            missing = [a for a in self._art_sent if a not in have]
+            if missing:
+                self._art_relay_busy.add(url)
+                self._spawn(self._art_catch_up_relay(url, missing))
+
+    async def _art_catch_up_relay(self, url: str, authors: list[str]) -> None:
+        """The older pictures and faces of `authors` from one relay. Recorded as asked only where it answered."""
+        pool = self.pool
+        try:
+            step = ART_AUTHORS_PER_FILTER * ART_QUERY_FILTERS
+            for i in range(0, len(authors), step):
+                chunk = authors[i:i + step]
+                evs, done = await pool.query_relay(url, self._art_filters(chunk), timeout=6.0)
+                if self.pool is not pool:
+                    return
+                for ev in evs:
+                    self._take_art(ev)
+                if not done:
+                    self._art_relay_fail[url] = time.time()
+                    return
+                self._art_relays.setdefault(url, set()).update(chunk)
+        except Exception:
+            log.exception("ninsei: the picture query failed")
+            self._art_relay_fail[url] = time.time()
+        finally:
+            self._art_relay_busy.discard(url)
+
+    async def _query(self, filters: list[dict], timeout: float) -> tuple[list[dict], set]:
+        """A one-shot query: (events, the relays that answered). An empty set means nobody answered, so the empty
+        list says nothing about what the relays hold. A pool without `query_ex` (a stand-in in tests) can't say
+        who answered: its reply counts as an answer."""
+        ex = getattr(self.pool, "query_ex", None)
+        if ex is None:
+            return await self.pool.query(filters, timeout=timeout), set(getattr(self.pool, "urls", None) or ["*"])
+        return await ex(filters, timeout=timeout)
 
     async def _on_art(self, ev: dict, _src: str) -> None:
         self._take_art(ev)

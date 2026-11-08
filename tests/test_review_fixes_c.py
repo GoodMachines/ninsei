@@ -271,8 +271,8 @@ async def test_lobby_tags_are_capped(engine):
     ev = nostr.build_event(sk, KIND_META, json.dumps({"nonce": nonce, "name": "R"}), tags, pow_bits=12)
 
     async def fake_query(*a, **k):
-        return [ev]
-    engine.pool.query = fake_query
+        return [ev], {"wss://answered"}
+    engine.pool.query_ex = fake_query
     lobby = await run(engine, engine.refresh_lobby)
     room = lobby["rooms"][0]
     assert len(room["interests"]) <= 8 and all(len(t) <= 24 for t in room["interests"])
