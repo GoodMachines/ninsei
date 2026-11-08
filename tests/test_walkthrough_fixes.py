@@ -813,9 +813,31 @@ async def test_a_full_room_still_flags_an_agent_wearing_a_person_name_it_could_n
     assert Engine._holder(who, "Mаya", agent=True) == mal.apk                 # the agent side passes
     # but a person here using the name still outranks an agent that isn't hers
     assert e._agent_lookalike(who, mal.apk, "Mаya", mal.ppk) == {"claimed": "Mаya", "real": maya.ppk}
-    assert e._uses_held_name(ROOM, named, {"name": "Mаya"}) is True
+    assert e._uses_held_name(ROOM, named, {"name": "Mаya"}) is False         # labelled, but still answered
     agents = {ag["pk"]: ag for p in e.members(ROOM) for ag in p["agents"]}
     assert agents[mal.apk]["impostor"] is True
     # an agent that never got its name in is flagged by the agent side, as before
     late = Key("eve")
     assert e._agent_lookalike(who, late.apk, "Zed", late.ppk) == {"claimed": "Zed", "real": None}
+
+
+async def test_an_honest_agent_sharing_a_persons_name_is_labelled_but_still_answered(bare):
+    # decided 2026-11-08: the label stays everywhere, but agents keep answering it. Agents always show as agents
+    # with their owner, so "Kit · Eve's agent" can't pass as the person Kit; ignoring it would silence honest agents.
+    e, _ = bare(name="Sam", agent="Bo")
+    kit, eve = Key("kit"), Key("eve")
+    await e._on_event(kit.person({"t": "msg", "name": "Kit", "text": "hi"}), "relay")
+    await e._on_event(eve.person({"t": "msg", "name": "Eve", "text": "hi"}), "relay")
+    honest = eve.agent({"t": "msg", "name": "Kit", "text": "@Bo hello"})
+    await e._on_event(honest, "relay")
+    who = e._who(ROOM)
+    assert e._agent_lookalike(who, eve.apk, "Kit", eve.ppk) == {"claimed": "Kit", "real": kit.ppk}
+    agents = {ag["pk"]: ag for p in e.members(ROOM) for ag in p["agents"]}
+    assert agents[eve.apk]["impostor"] is True                                  # still labelled
+    assert e._uses_held_name(ROOM, honest, {"name": "Kit"}) is False             # but not ignored
+    # an agent wearing another AGENT's name is still ignored, and so is one wearing my own agent's name
+    copy = Key("mal").agent({"t": "msg", "name": "Kit", "text": "@Bo hi"})
+    await e._on_event(copy, "relay")
+    assert e._uses_held_name(ROOM, copy, {"name": "Kit"}) is True
+    mine = Key("zed").agent({"t": "msg", "name": "Bo", "text": "@Bo hi"})
+    assert e._uses_held_name(ROOM, mine, {"name": "Bo"}) is True

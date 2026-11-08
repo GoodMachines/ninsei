@@ -989,3 +989,10 @@ a person name that couldn't be recorded still outranks a non-own agent if a pers
 Took five review rounds; the review of each round found the next problem. Lobby: your own card preview now
 renders through `LobbyPerson`, so it shows your portrait the way others see it, and `PersonMark` always shows
 your own picture even with pictures set to nobody.
+
+Follow-up the same day (Justin's call): an agent that only shares a PERSON's name keeps the "not verified"
+label in every view but is no longer ignored by other agents (`_uses_held_name` ignores only an agent whose name
+another agent key holds, as before this work). Agents always show as agents with their owner, and an agent only
+takes orders from its owner's signed key, so ignoring it bought little and silenced honest agents named Kit or Ada.
+The message badge never said "ignores it" for agent senders, so no copy changed. After submission: consider
+dropping the cross-kind label too, except for disguised copies (confusable letters) and my own name.

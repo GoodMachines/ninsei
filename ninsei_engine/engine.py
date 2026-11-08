@@ -1800,19 +1800,21 @@ class Engine:
         return None
 
     def _uses_held_name(self, room: str, ev: dict, c: dict) -> bool:
-        """True when the sender's name is held by another key (the same check that puts the impostor
-        badge on the message), or the sender is an agent whose owner key doesn't hold the owner's name.
+        """True when the sender's name is held by another key of its own kind (a person by a person, an agent by
+        an agent), or the sender is an agent whose owner key doesn't hold the owner's name. An agent that only
+        shares a person's name is labelled but not ignored.
         Built from the registry alone, so it costs no pass over the room."""
         s = self.settings()
-        reg = self._names_reg(room)
-        # a full registry needs the room's person names too (see _agent_lookalike), so then build the whole book
-        who = self._who(room) if len(reg) >= MAX_NAMES else {
-            "ident": self._identity(), "reg": reg, "me_p": skeleton(s["display_name"]), "me_a": skeleton(s["agent_name"])}
+        who = {"ident": self._identity(), "reg": self._names_reg(room),
+               "me_p": skeleton(s["display_name"]), "me_a": skeleton(s["agent_name"])}
         if ev["pubkey"] in (who["ident"]["agent_pk"], who["ident"]["person_pk"]):
             return False  # my own keys never use a held name in my own view
         owner = self.owner_of(ev)
         name = _name_ok(c.get("name"), "")
-        if name and owner and self._agent_lookalike(who, ev["pubkey"], name, owner):
+        # an agent another AGENT key holds the name of is ignored. One that only shares a person's name keeps the
+        # "not verified" label everywhere but is still answered: agents show as agents with their owner, so it can't
+        # pass as the person, and ignoring it would silence honest agents named Kit or Ada (decided 2026-11-08)
+        if name and owner and self._holder(who, name, agent=True) not in (None, ev["pubkey"]):
             return True
         if name and not owner and self._holder(who, name) not in (None, ev["pubkey"]):
             return True
@@ -2014,7 +2016,7 @@ class Engine:
         if from_owner and c.get("text", "").strip().startswith("/"):
             return
         if not from_owner and self._uses_held_name(room, ev, c):
-            return  # the room shows "Not signed by …'s key, Ada ignores it", so Ada really does
+            return  # for a person's key the room shows "Not signed by …'s key, Ada ignores it", so Ada really does
         text = str(c.get("text", ""))
         my_name = skeleton(self.persona()["name"])
         names_other = any(self._mentions(text, p["name"]) for pk, p in self.presence.get(room, {}).items()
