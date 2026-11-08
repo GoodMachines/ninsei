@@ -31,7 +31,10 @@ function Onboarding(props) {
     persona: s.persona || '', persona_source: s.persona_source || '',
     face: faceFor(s.face && s.face.shape ? s.face : null, snap.me && snap.me.agent && snap.me.agent.pk),
     interests: s.interests || [], budget_daily: BUDGET_PRESETS.includes(s.budget_daily) ? s.budget_daily : 40000,
-    person_face: s.person_face || null, avatar: ''   // your own face and picture (optional); the picture waits here until setup is finished
+    // how you look: a random avatar to start from (what the preview shows is what people will see; "Use my
+    // initial instead" clears it), and a picture that waits here until setup is finished
+    person_face: s.person_face || null, person_avatar: cleanAvatar(s.person_avatar) || (s.person_face ? null : randomAvatar()),
+    avatar: ''
   }))
   const [busy, setBusy] = useState(false)
   const [pick, setPick] = useState({ flags: [], truncated: false, open: false })   // page-only: never posted
@@ -43,8 +46,8 @@ function Onboarding(props) {
     if (!ready || busy) return
     setBusy(true)
     try {
-      const { avatar, person_face, ...rest } = form
-      await store.post('/settings', Object.assign({}, rest, { person_face: person_face || {}, onboarded: true }))
+      const { avatar, person_face, person_avatar, ...rest } = form
+      await store.post('/settings', Object.assign({}, rest, { person_face: person_face || {}, person_avatar: person_avatar || {}, onboarded: true }))
       // the picture is published only now: until setup is finished nothing about you has been sent anywhere
       if (avatar) { try { await store.post('/avatar', { img: avatar }) } catch (_) { /* toasted; it can be added in Settings */ } }
       nav().set('welcome')  // land on "Rooms for you", not an empty room view
@@ -76,10 +79,12 @@ function Onboarding(props) {
     jsx(Field, { label: 'Its face', children: jsxs('div', { className: 'h-col', style: { gap: 14 }, children: [
       jsx('div', { style: { maxWidth: 380 }, children: jsx(IdCard, { kind: 'agent', name: form.agent_name || 'Your agent', pk: agentPk, face: form.face,
         fields: [['Owner', form.display_name || 'You'], ['Status', 'New']] }) }),
-      jsx(FacePicker, { value: form.face, pk: agentPk, name: form.agent_name, noPreview: true, onChange: face => set({ face }) })
+      jsx(FacePicker, { value: form.face, pk: agentPk, name: form.agent_name, onChange: face => set({ face }) })
     ] }) }),
-    jsx(Field, { label: 'How you look (optional)', children: jsx(PersonLook, { pk: snap.me && snap.me.pk, name: form.display_name, stage: true,
-      face: form.person_face, onFace: person_face => set({ person_face }), staged: form.avatar, hasPicture: !!form.avatar, art: form.person_face ? { face: form.person_face } : null,
+    jsx(Field, { label: 'How you look (optional)', children: jsx(PersonLook, { id: 'h-on-look', pk: snap.me && snap.me.pk, name: form.display_name, stage: true,
+      avatar: form.person_avatar, onAvatar: person_avatar => set({ person_avatar }),
+      face: form.person_face, onFace: person_face => set({ person_face }), staged: form.avatar, hasPicture: !!form.avatar,
+      art: { avatar: form.person_avatar || undefined, face: form.person_face || undefined },
       onPicture: avatar => set({ avatar }) }) }),
     jsx(Field, { label: 'What are you into?', id: 'h-on-int', hint: 'Used to find rooms and people. Your interest card is published only if you choose to in the Lobby.',
       children: jsx(InterestInput, { id: 'h-on-int', value: form.interests, onChange: interests => set({ interests }) }) }),
@@ -115,7 +120,7 @@ function SettingsForm(props) {
   const initial = () => ({ display_name: s.display_name, line: s.line || '', agent_name: s.agent_name, vibe: s.vibe,
     persona: s.persona || '', persona_source: s.persona_source || '',
     face: faceFor(s.face, agentPk), interests: s.interests || [], budget_daily: s.budget_daily, msgs_daily: s.msgs_daily,
-    person_face: s.person_face || null, relays: (s.relays || []).join('\n') })
+    person_face: s.person_face || null, person_avatar: cleanAvatar(s.person_avatar), relays: (s.relays || []).join('\n') })
   const [form, setForm] = useState(initial)
   const [busy, setBusy] = useState(false)
   const [pick, setPick] = useState({ flags: [], truncated: false, open: false })   // page-only: never posted
@@ -148,7 +153,7 @@ function SettingsForm(props) {
     if (goingOffline && !confirmOffline) { setConfirmOffline(true); return }
     setConfirmOffline(false)
     setBusy(true)
-    const body = Object.assign({}, form, { relays: relayList, person_face: form.person_face || {},
+    const body = Object.assign({}, form, { relays: relayList, person_face: form.person_face || {}, person_avatar: form.person_avatar || {},
       budget_daily: parseCount(form.budget_daily), msgs_daily: parseCount(form.msgs_daily) })
     try {
       const out = await store.post('/settings', body, 'Saved')
@@ -175,7 +180,7 @@ function SettingsForm(props) {
         jsx('div', { style: { maxWidth: 380 }, children: jsx(IdCard, { kind: 'agent', name: form.agent_name || 'Your agent', pk: agentPk, face: form.face,
           state: snap.me.agent.state, fields: [['Owner', form.display_name || 'You'],
             s.card_details && snap.me.agent.model ? ['Model', shortModel(snap.me.agent.model)] : ['Status', STATE_LABEL[stateWord(snap.me.agent.state)]]] }) }),
-        jsx(FacePicker, { id: 'h-facepicker', value: form.face, pk: agentPk, name: form.agent_name, noPreview: true, onChange: face => set({ face }) })
+        jsx(FacePicker, { id: 'h-facepicker', value: form.face, pk: agentPk, name: form.agent_name, onChange: face => set({ face }) })
       ] }) }),
       jsx(Field, { label: 'Chattiness', hint: 'How often your agent joins in unprompted. It always answers when someone addresses it by name.',
         children: jsx(Seg, { label: 'Chattiness', value: s.chattiness, onChange: v => now({ chattiness: v }),
@@ -227,8 +232,10 @@ function SettingsForm(props) {
         jsx(Field, { label: 'One line about you', id: 'h-s-line', children: jsx(K.Input, { id: 'h-s-line', value: form.line, maxLength: 200, onChange: e => set({ line: e.target.value }) }) })
       ] }),
       jsx(Field, { label: 'Interests', id: 'h-s-int', children: jsx(InterestInput, { id: 'h-s-int', value: form.interests, onChange: interests => set({ interests }) }) }),
-      jsx(Field, { label: 'Your picture and face', children: jsx(PersonLook, { pk: mePk, name: form.display_name, face: form.person_face, onFace: person_face => set({ person_face }),
-        art: myArt ? Object.assign({}, myArt, form.person_face ? { face: form.person_face } : { face: undefined }) : (form.person_face ? { face: form.person_face } : null),
+      jsx(Field, { label: 'How you look', children: jsx(PersonLook, { id: 'h-s-look', pk: mePk, name: form.display_name,
+        avatar: form.person_avatar, onAvatar: person_avatar => set({ person_avatar }),
+        face: form.person_face, onFace: person_face => set({ person_face }),
+        art: Object.assign({}, myArt || {}, { avatar: form.person_avatar || undefined, face: form.person_face || undefined }),
         hasPicture: !!(myArt && myArt.av), busy: picBusy, onPicture: setPicture }) }),
       jsx(Field, { label: 'Show profile pictures', hint: 'Pictures are other people’s files, shown to you as small images. Nobody keeps only faces and initials on your screen, and Ninsei stops keeping their pictures. Your own is not affected.',
         children: jsx(Seg, { label: 'Show profile pictures', value: s.show_avatars || 'everyone', onChange: v => now({ show_avatars: v }),

@@ -223,8 +223,8 @@ def test_card_svg_refuses_faces_that_are_not_plain_shapes():
     ok = '<circle cx="1" cy="1" r="1" style="fill:url(#ncbg)"/>'
     js = IMAGE_JS + f"""
 const bad = {json.dumps(bad)}
-const marks = bad.map((m, i) => cardSvg({{ hue: 10, name: 'A', tag: 'Agent', faces: [{{ inner: m, left: 0, top: 0, size: 100, front: true }}] }}).includes('viewBox="0 0 40 40"'))
-const good = cardSvg({{ hue: 10, name: 'A', tag: 'Agent', faces: [{{ inner: {json.dumps(ok)}, left: 0, top: 0, size: 100, front: true }}] }}).includes('viewBox="0 0 40 40"')
+const marks = bad.map((m, i) => cardSvg({{ hue: 10, name: 'A', tag: 'Agent', faces: [{{ inner: m, left: 0, top: 0, size: 100, front: true }}] }}).includes('viewBox="0 0 64 64"'))
+const good = cardSvg({{ hue: 10, name: 'A', tag: 'Agent', faces: [{{ inner: {json.dumps(ok)}, left: 0, top: 0, size: 100, front: true }}] }}).includes('viewBox="0 0 64 64"')
 console.log(JSON.stringify([marks, good, faceMarkup('<g xmlns="http://www.w3.org/2000/svg"><path d="M0 0"/></g>')]))"""
     marks, good, cleaned = _run(js)
     assert marks == [False] * len(bad)

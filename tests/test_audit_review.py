@@ -202,7 +202,7 @@ def test_offer_cards_have_copy_for_expired_and_dropped():
 SETTINGS_JS = lambda: (fn(SETUP, "parseCount") + const(SETUP, "BUDGET_MAX") + const(SETUP, "MSGS_MAX")
                        + fn(SETUP, "limitError") + fn(SETUP, "SettingsForm") + """
 function Field() {}; function Seg() {}; function VibePresets() {}; function IdCard() {}; function FacePicker() {}; function BudgetRing() {}; const AWAY_CHOICES = []; const OTHERS_SPENT = ''; function othersLine() { return '' }
-function InterestInput() {}; function Notice() {}; function PersonLook() {}
+function InterestInput() {}; function Notice() {}; function PersonLook() {}; const cleanAvatar = a => a || null
 function HermesPicker() {}; function PersonaField() {}; function applyProposal() {}
 K.Toggle = function Toggle() {}
 const useFaceEditorFocus = () => {}
