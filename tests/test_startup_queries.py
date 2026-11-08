@@ -317,10 +317,20 @@ async def hanging_relay():
 
     async def hold(reader, writer):
         held.append(writer)
-        await asyncio.sleep(60)
+        await reader.read()   # until the client or close_hanging() ends the connection
 
     srv = await asyncio.start_server(hold, "127.0.0.1", 0)
     return srv, f"ws://127.0.0.1:{srv.sockets[0].getsockname()[1]}", held
+
+
+async def close_hanging(srv, held):
+    """Close the held connections and the server and wait for both, so no transport is left for the garbage
+    collector to finish after this loop has gone (it would surface as an unraisable warning in a later test)."""
+    for w in held:
+        w.close()
+    await asyncio.gather(*(w.wait_closed() for w in held), return_exceptions=True)
+    srv.close()
+    await asyncio.wait_for(srv.wait_closed(), 5)
 
 
 async def test_a_relay_hanging_in_its_handshake_does_not_hold_a_query_another_relay_answered():
@@ -339,9 +349,7 @@ async def test_a_relay_hanging_in_its_handshake_does_not_hold_a_query_another_re
             assert time.monotonic() - t < 3                            # not the whole 6 s
         finally:
             await pool.stop()
-            for w in held:
-                w.close()
-            srv.close()
+            await close_hanging(srv, held)
 
 
 async def test_a_relay_that_failed_once_and_is_connecting_again_is_not_waited_for():
@@ -380,9 +388,7 @@ async def test_boot_is_not_held_by_the_picture_catch_up_when_a_relay_hangs(bare)
         await asyncio.gather(*e2._tasks, return_exceptions=True)
         await e2.pool.stop()
         e2.store.close()
-        for w in held:
-            w.close()
-        srv.close()
+        await close_hanging(srv, held)
 
 
 class SlowPool(QPool):
