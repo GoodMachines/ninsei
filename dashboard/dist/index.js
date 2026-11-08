@@ -138,6 +138,13 @@ function repliesWords(n) {
   n = Math.max(0, Math.round(Number(n) || 0))
   return n < 1 ? 'less than a reply a day' : 'about ' + n + (n === 1 ? ' reply' : ' replies') + ' a day'
 }
+// What is left of today in replies, from the engine's budget.replies.left (it counts the message limit and held tokens).
+function repliesLeftWords(b) {
+  const r = b && b.replies
+  if (!r || r.left == null) return ''
+  const n = Math.max(0, Math.round(Number(r.left) || 0))
+  return n < 1 ? 'no replies left today' : 'about ' + n + (n === 1 ? ' reply' : ' replies') + ' left today'
+}
 function fmtTokens(n) {
   n = Number(n) || 0
   if (n >= 1000000) return (n / 1000000).toFixed(n % 1000000 ? 1 : 0) + 'M'
@@ -2225,11 +2232,9 @@ button.h-link{background:none;border:0;padding:0;font:inherit;cursor:pointer;tex
 .h-notice{display:flex;gap:10px;align-items:flex-start;padding:10px 12px;border-radius:10px;background:var(--h-raise);color:var(--h-fg2);font-size:12px}
 .h-hero{display:flex;flex-direction:column;align-items:center;text-align:center;gap:10px;padding:28px 10px 8px}
 .h-savebar{justify-content:flex-end;position:sticky;bottom:0;padding:10px 0;background:var(--h-bg);border-top:1px solid var(--h-line)}
-/* the sticky Save bar: scrolling to a field (focus, find, a jump) stops above it, the form ends with room for it, and a
-   field focused under it is moved up (useKeepAboveBar) */
+/* the sticky Save bar: scrolling to a field (focus, find, a jump) stops above it, and a field focused under it is moved
+   up (useKeepAboveBar, which also covers a host page that does the scrolling) */
 .h-scroll:has(.h-savebar){scroll-padding-bottom:72px}
-.h-settings{scroll-margin-bottom:72px}
-.h-settings>section:last-of-type{padding-bottom:8px}
 /* onboarding's optional "Customize" and a "More" behind a short hint */
 .h-custom{border:1px solid var(--h-line2);border-radius:10px;padding:10px 12px}
 .h-custom>summary{cursor:pointer;display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;font-weight:600;color:var(--h-fg2);font-size:12.5px;list-style:none}
@@ -2240,7 +2245,6 @@ button.h-link{background:none;border:0;padding:0;font:inherit;cursor:pointer;tex
 .h-more{display:inline}
 .h-more>summary{display:inline;cursor:pointer;color:var(--h-fg2);text-decoration:underline;text-decoration-color:var(--h-fg4);text-underline-offset:2px;list-style:none}
 .h-more[open]{display:block;margin-top:4px}
-.h-more[open]>summary{display:none}
 @media (prefers-reduced-motion: reduce){.h-custom>summary::before{transition:none}}
 /* a preset that says what it buys, its tokens under it */
 .h-seg-two{display:inline-flex;flex-direction:column;align-items:center;line-height:1.25}
@@ -2586,10 +2590,6 @@ function HermesPicker(props) {
     return () => { live = false }
   }, [])
   if (!list || !list.length) return null
-  if (!open) {
-    return jsx('div', { className: 'h-hermes-add', children: jsx(K.Button, { variant: 'ghost', size: 'sm', 'aria-expanded': false,
-      onClick: () => setOpen(true), children: 'Re-import from a Hermes agent' }) })
-  }
   const pick = async p => {
     if (busy) return
     setBusy(p.name)
@@ -2597,21 +2597,26 @@ function HermesPicker(props) {
     catch (e) { P.toast('error', errText(e)) }
     setBusy('')
   }
-  return jsxs('div', { className: 'h-field h-hermes', role: 'group', 'aria-label': 'Your Hermes agents', children: [
-    jsxs('div', { className: 'h-row', style: { justifyContent: 'space-between' }, children: [
-      jsx('div', { className: 'h-label', children: props.collapsible ? 'Re-import from one of your Hermes agents' : 'Start from one of your Hermes agents' }),
-      props.collapsible && jsx(K.Button, { variant: 'ghost', size: 'sm', 'aria-expanded': true, onClick: () => setOpen(false), children: 'Close' })
+  // one toggle that stays mounted (focus stays on it), saying whether the list is open and which list it opens
+  const toggle = props.collapsible && jsx(K.Button, { variant: 'ghost', size: 'sm', 'aria-expanded': open, 'aria-controls': 'h-hermes-pick',
+    onClick: () => setOpen(!open), children: open ? 'Close' : 'Re-import from a Hermes agent' })
+  return jsxs('div', { className: open ? 'h-field h-hermes' : 'h-hermes-add', children: [
+    jsxs('div', { className: 'h-row', style: { justifyContent: open ? 'space-between' : 'flex-start' }, children: [
+      open && jsx('div', { className: 'h-label', id: 'h-hermes-label', children: props.collapsible ? 'Re-import from one of your Hermes agents' : 'Start from one of your Hermes agents' }),
+      toggle
     ] }),
-    jsx('div', { className: 'h-hermes-list', children: list.map(p =>
-      jsxs('button', { type: 'button', className: 'h-hermes-item', 'data-here': !!p.current, 'data-busy': busy === p.name, disabled: !!busy,
-        title: p.description || p.name, onClick: () => pick(p), children: [
-        jsxs('span', { className: 'h-hermes-top', children: [
-          jsx('b', { children: p.display_name || p.name }),
-          p.current && jsx('span', { className: 'h-chip h-hermes-here', children: 'this one' })
-        ] }),
-        hermesSub(p) && jsx('span', { className: 'h-hermes-sub', children: hermesSub(p) })
-      ] }, p.name)) }),
-    jsx('div', { className: 'h-hint', children: 'Reads that agent’s personality file (SOUL.md) and name once, and never changes it. Nothing is saved until you press Save.' })
+    open && jsxs('div', { id: 'h-hermes-pick', className: 'h-col', role: 'group', 'aria-labelledby': 'h-hermes-label', style: { gap: 8 }, children: [
+      jsx('div', { className: 'h-hermes-list', children: list.map(p =>
+        jsxs('button', { type: 'button', className: 'h-hermes-item', 'data-here': !!p.current, 'data-busy': busy === p.name, disabled: !!busy,
+          title: p.description || p.name, onClick: () => pick(p), children: [
+          jsxs('span', { className: 'h-hermes-top', children: [
+            jsx('b', { children: p.display_name || p.name }),
+            p.current && jsx('span', { className: 'h-chip h-hermes-here', children: 'this one' })
+          ] }),
+          hermesSub(p) && jsx('span', { className: 'h-hermes-sub', children: hermesSub(p) })
+        ] }, p.name)) }),
+      jsx('div', { className: 'h-hint', children: 'Reads that agent’s personality file (SOUL.md) and name once, and never changes it. Nothing is saved until you press Save.' })
+    ] })
   ] })
 }
 
@@ -3001,6 +3006,7 @@ function AvatarCropper(props) {
 function PersonLook(props) {
   const [file, setFile] = useState(null)
   const [note, setNote] = useState('')
+  const [more, setMore] = useState(false)
   const input = useRef(null)
   const pick = e => {
     const f = e.target.files && e.target.files[0]
@@ -3045,8 +3051,9 @@ function PersonLook(props) {
       // the two facts that matter up front; how the file is handled waits behind "More"
       jsxs('div', { className: 'h-hint h-look-public', children: [
         jsx('span', { children: 'Public and permanent: anyone can see your photo, and relays or other apps may keep old pictures forever, even after you remove it. ' }),
-        jsxs('details', { className: 'h-more', children: [
-          jsx('summary', { children: 'More' }),
+        // the summary stays (and keeps focus) when open, and says Less, so it closes the way it opened
+        jsxs('details', { className: 'h-more', onToggle: e => setMore(e.currentTarget.open), children: [
+          jsx('summary', { children: more ? 'Less' : 'More' }),
           jsx('div', { children: 'Your picture goes to public Nostr relays. Ninsei crops it to a square, shrinks it to 256 pixels and re-encodes it on this computer, which drops EXIF details such as GPS location and camera model. The original file is never uploaded. People who turn pictures off see your avatar or initial instead.' })
         ] })
       ] })
@@ -4952,6 +4959,7 @@ function capFirst(t) {
 function budgetOption(n, b) {
   return { id: n, label: jsxs('span', { className: 'h-seg-two', children: [
     jsx('span', { children: capFirst(repliesWords(repliesFor(n, b))) }),
+    jsx('span', { className: 'h-vh', children: ', ' }),
     jsx('span', { className: 'h-seg-sub', children: fmtTokens(n) + ' tokens' })
   ] }) }
 }
@@ -5188,7 +5196,8 @@ function SettingsForm(props) {
       jsxs('div', { className: 'h-row', style: { gap: 12 }, children: [
         jsx(BudgetRing, { budget: snap.budget, size: 36, stroke: 3.5 }),
         jsxs('div', { className: 'h-grow', children: [
-          jsx('div', { children: fmtTokens(snap.budget.used) + ' of ' + fmtTokens(snap.budget.limit) + ' tokens used today' }),
+          jsx('div', { children: fmtTokens(snap.budget.used) + ' of ' + fmtTokens(snap.budget.limit) + ' tokens used today' +
+            (repliesLeftWords(snap.budget) ? ' · ' + repliesLeftWords(snap.budget) : '') }),
           jsx('div', { className: 'h-faint h-small', children: Object.keys(snap.budget.by || {}).map(k => k + ' ' + fmtTokens(snap.budget.by[k])).join(' · ') || 'Nothing spent yet' }),
           othersLine(snap.budget) && jsx('div', { className: 'h-faint h-small', children: othersLine(snap.budget) }),
           snap.budget.msgs && jsx('div', { className: 'h-faint h-small', children: snap.budget.msgs.used + ' of ' + snap.budget.msgs.limit + ' messages said today' })
@@ -8730,11 +8739,13 @@ function JoinDialog(props) {
   }
   return jsx(Modal, { open: true, onClose: props.onClose, title: 'Join by code', description: 'Paste a code like ninsei:203f22bcfd1b4b2f, or a link to a message in a room.',
     footer: [
+      !code.trim() && jsx('span', { id: 'h-jn-need', className: 'h-faint h-small', children: 'Paste a code to join.' }, 'n'),
       jsx(K.Button, { variant: 'ghost', onClick: props.onClose, children: 'Cancel' }, 'c'),
-      jsx(K.Button, { variant: 'primary', disabled: busy || !code.trim(), onClick: join, children: busy ? 'Joining…' : 'Join' }, 'j')
+      jsx(K.Button, { variant: 'primary', disabled: busy || !code.trim(), onClick: join, 'aria-describedby': code.trim() ? undefined : 'h-jn-need',
+        children: busy ? 'Joining…' : 'Join' }, 'j')
     ],
     children: jsx(K.Input, { value: code, autoFocus: true, placeholder: 'ninsei:…', 'aria-label': 'Room code', onChange: e => setCode(e.target.value),
-      onKeyDown: e => { if (e.key === 'Enter') join() } }) })
+      onKeyDown: e => { if (e.key === 'Enter' && code.trim() && !busy) join() } }) })
 }
 
 // ---- Desktop status bar chip ------------------------------------------------------------------
@@ -8878,7 +8889,8 @@ function StatusChip(props) {
     return jsx(C.Dialog, { open: !!props.open, onOpenChange: v => { if (!v) props.onClose() }, children:
       jsx(C.DialogContent, { style: props.wide ? { maxWidth: 680, width: 'calc(100vw - 32px)' } : { width: 'calc(100vw - 32px)', maxWidth: 460 },
         children: jsxs('div', { className: 'hx h-col', 'data-ninsei-view': '', style: { gap: 14, padding: 20 }, children: [
-          jsxs(C.DialogHeader, { style: { padding: 0 }, children: [
+          // the theme's header has a bottom rule (border-b); padding below the text keeps the rule off the description
+          jsxs(C.DialogHeader, { style: { padding: '0 0 12px' }, children: [
             jsx(C.DialogTitle, { style: DIALOG_TITLE, children: props.title }),
             props.description && jsx(C.DialogDescription, { style: DIALOG_DESC, children: props.description })
           ] }),

@@ -360,11 +360,13 @@ function JoinDialog(props) {
   }
   return jsx(Modal, { open: true, onClose: props.onClose, title: 'Join by code', description: 'Paste a code like ninsei:203f22bcfd1b4b2f, or a link to a message in a room.',
     footer: [
+      !code.trim() && jsx('span', { id: 'h-jn-need', className: 'h-faint h-small', children: 'Paste a code to join.' }, 'n'),
       jsx(K.Button, { variant: 'ghost', onClick: props.onClose, children: 'Cancel' }, 'c'),
-      jsx(K.Button, { variant: 'primary', disabled: busy || !code.trim(), onClick: join, children: busy ? 'Joining…' : 'Join' }, 'j')
+      jsx(K.Button, { variant: 'primary', disabled: busy || !code.trim(), onClick: join, 'aria-describedby': code.trim() ? undefined : 'h-jn-need',
+        children: busy ? 'Joining…' : 'Join' }, 'j')
     ],
     children: jsx(K.Input, { value: code, autoFocus: true, placeholder: 'ninsei:…', 'aria-label': 'Room code', onChange: e => setCode(e.target.value),
-      onKeyDown: e => { if (e.key === 'Enter') join() } }) })
+      onKeyDown: e => { if (e.key === 'Enter' && code.trim() && !busy) join() } }) })
 }
 
 // ---- Desktop status bar chip ------------------------------------------------------------------

@@ -22,20 +22,33 @@ def test_settings_keeps_the_hermes_list_behind_a_reimport_button_and_onboarding_
 setupRest(PROFILES, PROPOSAL)
 const items = tree => { const out = []; (function walk(n) { if (!n || typeof n !== 'object') return; if (Array.isArray(n)) return n.forEach(walk)
   if (n.type === 'button') out.push(n); kids(n).forEach(walk) })(tree); return out }
+const toggleOf = tree => find(tree, n => n.type === K.Button && n.props['aria-controls'] === 'h-hermes-pick')
 const folded = mount(HermesPicker, { collapsible: true, onPick: () => {} })
 await settle()
-const before = { items: items(folded.tree).length, button: !!button(folded.tree, 'Re-import from a Hermes agent'),
-  expanded: button(folded.tree, 'Re-import from a Hermes agent').props['aria-expanded'] }
-button(folded.tree, 'Re-import from a Hermes agent').props.onClick()
+const t0 = toggleOf(folded.tree)
+const before = { items: items(folded.tree).length, text: text(t0), expanded: t0.props['aria-expanded'],
+  list: !!find(folded.tree, n => n.props && n.props.id === 'h-hermes-pick') }
+t0.props.onClick()
 await settle()
-const after = { items: items(folded.tree).length, close: !!button(folded.tree, 'Close') }
+const t1 = toggleOf(folded.tree)
+const group = find(folded.tree, n => n.props && n.props.id === 'h-hermes-pick')
+const after = { items: items(folded.tree).length, text: text(t1), expanded: t1.props['aria-expanded'], group: group.props.role,
+  label: group.props['aria-labelledby'] }
+t1.props.onClick()
+await settle()
+const t2 = toggleOf(folded.tree)
+const closed = { text: text(t2), expanded: t2.props['aria-expanded'], items: items(folded.tree).length }
 const open = mount(HermesPicker, { onPick: () => {} })
 await settle()
-out({ before, after, onboarding: items(open.tree).length, onboardingButton: !!button(open.tree, 'Re-import') })
+out({ before, after, closed, onboarding: items(open.tree).length, onboardingToggle: !!toggleOf(open.tree) })
 """)
-    assert r["before"] == {"items": 0, "button": True, "expanded": False}
-    assert r["after"] == {"items": 3, "close": True}
-    assert r["onboarding"] == 3 and r["onboardingButton"] is False
+    assert r["before"] == {"items": 0, "text": "Re-import from a Hermes agent", "expanded": False, "list": False}
+    assert r["after"] == {"items": 3, "text": "Close", "expanded": True, "group": "group", "label": "h-hermes-label"}
+    assert r["closed"] == {"text": "Re-import from a Hermes agent", "expanded": False, "items": 0}
+    assert r["onboarding"] == 3 and r["onboardingToggle"] is False
+    # one toggle element in a fixed slot (React keeps it mounted, so focus stays on it when the list opens or closes)
+    picker = fn(PARTS, "HermesPicker")
+    assert picker.count("'aria-controls': 'h-hermes-pick'") == 1 and "'aria-expanded': open" in picker
     assert "jsx(HermesPicker, { collapsible: true," in fn(SETUP, "SettingsForm")
     assert "collapsible" not in fn(SETUP, "Onboarding")
 
@@ -64,6 +77,7 @@ out([a, b, c])
     form = fn(SETUP, "SettingsForm")
     assert "useKeepAboveBar(root)" in form and "ref: root" in form
     assert ".h-scroll:has(.h-savebar){scroll-padding-bottom:72px}" in STYLE
+    assert ".h-settings{scroll-margin-bottom" not in STYLE and ".h-settings>section:last-of-type" not in STYLE  # no-op rules gone
 
 
 # --- 2: budgets in replies ----------------------------------------------------------------------------------------
@@ -79,10 +93,13 @@ function Ring() {}
 const o = budgetOption(40000, { reply_tokens: 800 })
 const guess = budgetOption(20000, undefined)
 const ring = BudgetRing({ budget: { used: 12000, limit: 40000, pct: 0.3, replies: { per_day: 47 } } })
-out({ id: o.id, main: text(o.label.props.children[0]), sub: text(o.label.props.children[1]), guess: text(guess.label), ring: ring.props.label })
+const [main, gap, sub] = o.label.props.children
+out({ id: o.id, main: text(main), gap: [gap.props.className, text(gap)], sub: text(sub), guess: text(guess.label), ring: ring.props.label })
 """)
     assert r["id"] == 40000 and r["main"] == "About 50 replies a day" and r["sub"] == "40k tokens"
-    assert r["guess"] == "About 20 replies a day20k tokens"
+    # the accessible name reads as two phrases ("…a day, 20k tokens"), the comma hidden on screen
+    assert r["gap"] == ["h-vh", ", "]
+    assert r["guess"] == "About 20 replies a day, 20k tokens"
     assert r["ring"] == "12k of 40k tokens today (about 47 replies a day)"
     assert "BUDGET_PRESETS.map(n => budgetOption(n, snap.budget))" in fn(SETUP, "Onboarding")
     assert "BUDGET_PRESETS.map(n => budgetOption(n, snap.budget))" in fn(SETUP, "SettingsForm")
@@ -162,8 +179,10 @@ def test_the_picture_note_is_short_with_the_detail_behind_more():
     assert "Public and permanent" in short and "keep old pictures forever" in short     # the two facts stay up front
     assert "EXIF" not in short
     more = look.split("className: 'h-more'")[1]
-    assert "jsx('summary', { children: 'More' })" in more and "EXIF" in more and "original file is never uploaded" in more
-    assert ".h-more>summary{" in STYLE and ".h-more[open]>summary{display:none}" in STYLE
+    assert "EXIF" in more and "original file is never uploaded" in more
+    # the summary stays when open (it keeps focus and closes it again), saying Less
+    assert "jsx('summary', { children: more ? 'Less' : 'More' })" in more and "onToggle: e => setMore(e.currentTarget.open)" in look
+    assert ".h-more>summary{" in STYLE and ".h-more[open]>summary{display:none}" not in STYLE
 
 
 @needs_node
@@ -182,6 +201,35 @@ out([empty, st()])
     assert r == [[True, "h-nr-need", "Name the room to create it."], [False, None, None]]
 
 
+@needs_node
+def test_join_says_why_it_waits_and_enter_does_nothing_without_a_code():
+    r = run(fn(APP, "JoinDialog") + """
+function Modal() {}
+let posts = 0
+const store = { post: async () => { posts++; return { id: 'r' } } }
+const root = mount(JoinDialog, { store, onClose() {}, onDone() {} })
+const st = () => { const b = button(root.tree, 'Join'); const h = find(root.tree, n => n.props && n.props.id === 'h-jn-need')
+  return [!!b.props.disabled, b.props['aria-describedby'] || null, h ? text(h) : null] }
+find(root.tree, n => n.type === K.Input).props.onKeyDown({ key: 'Enter' })
+await settle()
+const empty = st()
+find(root.tree, n => n.type === K.Input).props.onChange({ target: { value: 'ninsei:abc' } })
+await settle()
+out([empty, st(), posts])
+""")
+    assert r == [[True, "h-jn-need", "Paste a code to join."], [False, None, None], 0]
+
+
+@needs_node
+def test_settings_budget_summary_says_how_many_replies_are_left():
+    r = run(fn(CORE, "repliesLeftWords") + """
+out([repliesLeftWords({ replies: { per_day: 47, left: 28 } }), repliesLeftWords({ replies: { left: 1 } }),
+     repliesLeftWords({ replies: { left: 0 } }), repliesLeftWords({}), repliesLeftWords(undefined)])
+""")
+    assert r == ["about 28 replies left today", "about 1 reply left today", "no replies left today", "", ""]
+    assert "' · ' + repliesLeftWords(snap.budget)" in fn(SETUP, "SettingsForm")
+
+
 def test_dialog_titles_and_descriptions_use_ninsei_type():
     # the dashboard's DialogDescription is `font-mondwest` (a serif) and its title `font-expanded uppercase`; inline styles
     # put the page's type back without a selector on the host's markup (the catalog's desktop-surface rule)
@@ -191,6 +239,8 @@ def test_dialog_titles_and_descriptions_use_ninsei_type():
     assert "const DIALOG_TITLE = { fontFamily: 'inherit', textTransform: 'none', letterSpacing: 'normal'" in tail
     assert "const DIALOG_DESC = { fontFamily: 'inherit'" in tail
     assert "data-slot" not in STYLE
+    # the theme's header carries a bottom rule (border-b): space under the text keeps it off the description
+    assert "jsxs(C.DialogHeader, { style: { padding: '0 0 12px' }," in dialog
 
 
 # --- 4: light themes ----------------------------------------------------------------------------------------------

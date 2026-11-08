@@ -67,10 +67,6 @@ function HermesPicker(props) {
     return () => { live = false }
   }, [])
   if (!list || !list.length) return null
-  if (!open) {
-    return jsx('div', { className: 'h-hermes-add', children: jsx(K.Button, { variant: 'ghost', size: 'sm', 'aria-expanded': false,
-      onClick: () => setOpen(true), children: 'Re-import from a Hermes agent' }) })
-  }
   const pick = async p => {
     if (busy) return
     setBusy(p.name)
@@ -78,21 +74,26 @@ function HermesPicker(props) {
     catch (e) { P.toast('error', errText(e)) }
     setBusy('')
   }
-  return jsxs('div', { className: 'h-field h-hermes', role: 'group', 'aria-label': 'Your Hermes agents', children: [
-    jsxs('div', { className: 'h-row', style: { justifyContent: 'space-between' }, children: [
-      jsx('div', { className: 'h-label', children: props.collapsible ? 'Re-import from one of your Hermes agents' : 'Start from one of your Hermes agents' }),
-      props.collapsible && jsx(K.Button, { variant: 'ghost', size: 'sm', 'aria-expanded': true, onClick: () => setOpen(false), children: 'Close' })
+  // one toggle that stays mounted (focus stays on it), saying whether the list is open and which list it opens
+  const toggle = props.collapsible && jsx(K.Button, { variant: 'ghost', size: 'sm', 'aria-expanded': open, 'aria-controls': 'h-hermes-pick',
+    onClick: () => setOpen(!open), children: open ? 'Close' : 'Re-import from a Hermes agent' })
+  return jsxs('div', { className: open ? 'h-field h-hermes' : 'h-hermes-add', children: [
+    jsxs('div', { className: 'h-row', style: { justifyContent: open ? 'space-between' : 'flex-start' }, children: [
+      open && jsx('div', { className: 'h-label', id: 'h-hermes-label', children: props.collapsible ? 'Re-import from one of your Hermes agents' : 'Start from one of your Hermes agents' }),
+      toggle
     ] }),
-    jsx('div', { className: 'h-hermes-list', children: list.map(p =>
-      jsxs('button', { type: 'button', className: 'h-hermes-item', 'data-here': !!p.current, 'data-busy': busy === p.name, disabled: !!busy,
-        title: p.description || p.name, onClick: () => pick(p), children: [
-        jsxs('span', { className: 'h-hermes-top', children: [
-          jsx('b', { children: p.display_name || p.name }),
-          p.current && jsx('span', { className: 'h-chip h-hermes-here', children: 'this one' })
-        ] }),
-        hermesSub(p) && jsx('span', { className: 'h-hermes-sub', children: hermesSub(p) })
-      ] }, p.name)) }),
-    jsx('div', { className: 'h-hint', children: 'Reads that agent’s personality file (SOUL.md) and name once, and never changes it. Nothing is saved until you press Save.' })
+    open && jsxs('div', { id: 'h-hermes-pick', className: 'h-col', role: 'group', 'aria-labelledby': 'h-hermes-label', style: { gap: 8 }, children: [
+      jsx('div', { className: 'h-hermes-list', children: list.map(p =>
+        jsxs('button', { type: 'button', className: 'h-hermes-item', 'data-here': !!p.current, 'data-busy': busy === p.name, disabled: !!busy,
+          title: p.description || p.name, onClick: () => pick(p), children: [
+          jsxs('span', { className: 'h-hermes-top', children: [
+            jsx('b', { children: p.display_name || p.name }),
+            p.current && jsx('span', { className: 'h-chip h-hermes-here', children: 'this one' })
+          ] }),
+          hermesSub(p) && jsx('span', { className: 'h-hermes-sub', children: hermesSub(p) })
+        ] }, p.name)) }),
+      jsx('div', { className: 'h-hint', children: 'Reads that agent’s personality file (SOUL.md) and name once, and never changes it. Nothing is saved until you press Save.' })
+    ] })
   ] })
 }
 

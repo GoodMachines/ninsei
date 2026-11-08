@@ -339,11 +339,9 @@ button.h-link{background:none;border:0;padding:0;font:inherit;cursor:pointer;tex
 .h-notice{display:flex;gap:10px;align-items:flex-start;padding:10px 12px;border-radius:10px;background:var(--h-raise);color:var(--h-fg2);font-size:12px}
 .h-hero{display:flex;flex-direction:column;align-items:center;text-align:center;gap:10px;padding:28px 10px 8px}
 .h-savebar{justify-content:flex-end;position:sticky;bottom:0;padding:10px 0;background:var(--h-bg);border-top:1px solid var(--h-line)}
-/* the sticky Save bar: scrolling to a field (focus, find, a jump) stops above it, the form ends with room for it, and a
-   field focused under it is moved up (useKeepAboveBar) */
+/* the sticky Save bar: scrolling to a field (focus, find, a jump) stops above it, and a field focused under it is moved
+   up (useKeepAboveBar, which also covers a host page that does the scrolling) */
 .h-scroll:has(.h-savebar){scroll-padding-bottom:72px}
-.h-settings{scroll-margin-bottom:72px}
-.h-settings>section:last-of-type{padding-bottom:8px}
 /* onboarding's optional "Customize" and a "More" behind a short hint */
 .h-custom{border:1px solid var(--h-line2);border-radius:10px;padding:10px 12px}
 .h-custom>summary{cursor:pointer;display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;font-weight:600;color:var(--h-fg2);font-size:12.5px;list-style:none}
@@ -354,7 +352,6 @@ button.h-link{background:none;border:0;padding:0;font:inherit;cursor:pointer;tex
 .h-more{display:inline}
 .h-more>summary{display:inline;cursor:pointer;color:var(--h-fg2);text-decoration:underline;text-decoration-color:var(--h-fg4);text-underline-offset:2px;list-style:none}
 .h-more[open]{display:block;margin-top:4px}
-.h-more[open]>summary{display:none}
 @media (prefers-reduced-motion: reduce){.h-custom>summary::before{transition:none}}
 /* a preset that says what it buys, its tokens under it */
 .h-seg-two{display:inline-flex;flex-direction:column;align-items:center;line-height:1.25}

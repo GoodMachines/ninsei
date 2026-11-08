@@ -29,6 +29,7 @@ function capFirst(t) {
 function budgetOption(n, b) {
   return { id: n, label: jsxs('span', { className: 'h-seg-two', children: [
     jsx('span', { children: capFirst(repliesWords(repliesFor(n, b))) }),
+    jsx('span', { className: 'h-vh', children: ', ' }),
     jsx('span', { className: 'h-seg-sub', children: fmtTokens(n) + ' tokens' })
   ] }) }
 }
@@ -265,7 +266,8 @@ function SettingsForm(props) {
       jsxs('div', { className: 'h-row', style: { gap: 12 }, children: [
         jsx(BudgetRing, { budget: snap.budget, size: 36, stroke: 3.5 }),
         jsxs('div', { className: 'h-grow', children: [
-          jsx('div', { children: fmtTokens(snap.budget.used) + ' of ' + fmtTokens(snap.budget.limit) + ' tokens used today' }),
+          jsx('div', { children: fmtTokens(snap.budget.used) + ' of ' + fmtTokens(snap.budget.limit) + ' tokens used today' +
+            (repliesLeftWords(snap.budget) ? ' · ' + repliesLeftWords(snap.budget) : '') }),
           jsx('div', { className: 'h-faint h-small', children: Object.keys(snap.budget.by || {}).map(k => k + ' ' + fmtTokens(snap.budget.by[k])).join(' · ') || 'Nothing spent yet' }),
           othersLine(snap.budget) && jsx('div', { className: 'h-faint h-small', children: othersLine(snap.budget) }),
           snap.budget.msgs && jsx('div', { className: 'h-faint h-small', children: snap.budget.msgs.used + ' of ' + snap.budget.msgs.limit + ' messages said today' })

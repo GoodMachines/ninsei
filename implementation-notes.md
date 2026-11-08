@@ -936,4 +936,14 @@ The fresh-eyes tester's UI items, approved by Justin. Checked in a throwaway har
 5. **Exported card corners.** Already rounded: `cardSvg` clips to `rx="70"` at 1200 × 750 (the screen card is 22 px at about 380 px wide, 69.5 at 1200) and `scannerSvg` to `R = 70`, and the canvas is transparent outside the clip. Seen in the harness next to the screen card. No change; a test now holds it.
 
 - Tests: `tests/test_walkthrough_polish_ui.py`; the Settings and onboarding harnesses in `test_audit_review.py` and `test_import_profile_ui.py` gained the new helpers.
-- Not verified: Desktop (no SDK here, so its dialog markup, `ToggleRow` and Settings scroller are unseen), a real Hermes light theme (the harness uses its own light tokens), and screen-reader output for the new `aria-describedby` notes.
+- Review round (same day):
+  - The re-import control is one toggle that stays mounted (its text flips between "Re-import from a Hermes agent" and "Close"), with `aria-expanded={open}` and `aria-controls="h-hermes-pick"` on the list's group, so keyboard focus no longer drops to the page when it opens or closes.
+  - "More" under the photo note no longer hides its own summary when open (that removed the focused element and left no way to close it): the summary stays and reads "Less" (`onToggle`).
+  - Budget presets put a visually hidden ", " between the replies and the tokens, so the radio's name reads "About 40 replies a day, 40k tokens", not "day40k".
+  - Settings' budget summary adds the engine's `budget.replies.left` ("· about 32 replies left today", `repliesLeftWords`).
+  - Join by code gets "Paste a code to join." beside its disabled button (tied by `aria-describedby`), and Enter with no code no longer posts.
+  - The dashboard's real `DialogHeader` (`@nous-research/ui`) is `p-4 border-b`; Ninsei zeroed its padding, which put the rule flush under the description, so the header keeps 12 px below the text. Read from the component source; the harness mock only approximates it.
+  - The two no-op CSS rules (`.h-settings{scroll-margin-bottom}`, `.h-settings>section:last-of-type{padding-bottom}`) are gone.
+  - `useKeepAboveBar` was checked in the harness with a host-like scroller (an outer `overflow-y: auto` box, no `.h-scroll`): a field focused below the bar ends above it.
+  - Kept as is: the Settings hint estimates a typed number on the client (`repliesFor`) while the ring uses the engine's `replies.per_day`; they agree for a saved value except that the engine also applies the message limit, which the hint states in its own clause.
+- Not verified: Desktop (no SDK here, so its dialog markup and fonts, `ToggleRow` and its real Settings scroller are unseen; Desktop's `Dialog` is untouched), a real Hermes light theme (the harness uses its own light tokens), and screen-reader output for the new `aria-describedby` notes.

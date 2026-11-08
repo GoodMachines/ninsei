@@ -115,7 +115,8 @@
     return jsx(C.Dialog, { open: !!props.open, onOpenChange: v => { if (!v) props.onClose() }, children:
       jsx(C.DialogContent, { style: props.wide ? { maxWidth: 680, width: 'calc(100vw - 32px)' } : { width: 'calc(100vw - 32px)', maxWidth: 460 },
         children: jsxs('div', { className: 'hx h-col', 'data-ninsei-view': '', style: { gap: 14, padding: 20 }, children: [
-          jsxs(C.DialogHeader, { style: { padding: 0 }, children: [
+          // the theme's header has a bottom rule (border-b); padding below the text keeps the rule off the description
+          jsxs(C.DialogHeader, { style: { padding: '0 0 12px' }, children: [
             jsx(C.DialogTitle, { style: DIALOG_TITLE, children: props.title }),
             props.description && jsx(C.DialogDescription, { style: DIALOG_DESC, children: props.description })
           ] }),

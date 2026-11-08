@@ -91,6 +91,7 @@ function AvatarCropper(props) {
 function PersonLook(props) {
   const [file, setFile] = useState(null)
   const [note, setNote] = useState('')
+  const [more, setMore] = useState(false)
   const input = useRef(null)
   const pick = e => {
     const f = e.target.files && e.target.files[0]
@@ -135,8 +136,9 @@ function PersonLook(props) {
       // the two facts that matter up front; how the file is handled waits behind "More"
       jsxs('div', { className: 'h-hint h-look-public', children: [
         jsx('span', { children: 'Public and permanent: anyone can see your photo, and relays or other apps may keep old pictures forever, even after you remove it. ' }),
-        jsxs('details', { className: 'h-more', children: [
-          jsx('summary', { children: 'More' }),
+        // the summary stays (and keeps focus) when open, and says Less, so it closes the way it opened
+        jsxs('details', { className: 'h-more', onToggle: e => setMore(e.currentTarget.open), children: [
+          jsx('summary', { children: more ? 'Less' : 'More' }),
           jsx('div', { children: 'Your picture goes to public Nostr relays. Ninsei crops it to a square, shrinks it to 256 pixels and re-encodes it on this computer, which drops EXIF details such as GPS location and camera model. The original file is never uploaded. People who turn pictures off see your avatar or initial instead.' })
         ] })
       ] })
