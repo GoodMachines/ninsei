@@ -306,3 +306,185 @@ async def test_a_profile_opened_right_after_start_shows_the_card(bare):
             assert (await e.profile(k.ppk)).get("line") == "makes synths"
         finally:
             await e.pool.stop()
+
+
+# --- review round: a hanging relay, boot, the bookkeeping -----------------------------------------------------
+
+async def hanging_relay():
+    """A local port that accepts TCP and never answers the websocket handshake: the relay stays 'connecting'
+    for the whole open_timeout (8 s)."""
+    held = []
+
+    async def hold(reader, writer):
+        held.append(writer)
+        await asyncio.sleep(60)
+
+    srv = await asyncio.start_server(hold, "127.0.0.1", 0)
+    return srv, f"ws://127.0.0.1:{srv.sockets[0].getsockname()[1]}", held
+
+
+async def test_a_relay_hanging_in_its_handshake_does_not_hold_a_query_another_relay_answered():
+    k = Key("q")
+    ev = nostr.build_event(k.psk, 1, "older", [["t", "x"]], created_at=int(time.time()) - 3600)
+    srv, hang, held = await hanging_relay()
+    async with LocalRelay(port=0) as relay:
+        relay.events[ev["id"]] = ev
+        pool = RelayPool([relay.url, hang])
+        pool.start()
+        try:
+            t = time.monotonic()
+            got, answered = await pool.query_ex([{"kinds": [1]}], timeout=6)
+            assert answered == {relay.url} and [e["id"] for e in got] == [ev["id"]]
+            assert pool.status[hang].state == "connecting"            # still hanging: the case under test
+            assert time.monotonic() - t < 3                            # not the whole 6 s
+        finally:
+            await pool.stop()
+            for w in held:
+                w.close()
+            srv.close()
+
+
+async def test_a_relay_that_failed_once_and_is_connecting_again_is_not_waited_for():
+    url = dead_url()
+    pool = RelayPool([url])
+    pool._tasks[url] = asyncio.ensure_future(asyncio.Event().wait())  # its connection loop is running ...
+    pool.status[url].state = "connecting"                              # ... on a retry after its backoff
+    try:
+        t = time.monotonic()
+        assert await pool.query_ex([{"kinds": [1]}], timeout=0.6) == ([], set())
+        assert time.monotonic() - t >= 0.5                             # control: a first try is waited for
+        pool._failed.add(url)                                          # but this one already failed once
+        t = time.monotonic()
+        assert await pool.query_ex([{"kinds": [1]}], timeout=3) == ([], set())
+        assert time.monotonic() - t < 1
+    finally:
+        pool._tasks.pop(url).cancel()
+
+
+async def test_boot_is_not_held_by_the_picture_catch_up_when_a_relay_hangs(bare):
+    from ninsei_engine.engine import Engine
+    from test_hostile import StubLLM
+    e, _ = bare()
+    e.store.close()
+    srv, hang, held = await hanging_relay()
+    e2 = Engine(e.data_dir, lambda: StubLLM("Ada"), lock=False, timescale=1.0, relays=[hang])
+    e2.store.set("commons_offered", True)
+    try:
+        t = time.monotonic()
+        await e2._boot()
+        assert time.monotonic() - t < 3                                # the 6 s catch-up runs as a task
+        assert e2._art_busy is e2.pool                                 # and it is running
+    finally:
+        for t in list(e2._tasks):
+            t.cancel()
+        await asyncio.gather(*e2._tasks, return_exceptions=True)
+        await e2.pool.stop()
+        e2.store.close()
+        for w in held:
+            w.close()
+        srv.close()
+
+
+class SlowPool(QPool):
+    """Answers a one-shot query after `delay`."""
+
+    def __init__(self, delay=0.3, **kw):
+        super().__init__(**kw)
+        self.delay = delay
+
+    def start(self):
+        pass
+
+    async def query_ex(self, filters, timeout=4.0):
+        self.queries.append(filters)
+        await asyncio.sleep(self.delay)
+        return list(self.events), set(self.answered)
+
+
+async def test_reconnect_does_not_wait_for_the_picture_catch_up(bare):
+    e, _ = bare()
+    maya = Key("maya")
+    await meet(e, maya, "Maya")
+    e._new_pool = lambda: SlowPool(delay=5.0, answered={"wss://a"})
+    t = time.monotonic()
+    await e.reconnect()
+    assert time.monotonic() - t < 2
+    assert await until(lambda: len(e.pool.queries) == 1, 2)            # the catch-up runs, as a task
+
+
+async def test_two_catch_ups_at_once_send_one_query(bare):
+    e, _ = bare()
+    maya = Key("maya")
+    await meet(e, maya, "Maya")
+    e.loop = asyncio.get_running_loop()
+    e.pool = SlowPool(answered={"wss://a"})
+    await asyncio.gather(e._art_subscribe(), e._art_subscribe())     # a join while the startup catch-up waits
+    await settle(e)
+    assert len(e.pool.queries) == 1 and maya.ppk in e._art_relays["wss://a"]
+
+
+async def test_a_person_who_leaves_the_list_and_comes_back_is_asked_again(bare):
+    e, _ = bare()
+    maya = Key("maya")
+    await meet(e, maya, "Maya")
+    e.pool = QPool(answered={"wss://a"})
+    await e._art_subscribe()
+    assert maya.ppk in e._art_relays["wss://a"] and len(e.pool.queries) == 1
+    saved = dict(e.events[ROOM])
+    e.events[ROOM] = {}                                                 # Maya falls out of the author list
+    await e._art_subscribe()
+    assert maya.ppk not in e._art_sent and maya.ppk not in e._art_relays["wss://a"]
+    e.events[ROOM] = saved                                              # and comes back
+    await e._art_subscribe()
+    assert len(e.pool.queries) == 2
+    assert maya.ppk in [a for f in e.pool.queries[-1] for a in f["authors"]]
+
+
+async def test_the_minute_tick_runs_the_picture_catch_up_for_late_relays(bare):
+    e, _ = bare()
+    calls = []
+
+    async def nothing():
+        return None
+
+    e._presence_once = nothing
+    e._dm_touch = lambda: None
+    e._art_touch = lambda: calls.append(1)
+    task = asyncio.ensure_future(e._presence_loop())
+    try:
+        assert await until(lambda: calls, 2)
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+async def test_a_new_pool_forgets_which_relays_were_asked(bare):
+    e, _ = bare()
+    maya = Key("maya")
+    await meet(e, maya, "Maya")
+    e.pool = QPool(answered={"wss://old"})
+    await e._resubscribe()
+    assert maya.ppk in e._art_relays["wss://old"]
+    e.pool = QPool(answered={"wss://new"})                              # a reconnect after a relay-list change
+    await e._resubscribe()
+    assert "wss://old" not in e._art_relays and maya.ppk in e._art_relays["wss://new"]
+    assert len(e.pool.queries) >= 1
+
+
+async def test_an_unanswered_lobby_refresh_keeps_the_last_good_list(bare):
+    e, _ = bare()
+    e.save_settings({"interests": ["synths"]})
+    rid, meta = room_meta(Key("host"), "Pop-up")
+    e.pool = QPool(answered={"wss://a"}, events=[meta])
+    good = await e.refresh_lobby()
+    assert rid in {r["id"] for r in good["rooms"]} and good["at"] > 0
+    e.pool.answered, e.pool.events = set(), []                          # a relay drop: nobody answers now
+    again = await e.refresh_lobby()
+    assert rid in {r["id"] for r in again["rooms"]} and again["at"] == good["at"]
+
+
+async def test_an_unanswered_lobby_refresh_does_not_wait_again_for_room_activity(bare):
+    e, _ = bare()
+    e.pool = QPool()
+    await e.refresh_lobby()
+    assert len(e.pool.queries) == 1                                     # the activity query is skipped

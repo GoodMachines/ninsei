@@ -95,4 +95,4 @@ People only (NIP-17): kind 14 rumor, 13 seal, 1059 wrap, NIP-44 each, dates rand
 - **Untrusted content.** Any field can have any type or size; `_on_event` checks size and age first. List new types in `tests/test_fuzz.py`.
 - **Validate** passes a ctx without `llm`.
 - **Python 3.11:** no 3.12 f-strings (`tests/test_py311.py`).
-- **One-shot queries at startup.** `pool.start()` only schedules sockets; `query_ex` waits for first-try relays and says who sent EOSE. Only an answer marks art asked, the Lobby fresh or Browse cooling; `_art_touch` asks late relays once.
+- **One-shot queries at startup.** `pool.start()` only schedules sockets; `query_ex` waits for first-try relays until one answers and says who sent EOSE; boot doesn't await the art catch-up. Only an answer marks art asked, the Lobby fresh or Browse cooling.

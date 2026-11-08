@@ -728,7 +728,7 @@ class RelayPool:
 
     async def query_ex(self, filters: list[dict], *, timeout: float = 4.0) -> tuple[list[dict], set[str]]:
         """One-shot fetch: (events oldest first, the relays that answered with EOSE). Waits, within `timeout`, for
-        every open relay to answer and for every relay still on its first connection attempt to connect and answer.
+        every open relay to answer and, until some relay has answered, for relays still on their first connection.
         The query sits in the pool's subscriptions, so a relay that connects meanwhile gets it from `_run`'s replay:
         still one REQ per relay. Started right after `start()`, it no longer returns [] at once for want of an open
         socket. An empty set means nobody answered (offline, all in backoff, all silent): "nothing there" and
@@ -746,7 +746,12 @@ class RelayPool:
             await self._send_req(url, ws, sub)
 
         def waiting() -> bool:
-            return any(u not in sub.eose and (u in self._ws or self._first_try(u)) for u in self.urls)
+            # an open relay is always waited for (it has the REQ). One still on its first try is waited for only
+            # until some relay answers: a relay that hangs in its handshake (open_timeout is 8 s) must not hold
+            # every early query for its whole timeout once another has answered.
+            if any(u in self._ws and u not in sub.eose for u in self.urls):
+                return True
+            return not sub.eose and any(self._first_try(u) for u in self.urls)
 
         end = time.monotonic() + timeout
         while time.monotonic() < end and waiting():

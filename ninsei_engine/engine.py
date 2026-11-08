@@ -734,7 +734,8 @@ class Engine:
         # Only an answer counts: a query no relay answered leaves its people unasked, to be asked again.
         self._art_relays: dict[str, set] = {}
         self._art_relay_fail: dict[str, float] = {}   # relay url -> when its own catch-up last failed
-        self._art_busy = False                   # a catch-up is running (the minute tick then waits its turn)
+        self._art_busy = None                    # the pool a catch-up is running on (the minute tick waits its turn)
+        self._art_again = False                  # asked again while a catch-up ran: one more follows it
         self._art_relay_busy: set[str] = set()   # relays with a catch-up of their own running
         self._art_retried = False                # the one quick retry of an unanswered catch-up has been used
         self._lobby_retry = False                # a Lobby refresh nobody answered has its one retry waiting
@@ -1065,7 +1066,7 @@ class Engine:
         self.pool.start()
         self._dm_queue = asyncio.Queue(maxsize=DM_QUEUE_MAX)
         self._spawn(self._dm_worker())
-        await self._resubscribe()
+        await self._resubscribe(wait_art=False)
         self._spawn(self._presence_loop())
         self._spawn(self._watch_builds())
         self._spawn(self.ensure_commons())
@@ -1217,7 +1218,9 @@ class Engine:
                 return True
         return False                          # pages ran out first: `since` stays where it was
 
-    async def _resubscribe(self) -> None:
+    async def _resubscribe(self, wait_art: bool = True) -> None:
+        """Every subscription for the current pool. `wait_art=False` (boot, reconnect) leaves the picture catch-up
+        running as a task: right after `pool.start()` it waits for relays to connect, and startup shouldn't."""
         await self._resubscribe_dm()
         joined = self.store.rooms()
         rooms = list(joined)
@@ -1249,14 +1252,14 @@ class Engine:
         if self._art_pool is not self.pool:   # a new pool: ask for everyone's pictures and faces once. A join or a
             self._art_pool = self.pool        # leave keeps what was asked: only the people who are new get a query
             self._art_reset()
-        await self._art_subscribe()
+        await self._art_subscribe(wait=wait_art)
 
     async def reconnect(self) -> None:
         if self.pool:
             await self.pool.stop()
         self.pool = self._new_pool()
         self.pool.start()
-        await self._resubscribe()
+        await self._resubscribe(wait_art=False)
         self._bump()
 
     # ============================================================================================
@@ -3788,7 +3791,8 @@ class Engine:
         # newest rooms first when there are more than one query can count
         rooms.sort(key=lambda r: (-len(r["overlap"]), -r["at"]))
         rooms = rooms[:60]
-        act = await self._room_activity([r["id"] for r in rooms])
+        # nobody answered: the activity query would wait on the same relays again, for nothing
+        act = await self._room_activity([r["id"] for r in rooms]) if answered else {}
         now = _now()
         for r in rooms:
             a = act.get(r["id"], {})
@@ -4503,6 +4507,7 @@ class Engine:
         self._art_relays = {}
         self._art_relay_fail = {}
         self._art_retried = False
+        self._art_again = False
 
     def _art_authors(self) -> list[str]:
         """Whose pictures and faces to ask for: me, then the people of my rooms by latest activity, at most
@@ -4532,7 +4537,7 @@ class Engine:
             out.append(f)
         return out
 
-    async def _art_subscribe(self) -> None:
+    async def _art_subscribe(self, wait: bool = True) -> None:
         """Pictures and faces of the people of my rooms (several filters of ART_AUTHORS_PER_FILTER authors each,
         well under the 8 a request may hold), asked for no oftener than ART_REQ_GAP and only when the list of
         people changed. The live `art` subscription starts at now, so a relay never resends what it sent before
@@ -4542,12 +4547,18 @@ class Engine:
 
         A person counts as asked only once a relay has answered (EOSE) the query for them: at startup the query
         can run before any relay is open, and a person marked asked then would have no picture until they publish
-        again (the live request starts at now). A catch-up nobody answered gets one quick retry (ART_REQ_GAP
-        apart); after that `_art_touch` asks each relay that opens, once."""
+        again (the live request starts at now). Someone who leaves the list is forgotten as asked, so coming back
+        gets a query again (what they published meanwhile was outside the live filter). A catch-up nobody
+        answered gets one quick retry (ART_REQ_GAP apart); after that `_art_touch` asks each relay that opens,
+        once. One catch-up runs at a time: a second ask while one runs is folded into a later one. `wait=False`
+        (boot, reconnect) runs the catch-up as a task, so a slow relay can't hold startup."""
         self._art_last = time.time()
         if not self.pool or not self.settings()["onboarded"] or not self.store.rooms():
             return
         authors = self._art_authors()
+        keep = set(authors)
+        for asked_there in self._art_relays.values():
+            asked_there.intersection_update(keep)
         asked = set().union(*self._art_relays.values())
         fresh = [a for a in authors if a not in asked]
         if self._art_sent == tuple(authors) and not fresh:
@@ -4556,8 +4567,20 @@ class Engine:
         if self._art_sent != tuple(authors):
             self._art_sent = tuple(authors)
             await pool.subscribe("art", self._art_filters(authors, int(_now())), self._on_art, dedupe=False)
+        if not fresh:
+            return
+        if self._art_busy is pool:
+            self._art_again = True   # the running catch-up asks again when it ends: one query at a time
+            return
+        self._art_busy = pool
+        if wait:
+            await self._art_catch_up(pool, fresh)
+        else:
+            self._spawn(self._art_catch_up(pool, fresh))
+
+    async def _art_catch_up(self, pool, fresh: list[str]) -> None:
+        """The one-shot query for `fresh` (the caller set `_art_busy` to `pool`)."""
         unanswered = False
-        self._art_busy = True
         try:
             step = ART_AUTHORS_PER_FILTER * ART_QUERY_FILTERS
             for i in range(0, len(fresh), step):
@@ -4571,12 +4594,17 @@ class Engine:
                     return   # a new pool asks everyone again
                 for ev in evs:
                     self._take_art(ev)
+                keep = set(self._art_sent or ())
                 for url in answered:
-                    self._art_relays.setdefault(url, set()).update(chunk)
+                    self._art_relays.setdefault(url, set()).update(a for a in chunk if a in keep)
                 unanswered = unanswered or not answered
         finally:
-            self._art_busy = False
-        if not unanswered:
+            if self._art_busy is pool:
+                self._art_busy = None
+        if self._art_again:
+            self._art_again = False
+            self._art_soon()
+        elif not unanswered:
             self._art_retried = False
         elif not self._art_retried:
             self._art_retried = True
@@ -4587,7 +4615,7 @@ class Engine:
         `art` request (it connected after the catch-up ran, or nobody answered then) gets one query of its own, for
         just those people. When every open relay is caught up nothing is sent. A relay whose own catch-up failed
         waits ART_RELAY_RETRY, and one that asked us to slow down is skipped: per-IP limits (damus) stay calm."""
-        if not self.pool or not self._art_sent or self._art_busy or not self.settings()["onboarded"] \
+        if not self.pool or not self._art_sent or self._art_busy is self.pool or not self.settings()["onboarded"] \
                 or not hasattr(self.pool, "query_relay"):
             return
         st = getattr(self.pool, "status", {}) or {}
