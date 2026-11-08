@@ -80,6 +80,28 @@ out([a, b, c])
     assert ".h-settings{scroll-margin-bottom" not in STYLE and ".h-settings>section:last-of-type" not in STYLE  # no-op rules gone
 
 
+
+@needs_node
+def test_the_save_bar_sits_on_the_scrollers_edge_even_when_the_host_pads_its_bottom():
+    # 2026-11-08, live in Desktop: its Settings panel pads the scroller's bottom, and a sticky bar stops above that
+    # padding, so the bar floated 80 px up with the form showing under it.
+    r = run(fn(SETUP, "useKeepAboveBar") + """
+globalThis.P = { listen: () => () => {} }
+globalThis.getComputedStyle = el => ({ overflowY: el.overflow, paddingBottom: el.pad })
+const out_ = []
+for (const pad of ['80px', '0px']) {
+  const scroller = { overflow: 'auto', pad, parentElement: null }
+  const pane = { overflow: 'visible', pad: '0px', parentElement: scroller }
+  const bar = { style: {} }
+  const root = { parentElement: pane, addEventListener() {}, querySelector: s => s === '.h-savebar' ? bar : null }
+  function Host() { const ref = useRef(root); useKeepAboveBar(ref); return null }
+  mount(Host, {})
+  out_.push(bar.style.bottom)
+}
+out(out_)
+""")
+    assert r == ["-80px", ""]
+
 # --- 2: budgets in replies ----------------------------------------------------------------------------------------
 
 BUDGET_JS = (fn(SETUP, "capFirst") + fn(SETUP, "budgetOption") + fn(CORE, "repliesFor") + fn(CORE, "repliesWords")

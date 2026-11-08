@@ -4966,6 +4966,17 @@ function useKeepAboveBar(ref) {
   useEffect(() => {
     const root = ref.current
     if (!root || !root.addEventListener) return
+    // A sticky element stops above its scroller's bottom padding (Desktop's Settings panel has some), which left the
+    // bar floating with the form showing below it: pull it down by that padding so it sits on the edge.
+    const pin = () => {
+      const bar = root.querySelector('.h-savebar')
+      let sc = root.parentElement
+      while (sc && !/auto|scroll/.test(getComputedStyle(sc).overflowY)) sc = sc.parentElement
+      if (!bar || !bar.style || !sc) return
+      const pad = parseFloat(getComputedStyle(sc).paddingBottom) || 0
+      bar.style.bottom = pad > 0 ? -pad + 'px' : ''
+    }
+    pin()   // effects run after layout, so the host's styles are already applied
     const onFocus = e => {
       const bar = root.querySelector('.h-savebar')
       const t = e.target
