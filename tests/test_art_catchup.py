@@ -69,6 +69,7 @@ async def test_a_face_published_before_startup_arrives_when_the_relay_connects_a
     finally:
         await e.pool.stop()
         srv.close()
+        await asyncio.wait_for(srv.wait_closed(), 5)
 
 
 async def test_control_the_same_event_is_accepted_when_handed_over_directly(bare):

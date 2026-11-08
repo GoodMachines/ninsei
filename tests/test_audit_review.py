@@ -10,6 +10,7 @@
 8. a game hidden while it ran shows its end
 9. the Desktop spinner honours reduced motion
 """
+import asyncio
 import json
 import time
 from pathlib import Path
@@ -146,6 +147,7 @@ async def test_backoff_keeps_growing_for_a_relay_that_sends_eose_and_closes():
     finally:
         await pool.stop()
         srv.close()
+        await asyncio.wait_for(srv.wait_closed(), 5)
 
 
 # --- 6: an expired offer is expired everywhere ------------------------------------------------------------------------

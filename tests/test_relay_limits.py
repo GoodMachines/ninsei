@@ -90,6 +90,7 @@ async def test_a_rate_limited_relay_gets_nothing_until_it_cools_then_the_queue_i
     finally:
         await pool.stop()
         srv.close()
+        await asyncio.wait_for(srv.wait_closed(), 5)
 
 
 async def test_a_relay_that_keeps_limiting_waits_longer_each_time():
@@ -109,6 +110,7 @@ async def test_a_relay_that_keeps_limiting_waits_longer_each_time():
     finally:
         await pool.stop()
         srv.close()
+        await asyncio.wait_for(srv.wait_closed(), 5)
 
 
 async def test_a_real_rejection_is_still_final_and_does_not_cool():
@@ -124,6 +126,7 @@ async def test_a_real_rejection_is_still_final_and_does_not_cool():
     finally:
         await pool.stop()
         srv.close()
+        await asyncio.wait_for(srv.wait_closed(), 5)
 
 
 async def test_a_rate_limit_notice_cools_the_relay_too():
@@ -147,6 +150,7 @@ async def test_a_rate_limit_notice_cools_the_relay_too():
     finally:
         await pool.stop()
         srv.close()
+        await asyncio.wait_for(srv.wait_closed(), 5)
 
 
 # --- presence traffic --------------------------------------------------------------------------------------
@@ -219,6 +223,7 @@ async def test_a_relay_that_refuses_the_connection_with_429_waits_like_a_rate_li
     finally:
         await pool.stop()
         srv.close()
+        await asyncio.wait_for(srv.wait_closed(), 5)
 
 
 # --- review fixes, 2026-11-07 ---------------------------------------------------------------------------------
@@ -249,6 +254,7 @@ async def test_the_wait_still_doubles_against_a_relay_that_refills_an_allowance(
     finally:
         await pool.stop()
         srv.close()
+        await asyncio.wait_for(srv.wait_closed(), 5)
 
 
 async def test_a_backlog_is_resent_paced_and_stops_when_the_relay_says_slow_down():
@@ -267,6 +273,7 @@ async def test_a_backlog_is_resent_paced_and_stops_when_the_relay_says_slow_down
     finally:
         await pool.stop()
         srv.close()
+        await asyncio.wait_for(srv.wait_closed(), 5)
 
 
 async def test_a_drop_while_cooling_reconnects_at_once_so_reads_go_on():
@@ -293,6 +300,7 @@ async def test_a_drop_while_cooling_reconnects_at_once_so_reads_go_on():
     finally:
         await pool.stop()
         srv.close()
+        await asyncio.wait_for(srv.wait_closed(), 5)
 
 
 async def test_a_publish_that_settles_after_a_flush_delivered_it_stays_sent():
@@ -326,7 +334,9 @@ async def test_a_publish_that_settles_after_a_flush_delivered_it_stays_sent():
     finally:
         await pool.stop()
         sa.close()
+        await asyncio.wait_for(sa.wait_closed(), 5)
         sb.close()
+        await asyncio.wait_for(sb.wait_closed(), 5)
 
 
 def test_the_probe_survives_hostile_events():

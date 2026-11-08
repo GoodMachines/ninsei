@@ -131,6 +131,7 @@ async def test_backoff_keeps_growing_for_a_relay_that_accepts_then_closes():
     finally:
         await pool.stop()
         srv.close()
+        await asyncio.wait_for(srv.wait_closed(), 5)
 
 
 async def test_backoff_resets_after_a_connection_that_delivered_something():
@@ -155,6 +156,7 @@ async def test_backoff_resets_after_a_connection_that_delivered_something():
     finally:
         await pool.stop()
         srv.close()
+        await asyncio.wait_for(srv.wait_closed(), 5)
 
 
 # --- #38: failed rows outlive the event history window ----------------------------------------------------------
