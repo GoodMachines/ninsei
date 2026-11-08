@@ -318,8 +318,12 @@ button.h-link{background:none;border:0;padding:0;font:inherit;cursor:pointer;tex
 .h-seg button[data-on=true]{background:var(--h-raise);color:var(--h-fg)}
 .h-ta{width:100%;border:1px solid var(--h-line2);border-radius:8px;background:transparent;color:var(--h-fg);font:inherit;padding:8px 10px;resize:vertical;outline:0}
 .h-ta:focus{border-color:color-mix(in oklch,var(--h-accent) 60%,var(--h-line2))}
-.h-hermes-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:6px}
-.h-hermes-item{display:flex;flex-direction:column;align-items:flex-start;gap:2px;min-width:0;text-align:left;font:inherit;padding:8px 10px;border-radius:10px;border:1px solid var(--h-line2);background:transparent;color:var(--h-fg);cursor:pointer;transition:transform .45s cubic-bezier(.34,1.45,.5,1),background .15s linear,border-color .15s linear}
+.h-hermes-list{display:flex;flex-flow:row nowrap;gap:6px;overflow-x:auto;overflow-y:hidden;overscroll-behavior-x:contain;scroll-snap-type:x proximity;scroll-padding:0 12px;padding:3px 3px 6px;margin:-3px;scrollbar-width:thin}
+.h-hermes-list[data-edge=end]{-webkit-mask-image:linear-gradient(to right,#000 calc(100% - 36px),transparent);mask-image:linear-gradient(to right,#000 calc(100% - 36px),transparent)}
+.h-hermes-list[data-edge=start]{-webkit-mask-image:linear-gradient(to left,#000 calc(100% - 36px),transparent);mask-image:linear-gradient(to left,#000 calc(100% - 36px),transparent)}
+.h-hermes-list[data-edge=both]{-webkit-mask-image:linear-gradient(to right,transparent,#000 36px,#000 calc(100% - 36px),transparent);mask-image:linear-gradient(to right,transparent,#000 36px,#000 calc(100% - 36px),transparent)}
+@media (prefers-reduced-motion: no-preference){.h-hermes-list{scroll-behavior:smooth}}
+.h-hermes-item{flex:0 0 190px;width:190px;scroll-snap-align:start;display:flex;flex-direction:column;align-items:flex-start;gap:2px;min-width:0;text-align:left;font:inherit;padding:8px 10px;border-radius:10px;border:1px solid var(--h-line2);background:transparent;color:var(--h-fg);cursor:pointer;transition:transform .45s cubic-bezier(.34,1.45,.5,1),background .15s linear,border-color .15s linear}
 .h-hermes-item:hover:not(:disabled){background:var(--h-hover);transform:translateY(-1px)}
 .h-hermes-item:active:not(:disabled){transform:scale(.97)}
 .h-hermes-item:focus-visible{outline:2px solid var(--h-accent);outline-offset:1px}
