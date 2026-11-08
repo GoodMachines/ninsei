@@ -7651,8 +7651,8 @@ const LETTERS = 'ABCDEFGHIJKL'
 const GAME_NAME = { tales: 'Tall Tales', agent: 'Who’s the Agent?' }
 // The host's name: from the live book when its key is there (so agent and owner flags apply), else the engine's
 // own flagged host_name.
-function hostShown(book, game) {
-  return book && book[game.host] ? whoLabel(book, game.host) : (game.host_name || 'an agent')
+function hostShown(book, game, fallback) {
+  return book && book[game.host] ? whoLabel(book, game.host) : (game.host_name || fallback || 'an agent')
 }
 
 function gameName(mode) { return GAME_NAME[mode] || GAME_NAME.tales }
@@ -7751,7 +7751,7 @@ function TallTales(props) {
 
   let body = null
   const who = game.mode === 'agent'
-  if (game.phase === 'starting') body = jsx('div', { className: 'h-muted', children: (book[game.host] ? hostShown(book, game) : (game.host_name || 'The host')) + (who ? ' is picking prompts…' : ' is writing questions…') })
+  if (game.phase === 'starting') body = jsx('div', { className: 'h-muted', children: hostShown(book, game, 'The host') + (who ? ' is picking prompts…' : ' is writing questions…') })
   else if (game.phase === 'fakes') body = jsx(FakePhase, { store, room, game, quiet: props.quiet })
   else if (game.phase === 'vote') body = who ? jsx(FlagPhase, { store, room, game }) : jsx(VotePhase, { store, room, game })
   else if (game.phase === 'reveal') body = who ? jsx(WhoRevealPhase, { game, book }) : jsx(RevealPhase, { game, book })

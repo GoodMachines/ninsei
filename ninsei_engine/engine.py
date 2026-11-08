@@ -1741,17 +1741,20 @@ class Engine:
         s = self.settings()
         person: dict[str, str] = {}
         agent: dict[str, str] = {}
+        owner: dict[str, str] = {ident["agent_pk"]: ident["person_pk"]}  # agent key -> the person key it answers to
         for e in (self._sorted(room) if evs is None else evs):
             n = _name_ok(self._content(e).get("name"), "")
             if not n or self._content(e).get("t") in SILENT_TYPES:  # a reaction, edit or delete names nobody
                 continue
             if self.owner_of(e):
                 agent[e["pubkey"]] = n
+                owner.setdefault(e["pubkey"], self.owner_of(e))
             else:
                 person[e["pubkey"]] = n
         for pk, p in self.presence.get(room, {}).items():
             agent.setdefault(pk, p["name"])
-        return {"ident": ident, "person": person, "agent": agent, "reg": self._names_reg(room),
+            owner.setdefault(pk, p["owner"])
+        return {"ident": ident, "person": person, "agent": agent, "owner": owner, "reg": self._names_reg(room),
                 "my_name": s["display_name"], "me_p": skeleton(s["display_name"]),
                 "me_a": skeleton(s["agent_name"])}
 
@@ -1771,6 +1774,21 @@ class Engine:
             return "?"  # registry still full after evicting idle holders: an unregistered name is unverified
         return held
 
+    @classmethod
+    def _agent_lookalike(cls, who: dict, pk: str, name, owner: Optional[str]) -> Optional[dict]:
+        """The ONE test for an agent key wearing a name that isn't its own: another agent key holds it (look-alikes
+        included), or a person does (held in the room, or my own name) and that person isn't this agent's owner.
+        Returns {"claimed", "real"} (real None when contested) or None. Every agent label, flag and list uses it."""
+        holder = cls._holder(who, name, agent=True)
+        if holder not in (None, pk):
+            return {"claimed": name, "real": None if holder == CONTESTED else holder}
+        sk = skeleton(name)
+        if sk and sk not in COMMON_WORDS:
+            person = who["ident"]["person_pk"] if sk == who["me_p"] else who["reg"].get("p:" + sk)
+            if person not in (None, owner):
+                return {"claimed": name, "real": None if person == CONTESTED else person}
+        return None
+
     def _uses_held_name(self, room: str, ev: dict, c: dict) -> bool:
         """True when the sender's name is held by another key (the same check that puts the impostor
         badge on the message), or the sender is an agent whose owner key doesn't hold the owner's name.
@@ -1780,7 +1798,9 @@ class Engine:
                "me_p": skeleton(s["display_name"]), "me_a": skeleton(s["agent_name"])}
         owner = self.owner_of(ev)
         name = _name_ok(c.get("name"), "")
-        if name and self._holder(who, name, agent=bool(owner)) not in (None, ev["pubkey"]):
+        if name and owner and self._agent_lookalike(who, ev["pubkey"], name, owner):
+            return True
+        if name and not owner and self._holder(who, name) not in (None, ev["pubkey"]):
             return True
         if owner:
             label = self._who(room)["person"].get(owner)
@@ -2223,7 +2243,7 @@ class Engine:
             # "agent of <name>" is only as good as the owner's hold on that name, and an agent can't
             # borrow another agent's name either.
             oname, ok = self._owner_label(who, owner)
-            if self._holder(who, name, agent=True) not in (None, ev["pubkey"]):
+            if self._agent_lookalike(who, ev["pubkey"], name, owner):
                 name = "UNVERIFIED " + name
             return Line(name, "agent", text, owner_name=oname if ok else "UNVERIFIED " + oname)
         if ev["pubkey"] == ident["person_pk"]:
@@ -2259,10 +2279,10 @@ class Engine:
         if pk == ident["person_pk"] or pk in who["person"]:
             return self._flagged_name(who, pk)
         if pk == ident["agent_pk"]:
-            return who["agent"].get(pk) or claimed
+            return self.persona()["name"]  # mine: never the host's text
         if pk in who["agent"]:
             name = who["agent"][pk]
-            return name if self._holder(who, name, agent=True) in (None, pk) else self._unverified(name)
+            return self._unverified(name) if self._agent_lookalike(who, pk, name, who["owner"].get(pk)) else name
         return self._unverified(claimed)
 
     def _person_name(self, room: str, pk: str, who: Optional[dict] = None) -> str:
@@ -3256,7 +3276,7 @@ class Engine:
                     self._gave_up[:2] if self._gave_up and self._gave_up[2] == room else None, not self._plays_in(room, view)))
         rows = []
         for pk, name, gave, off in out[:24]:
-            if self._holder(who, name, agent=True) not in (None, pk):
+            if self._agent_lookalike(who, pk, name, who["owner"].get(pk)):
                 name = _short(pk)   # a lookalike never wears the real name here either
             if pk in fakers:
                 status = "answered"
@@ -5378,7 +5398,7 @@ class Engine:
             # the same check as the message badge: someone else holds this name in the room
             person["impostor"] = self._holder(who, person["name"]) not in (None, pk)
             for a in mine:
-                a["impostor"] = self._holder(who, a["name"], agent=True) not in (None, a["pk"])
+                a["impostor"] = self._agent_lookalike(who, a["pk"], a["name"], a["owner"]) is not None
             # A lookalike who only ever joined has said nothing that could mislead anyone: leave it out.
             # The moment it posts, or its agent goes live, it shows here with the flag.
             quiet = pk not in spoke and not any(a["pk"] in spoke or a.get("seen") for a in mine)
@@ -5444,21 +5464,21 @@ class Engine:
         """Who reacted, named the way the room names them: a name someone else holds shows as a short key."""
         if pk in who["agent"]:
             n = who["agent"][pk]
-            return n if self._holder(who, n, agent=True) in (None, pk) else _short(pk)
+            return _short(pk) if self._agent_lookalike(who, pk, n, who["owner"].get(pk)) else n
         n, ok = self._owner_label(who, pk)
         return n if ok else _short(pk)
 
     def _flag(self, who: dict, pk: str, name: str, owner: Optional[str], owner_name: str, owner_ok: bool) -> Optional[dict]:
         """The impostor flag the room shows on a sender: someone else holds the name (look-alikes included), or
         an agent whose owner key doesn't hold its owner's name."""
-        holder = self._holder(who, name, agent=bool(owner))
-        if holder not in (None, pk):
-            return {"claimed": name, "real": None if holder == CONTESTED else holder}
         if owner:  # an agent wearing a person's name (held in the room, or mine) is a lookalike too
-            sk = skeleton(name)
-            person = who["ident"]["person_pk"] if sk and sk == who["me_p"] else who["reg"].get("p:" + sk) if sk else None
-            if sk not in COMMON_WORDS and person not in (None, owner):
-                return {"claimed": name, "real": None if person == CONTESTED else person}
+            flag = self._agent_lookalike(who, pk, name, owner)
+            if flag:
+                return flag
+        else:
+            holder = self._holder(who, name)
+            if holder not in (None, pk):
+                return {"claimed": name, "real": None if holder == CONTESTED else holder}
         if owner and not owner_ok:
             real = self._holder(who, owner_name)
             return {"claimed": owner_name, "real": None if real == CONTESTED else real, "owner": True}

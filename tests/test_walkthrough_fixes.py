@@ -534,7 +534,7 @@ def _book_engine(person, agent=None, reg=None):
     from ninsei_engine.engine import Engine, skeleton
     eng = Engine.__new__(Engine)
     who = {"ident": {"person_pk": "me", "agent_pk": "myagent"}, "my_name": "Sam", "me_p": skeleton("Sam"), "me_a": skeleton("Bo"),
-           "person": person, "agent": agent or {}, "reg": {"p:" + skeleton(n): pk for pk, n in (reg or {}).items()}}
+           "person": person, "agent": agent or {}, "owner": {}, "reg": {"p:" + skeleton(n): pk for pk, n in (reg or {}).items()}}
     return eng, who
 
 
@@ -549,7 +549,6 @@ def test_an_unknown_key_host_name_is_flagged_and_an_honest_departed_player_is_ba
     eng, who = _book_engine({"gone": "Ivy"}, {"ag": "Echo"}, reg={"gone": "Ivy"})
     assert eng._served_name(who, "stranger", "Maya") == "Maya (not verified)"      # never seen: can't be checked
     assert eng._served_name(who, "gone", "Ivy") == "Ivy" and eng._served_name(who, "ag", "x") == "Echo"
-    assert eng._served_name(who, "myagent", "Bo") == "Bo"
 
 
 def test_the_engine_never_doubles_the_flag():
@@ -588,3 +587,82 @@ out({ lookalike: hostShown(book, { host: 'echo', host_name: 'Echo' }), unknown: 
 def test_the_scoreboard_chip_wraps_a_long_flagged_name():
     css = src("20_style.js")
     assert ".h-team>span{min-width:0;overflow-wrap:anywhere}" in css and "max-width:100%" in css
+
+
+# --- agent keys wearing a PERSON's name, and the game_view wiring ------------------------------------
+
+from test_hostile import Key  # noqa: E402
+
+CY_MAYA = "Mаya"  # Cyrillic a
+
+
+async def _room_with_agent_lookalikes(bare):
+    """Sam's engine; Maya (a person) holds "Maya"; Eve's agent calls itself CY_MAYA and Ed's agent calls itself "Sam"."""
+    e, _ = bare(name="Sam", agent="Bo")
+    maya, eve, ed = Key("maya"), Key("eve"), Key("ed")
+    await e._on_event(maya.person({"t": "msg", "name": "Maya", "text": "hi"}), "relay")
+    await e._on_event(eve.person({"t": "msg", "name": "Eve", "text": "hi"}), "relay")
+    await e._on_event(eve.agent({"t": "msg", "name": CY_MAYA, "text": "hello"}), "relay")
+    await e._on_event(ed.person({"t": "msg", "name": "Ed", "text": "hi"}), "relay")
+    await e._on_event(ed.agent({"t": "msg", "name": "Sam", "text": "hello"}), "relay")
+    return e, maya, eve, ed
+
+
+async def test_an_agent_wearing_a_persons_name_is_flagged_everywhere(bare):
+    e, maya, eve, ed = await _room_with_agent_lookalikes(bare)
+    who = e._who(ROOM)
+    # the game panel, the members list and the message flag all use the one predicate
+    assert e._served_name(who, eve.apk, "Maya") == CY_MAYA + " (not verified)"
+    assert e._served_name(who, ed.apk, "Ed") == "Sam (not verified)"      # named after me
+    members = {a["pk"]: a for p in e.members(ROOM) for a in p["agents"]}
+    assert members[eve.apk]["impostor"] is True and members[ed.apk]["impostor"] is True
+    flag = e._flag(who, eve.apk, CY_MAYA, eve.ppk, "Eve", True)
+    assert flag and flag["real"] == maya.ppk
+    assert e._flag(who, ed.apk, "Sam", ed.ppk, "Ed", True)["real"] == e._identity()["person_pk"]
+    # an agent keeps its OWNER's person name without a flag (a different room, where nobody else wore it first)
+    e2, _ = bare(name="Sam2", agent="Bo")
+    m2 = Key("maya")
+    await e2._on_event(m2.person({"t": "msg", "name": "Maya", "text": "hi"}), "relay")
+    await e2._on_event(m2.agent({"t": "msg", "name": "Maya", "text": "mine"}), "relay")
+    assert e2._served_name(e2._who(ROOM), m2.apk, "x") == "Maya"
+    assert not e2._agent_lookalike(e2._who(ROOM), m2.apk, "Maya", m2.ppk)
+
+
+@needs_node
+async def test_the_ui_labels_an_agent_wearing_a_persons_name_as_not_verified(bare):
+    e, maya, eve, ed = await _room_with_agent_lookalikes(bare)
+    members = e.members(ROOM)
+    r = run_node(LABELS + fn(TALES, "teamName") + fn(CORE, "nameBook") + "const room = { members: " + json.dumps(members) + """ }
+const book = nameBook(room, null)
+const game = { team_names: {}, scores: {}, players: [] }
+out({ cy: whoLabel(book, %s), sam: whoLabel(book, %s), team: teamName(game, book, %s) })
+""" % (json.dumps(eve.apk), json.dumps(ed.apk), json.dumps(eve.apk)))
+    assert r["cy"].startswith(CY_MAYA + " (not verified)") and r["sam"].startswith("Sam (not verified)")
+    assert r["team"].startswith(CY_MAYA + " (not verified)")
+
+
+async def test_my_own_agent_is_named_from_my_settings_never_the_hosts_text(bare):
+    e, _ = bare(name="Sam", agent="Bo")
+    who = e._who(ROOM)
+    assert e._served_name(who, e._identity()["agent_pk"], "Maya") == "Bo"
+
+
+async def test_game_view_serves_flagged_names_for_a_hostile_host(bare):
+    """The wiring: the host's own name and the reveal's names are rewritten from this engine's book in game_view."""
+    e, _ = bare(name="Sam", agent="Bo")
+    maya, fake, host, stranger = Key("maya"), Key("fake"), Key("host"), Key("stranger")
+    await e._on_event(maya.person({"t": "msg", "name": "Maya", "text": "hi"}), "relay")
+    await e._on_event(fake.person({"t": "msg", "name": CY_MAYA, "text": "hi"}), "relay")
+    now = time.time()
+    await e._on_event(host.agent({"t": "tales_start", "gid": "g", "rounds": 1, "seq": 1, "name": CY_MAYA}), "relay")
+    await e._on_event(host.agent({"t": "tales_round", "gid": "g", "n": 1, "q": "?", "secs": 45, "seq": 2,
+                                  "ends_at": now + 45, "name": CY_MAYA}), "relay")
+    await e._on_event(host.agent({"t": "tales_reveal", "gid": "g", "n": 1, "truth": "o1", "answer": "x", "seq": 3,
+                                  "name": CY_MAYA, "scores": {},
+                                  "names": {stranger.ppk: "Maya", fake.ppk: "Maya", maya.ppk: CY_MAYA}}), "relay")
+    g = e.game_view(ROOM)
+    assert g["phase"] == "reveal"
+    assert g["host_name"] == CY_MAYA + " (not verified)"
+    assert g["reveal"]["names"][stranger.ppk] == "Maya (not verified)"        # never seen: the host's text, flagged
+    assert g["reveal"]["names"][fake.ppk] == CY_MAYA + " (not verified)"      # the book's spelling of the lookalike
+    assert g["reveal"]["names"][maya.ppk] == "Maya"                           # the real holder, bare, in the book's spelling
