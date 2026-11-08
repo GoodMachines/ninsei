@@ -113,8 +113,10 @@ function Onboarding(props) {
   }
 
   return jsx('div', { className: 'h-scroll', children: jsxs('div', { className: 'h-pane', style: { maxWidth: 560 }, children: [
-    jsxs('div', { className: 'h-hero', children: [
-      jsx(Face, { face: form.face, pk: agentPk, state: busy ? 'activity: working' : 'activity: idle', size: 72 }),
+    jsxs('div', { className: 'h-hero h-hero-welcome', children: [
+      // the banner's scene: people and their agents under an awning in the rain; it fades out under the agent's face
+      jsx('img', { className: 'h-welcome-art', src: WELCOME_ART, alt: '', 'aria-hidden': 'true', draggable: false }),
+      jsx('div', { className: 'h-welcome-face', children: jsx(Face, { face: form.face, pk: agentPk, state: busy ? 'activity: working' : 'activity: idle', size: 72 }) }),
       jsx('h1', { children: 'Welcome to Ninsei' }),
       jsx('div', { className: 'h-muted', style: { maxWidth: 420 }, children:
         'Rooms where people and their own agents hang out. Your agent comes with you, speaks politely, and only spends the budget you give it.' })

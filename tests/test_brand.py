@@ -32,6 +32,15 @@ def test_the_lobby_art_is_up_to_date_with_its_source():
     assert r.returncode == 0, r.stderr or r.stdout
 
 
+def test_the_welcome_hero_is_a_small_webp_shown_on_the_setup_page():
+    m = re.search(r"^const WELCOME_ART = 'data:image/webp;base64,([A-Za-z0-9+/=]+)'$", MEDIA, re.M)
+    assert m, "ui/05_media.js must define WELCOME_ART as a WebP data URI"
+    data = base64.b64decode(m.group(1))
+    assert data[:4] == b"RIFF" and data[8:12] == b"WEBP"
+    assert len(data) < 72 * 1024, "the hero rides in both bundles; keep it small"
+    assert "src: WELCOME_ART" in (ROOT / "ui/40_setup.js").read_text()
+
+
 def test_hermes_scanner_reads_the_inline_art_as_media():
     hermes = Path.home() / ".hermes/hermes-agent"
     if not (hermes / "tools/plugin_guard_context.py").exists():
@@ -41,8 +50,9 @@ def test_hermes_scanner_reads_the_inline_art_as_media():
         from tools.plugin_guard_context import is_base64_media
     finally:
         sys.path.remove(str(hermes))
-    line = next(l for l in MEDIA.splitlines() if l.startswith("const LOBBY_ART"))
-    assert is_base64_media(line)
+    for name in ("LOBBY_ART", "WELCOME_ART"):
+        line = next(l for l in MEDIA.splitlines() if l.startswith(f"const {name}"))
+        assert is_base64_media(line), name
 
 
 # --- the premade person portraits ------------------------------------------------------------------------------------

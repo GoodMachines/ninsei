@@ -98,6 +98,7 @@ function text(node) {
 }
 const button = (tree, label) => find(tree, n => n.type === K.Button && text(n).includes(label))
 const K = { Button: function Button() {}, Input: function Input() {}, Icon: function Icon() {}, Dialog: function Dialog() {} }
+globalThis.WELCOME_ART = 'data:image/webp;base64,'   // the setup hero; tests that load ui/05_media.js get the real one (its const shadows this)
 const out = o => console.log(JSON.stringify(o))
 """
 

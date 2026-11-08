@@ -344,6 +344,10 @@ button.h-link{background:none;border:0;padding:0;font:inherit;cursor:pointer;tex
 @media (prefers-reduced-motion: reduce){.h-persona{animation:none}.h-hermes-item{transition:none}}
 .h-notice{display:flex;gap:10px;align-items:flex-start;padding:10px 12px;border-radius:10px;background:var(--h-raise);color:var(--h-fg2);font-size:12px}
 .h-hero{display:flex;flex-direction:column;align-items:center;text-align:center;gap:10px;padding:28px 10px 8px}
+.h-hero-welcome{padding-top:6px}
+.h-welcome-art{display:block;width:100%;aspect-ratio:1086/600;object-fit:cover;border-radius:14px;margin-bottom:-58px;user-select:none;pointer-events:none;
+  -webkit-mask-image:linear-gradient(to bottom,#000 50%,transparent 96%);mask-image:linear-gradient(to bottom,#000 50%,transparent 96%)}
+.h-welcome-face{position:relative;z-index:1}
 .h-savebar{justify-content:flex-end;position:sticky;bottom:0;padding:10px 0;background:var(--h-bg);border-top:1px solid var(--h-line)}
 /* the sticky Save bar: scrolling to a field (focus, find, a jump) stops above it, and a field focused under it is moved
    up (useKeepAboveBar, which also covers a host page that does the scrolling) */
