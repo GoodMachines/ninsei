@@ -982,7 +982,9 @@ history newest-first, so a squatter's recent backfill registered before an hones
 backdated agent posts made a person name's agent side CONTESTED at time 0, flagging an honest live person. So a
 person who later takes an existing agent's name makes that agent show "not verified"; the agent is never shown
 as someone it isn't. The person side of the agent check ignores the full-registry "?" rule (most agent names
-never get a person entry, so a full room would otherwise flag every honest agent); CONTESTED still flags.
+never get a person entry, so a full room would otherwise flag every honest agent); CONTESTED still flags. In a full room
+a person name that couldn't be recorded still outranks a non-own agent if a person in the room is using it
+(`who["person"]`; `_uses_held_name` builds the full book only when the registry is full).
 
 Took five review rounds; the review of each round found the next problem. Lobby: your own card preview now
 renders through `LobbyPerson`, so it shows your portrait the way others see it, and `PersonMark` always shows

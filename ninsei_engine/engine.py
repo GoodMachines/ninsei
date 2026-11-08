@@ -1791,6 +1791,10 @@ class Engine:
         sk = skeleton(name)
         person = (None if not sk or sk in COMMON_WORDS else who["ident"]["person_pk"] if sk == who["me_p"]
                   else who["reg"].get("p:" + sk))
+        if person is None and sk and sk not in COMMON_WORDS and len(who["reg"]) >= MAX_NAMES:
+            # a full room couldn't record this person name, but a person here using it still outranks the agent
+            users = [k for k, n in who.get("person", {}).items() if k != owner and skeleton(n) == sk]
+            person = users[0] if len(users) == 1 else CONTESTED if users else None
         if person not in (None, owner):
             return {"claimed": name, "real": None if person == CONTESTED else person}
         return None
@@ -1800,8 +1804,10 @@ class Engine:
         badge on the message), or the sender is an agent whose owner key doesn't hold the owner's name.
         Built from the registry alone, so it costs no pass over the room."""
         s = self.settings()
-        who = {"ident": self._identity(), "reg": self._names_reg(room),
-               "me_p": skeleton(s["display_name"]), "me_a": skeleton(s["agent_name"])}
+        reg = self._names_reg(room)
+        # a full registry needs the room's person names too (see _agent_lookalike), so then build the whole book
+        who = self._who(room) if len(reg) >= MAX_NAMES else {
+            "ident": self._identity(), "reg": reg, "me_p": skeleton(s["display_name"]), "me_a": skeleton(s["agent_name"])}
         if ev["pubkey"] in (who["ident"]["agent_pk"], who["ident"]["person_pk"]):
             return False  # my own keys never use a held name in my own view
         owner = self.owner_of(ev)

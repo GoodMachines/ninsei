@@ -795,3 +795,27 @@ async def test_a_full_registry_does_not_flag_an_honest_agent_that_holds_its_own_
     assert e._uses_held_name(ROOM, echo, {"name": "Echo"}) is False
     assert e._agent_lookalike(who, maya.apk, "Echo", maya.ppk) is None
     assert e._reactor_name(who, maya.apk) == "Echo"
+
+
+async def test_a_full_room_still_flags_an_agent_wearing_a_person_name_it_could_not_record(bare, monkeypatch):
+    from ninsei_engine import engine as eng_mod
+    e, _ = bare(name="Sam", agent="Bo")
+    mal = Key("mal")
+    await e._on_event(mal.person({"t": "msg", "name": "Mal", "text": "hi"}), "relay")
+    # Mal's agent takes its agent name while there is room, then the room's registry fills
+    named = mal.agent({"t": "msg", "name": "Mаya", "text": "hello"})          # Cyrillic а
+    await e._on_event(named, "relay")
+    monkeypatch.setattr(eng_mod, "MAX_NAMES", len(e._names_reg(ROOM)))
+    maya = Key("maya")
+    await e._on_event(maya.person({"t": "msg", "name": "Maya", "text": "hi"}), "relay")
+    assert "p:maya" not in e._names_reg(ROOM)                                # Maya couldn't be recorded
+    who = e._who(ROOM)
+    assert Engine._holder(who, "Mаya", agent=True) == mal.apk                 # the agent side passes
+    # but a person here using the name still outranks an agent that isn't hers
+    assert e._agent_lookalike(who, mal.apk, "Mаya", mal.ppk) == {"claimed": "Mаya", "real": maya.ppk}
+    assert e._uses_held_name(ROOM, named, {"name": "Mаya"}) is True
+    agents = {ag["pk"]: ag for p in e.members(ROOM) for ag in p["agents"]}
+    assert agents[mal.apk]["impostor"] is True
+    # an agent that never got its name in is flagged by the agent side, as before
+    late = Key("eve")
+    assert e._agent_lookalike(who, late.apk, "Zed", late.ppk) == {"claimed": "Zed", "real": None}
