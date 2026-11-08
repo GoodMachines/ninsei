@@ -3800,7 +3800,9 @@ class Engine:
         return {"hidden": len(h)}
 
     def _note_model(self, model: str) -> None:
-        model = _model_ok(model)
+        # Stored already short: _model_ok drops backslashes, so a Windows path cleaned first would be glued into
+        # one string (username included) that no later split can cut. An old glued value is replaced on the next call.
+        model = _model_short(model)
         if model and model != self.store.get("model_last"):
             self.store.set("model_last", model)
 

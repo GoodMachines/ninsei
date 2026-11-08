@@ -84,7 +84,7 @@ async def test_the_brain_remembers_the_model_that_ran(tmp_path):
     e = Engine(tmp_path / "e", lambda: LLM(), relays=[], lock=False)
     e.save_settings({"onboarded": True})
     await e.brain._complete("chat", [{"role": "user", "content": "hi"}], 20, "reply")
-    assert e.store.get("model_last") == "anthropic/claude-sonnet-5-5"
+    assert e.store.get("model_last") == "claude-sonnet-5-5"   # stored as shown: the last path segment
     weird = Brain(lambda: LLM(model="x" * 500 + "<b>"), lambda c, n: "t", lambda t, n: None, on_model=e._note_model)
     await weird._complete("chat", [{"role": "user", "content": "hi"}], 20, "reply")
     assert e.store.get("model_last") == "x" * 60

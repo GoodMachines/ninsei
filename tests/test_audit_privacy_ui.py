@@ -55,7 +55,8 @@ def test_a_windows_model_path_is_cut_to_its_file_name():
 async def test_a_windows_model_path_is_published_and_shown_short(bare, monkeypatch):
     e, _ = bare()
     e.save_settings({"onboarded": True, "agent_name": "Ada", "card_details": True})
-    e.store.set("model_last", WIN_PATH)
+    e._note_model(WIN_PATH)   # the path a real model id takes: Brain's on_model callback
+    assert "jane" not in str(e.store.get("model_last"))   # never stored whole, so nothing later can glue it
     sent = []
 
     async def capture(room, as_agent, content, **kw):
