@@ -1027,3 +1027,13 @@ Seen live: `POST /game/start` awaited the question-writing model call, which som
 - **Cancel.** `_end_hosted` (leave room, shutdown) cancels the room's start tasks and awaits them first; a done callback frees the slot even for a task cancelled before its first step, which never runs its own `finally`. A cancel after `tales_start` was posted leaves the game in `_host_games`, which `_end_hosted` then ends with `tales_end`.
 - Tests that wanted the old "returns when started" shape use `tests/start_helpers.py::started`.
 - ARCHITECTURE.md lost a few words elsewhere (the player cap, EOSE and art catch-up asides) to stay under its 1,500-word test.
+
+## Audit: robustness group (2026-11-08)
+
+- **Non-finite numbers.** Rejected once at the parse: `engine._loads` (used by `_content`, art events and sealed payloads) refuses NaN, Infinity and `1e999` (an event whose content holds one is treated as `{}`). Defence in depth below it: `_bounded` clamps `ends_at`/`secs` to a finite range (`MAX_STAMP`), `_int_map` and `seq` clamp to `INT_CAP`, and the `int()` excepts include `OverflowError`. `test_fuzz` never made inf; the new tests build raw JSON and check `snapshot` with `allow_nan=False`.
+- **Reconnect** takes `_reconnect_lock`, so two overlapping calls run one after the other (order kept: stop old, then new).
+- **Model deadline.** `brain.MODEL_TIMEOUT_S` (120 s) wraps the call; a timeout is billed the estimate (`_maybe_billed` already did). Calls run on a dedicated 8-thread executor so hung ones cannot starve the default executor. A hung thread itself cannot be killed.
+- **Loops.** `_presence_loop` and `_watch_builds` catch and log per iteration and always reach their sleep.
+- **Stop at exit.** Hermes has no process-shutdown plugin hook (`VALID_HOOKS` are per session, turn and tool; `on_session_end` fires per chat), so `get_engine` registers `atexit` once; it stops the engine once. `Engine.stop` already ends hosted games and closes the pool, bounded to about 12 s.
+- **Unhashable `sig`** is dropped before the `_bad` lookup (a non-string is never a signature).
+- Tests: `tests/test_audit_robustness.py`.

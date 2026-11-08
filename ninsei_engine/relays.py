@@ -261,7 +261,10 @@ class RelayPool:
                 return
             if sub.seen_ids is not None and eid in sub.seen_ids:
                 return   # one-shot query: already collected from another relay
-            if self._muted_until.get(url, 0) > time.monotonic() or (eid, ev.get("sig")) in self._bad:
+            sig = ev.get("sig")
+            if not isinstance(sig, str):
+                return   # a list or dict here is unhashable, and no signature is one
+            if self._muted_until.get(url, 0) > time.monotonic() or (eid, sig) in self._bad:
                 return
             created = ev.get("created_at")
             if not isinstance(created, int) or created > _now() + FUTURE_SKEW_S:

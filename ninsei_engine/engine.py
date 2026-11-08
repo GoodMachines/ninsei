@@ -58,6 +58,8 @@ LIVE_MAX_AGE = 60          # seconds: an older presence beat or claim is a repla
 FRESH_WINDOW = 300         # seconds: how old a live room event may be and still get a reaction (clock skew)
 START_ERROR_SECS = 120     # a failed game start stays in the room's snapshot this long, so a view that opens late still tells the owner
 GAME_STALE = 60           # seconds past a phase's end with nothing from the host: the game is over
+INT_CAP = 10 ** 9           # bound on any count or score read from a stranger's event
+MAX_STAMP = 4e9            # latest time a stranger's event may name (year 2096), in Unix seconds
 MAX_INFLIGHT = 2           # model calls that room events can have running at once
 PACE_LIMIT = 8             # posts my agent makes per PACE_WINDOW, in all rooms (relays limit per IP)
 PACE_WINDOW = 300
@@ -337,17 +339,37 @@ def _int_map(x) -> dict[str, int]:
     out = {}
     for k, v in list(_as_dict(x).items())[:24]:
         try:
-            out[str(k)[:64]] = int(v)
-        except (TypeError, ValueError):
+            out[str(k)[:64]] = max(-INT_CAP, min(int(v), INT_CAP))
+        except (TypeError, ValueError, OverflowError):
             continue
     return out
 
 
-def _secs(c: dict) -> float:
+def _bounded(x, lo: float, hi: float) -> float:
+    """A number from a stranger's event, finite and inside [lo, hi]; `lo` for anything else."""
     try:
-        return max(0.0, min(float(c.get("secs") or 0), 600.0))
-    except (TypeError, ValueError):
-        return 0.0
+        f = float(x or 0)
+    except (TypeError, ValueError, OverflowError):
+        return lo
+    return lo if not math.isfinite(f) else max(lo, min(f, hi))
+
+
+def _secs(c: dict) -> float:
+    return _bounded(c.get("secs"), 0.0, 600.0)
+
+
+def _loads(text):
+    """json.loads for text a stranger wrote: NaN, Infinity and numbers too big for a float (`1e999`) are
+    refused here, once, so no later `int()`, `float()` or JSON response meets a non-finite value."""
+    def num(s):
+        f = float(s)
+        if not math.isfinite(f):
+            raise ValueError("number out of range")
+        return f
+
+    def const(s):
+        raise ValueError("non-finite number")
+    return json.loads(text, parse_float=num, parse_constant=const)
 
 
 def _build_claim(b: Any) -> Optional[dict]:
@@ -580,7 +602,7 @@ def _unseal(sk: str, peer_pk: str, payload: Any) -> Optional[dict]:
     if not isinstance(payload, str) or len(payload) != SEALED_CHARS:
         return None
     try:
-        body = json.loads(nip44.decrypt(payload, nip44.conversation_key(sk, peer_pk)))
+        body = _loads(nip44.decrypt(payload, nip44.conversation_key(sk, peer_pk)))
     except (nip44.Nip44Error, ValueError, TypeError):
         return None
     return body if isinstance(body, dict) else None
@@ -662,6 +684,7 @@ class Engine:
         self._ready = threading.Event()
         self._start_error: Optional[BaseException] = None
         self._tasks: set[asyncio.Task] = set()
+        self._reconnect_lock = asyncio.Lock()
 
         self.brain = Brain(llm_getter, self._reserve, self.store.settle, on_model=self._note_model)
         # live, in-memory room state (rebuilt from the store + relays)
@@ -1258,12 +1281,15 @@ class Engine:
         await self._art_subscribe(wait=wait_art)
 
     async def reconnect(self) -> None:
-        if self.pool:
-            await self.pool.stop()
-        self.pool = self._new_pool()
-        self.pool.start()
-        await self._resubscribe(wait_art=False)
-        self._bump()
+        # one at a time: two overlapping calls both stopped the old pool, then each made a new one, and the
+        # first of those was never stopped
+        async with self._reconnect_lock:
+            if self.pool:
+                await self.pool.stop()
+            self.pool = self._new_pool()
+            self.pool.start()
+            await self._resubscribe(wait_art=False)
+            self._bump()
 
     # ============================================================================================
     # publishing
@@ -1314,7 +1340,7 @@ class Engine:
         if hit is not None:
             return hit
         try:
-            c = json.loads(ev["content"])
+            c = _loads(ev["content"])
             c = c if isinstance(c, dict) else {}
         except (ValueError, TypeError):
             c = {}
@@ -2556,19 +2582,19 @@ class Engine:
                 await self._announce_expired()
             except Exception as e:
                 log.debug("offer expiry: %s", e)
-            offers = self._offers()
-            changed = False
-            for oid, o in offers.items():
-                if o["status"] == "building" and self.build_path(oid).is_file():
-                    o["status"] = "ready"
-                    changed = True
-            if changed:
-                self.store.set("offers", offers)
-                self._bump()
-            try:
+            try:   # a locked database or a bad row must not end build watching for good
+                offers = self._offers()
+                changed = False
+                for oid, o in offers.items():
+                    if o["status"] == "building" and self.build_path(oid).is_file():
+                        o["status"] = "ready"
+                        changed = True
+                if changed:
+                    self.store.set("offers", offers)
+                    self._bump()
                 self._sync_build_progress(offers)
-            except Exception as e:  # decoration: a bad row must not stop the build watcher
-                log.debug("build progress: %s", e)
+            except Exception:
+                log.exception("ninsei: build watcher iteration failed")
 
     def _sync_build_progress(self, offers: dict) -> None:
         """Show the agent building while the owner's Hermes works on an accepted offer. The hooks in the
@@ -3269,7 +3295,7 @@ class Engine:
             if not isinstance(n, int) or isinstance(n, bool) or not 1 <= n <= view.get("rounds", game.MAX_ROUNDS):
                 return  # a round the game doesn't have
             view.update(n=n, phase="fakes", q=str(c.get("q", ""))[:240],
-                        ends_at=float(c.get("ends_at") or 0), secs=_secs(c), options=[], claims=None, reveal=None)
+                        ends_at=_bounded(c.get("ends_at"), 0.0, MAX_STAMP), secs=_secs(c), options=[], claims=None, reveal=None)
         elif t == "tales_vote_open" and c.get("n") == view["n"]:
             opts = [{"id": str(o.get("id", ""))[:16], "text": str(o.get("text", ""))[:80]}
                     for o in _as_list(c.get("options"))[:game.MAX_OPTIONS] if isinstance(o, dict)]
@@ -3279,7 +3305,7 @@ class Engine:
             claims = ({str(k)[:16]: [str(x)[:16] for x in _as_list(v)[:MAX_PLAYERS]]
                        for k, v in list(raw_claims.items())[:game.MAX_OPTIONS]}
                       if isinstance(raw_claims, dict) else None)
-            view.update(phase="vote", options=opts, claims=claims, ends_at=float(c.get("ends_at") or 0),
+            view.update(phase="vote", options=opts, claims=claims, ends_at=_bounded(c.get("ends_at"), 0.0, MAX_STAMP),
                         secs=_secs(c))
         elif t == "tales_reveal" and c.get("n") == view["n"]:
             view.update(phase="reveal", scores=_int_map(c.get("scores")), reveal={
@@ -3302,7 +3328,7 @@ class Engine:
         gid, host = sc.get("gid"), sev["pubkey"]
         try:
             rounds = max(1, min(int(sc.get("rounds", game.ROUNDS)), game.MAX_ROUNDS))
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             rounds = game.ROUNDS
         view = {"gid": gid, "host": host, "host_name": _name_ok(sc.get("name"), "Host"), "rounds": rounds,
                 "mode": sc.get("mode") if sc.get("mode") in game.MODES else "tales", "my_picks": [],
@@ -3314,14 +3340,14 @@ class Engine:
             c = self._content(e)
             if c.get("gid") == gid and e["pubkey"] == host and str(c.get("t", "")).startswith("tales_"):
                 try:
-                    host_evs.append((int(c.get("seq", 0)), e, c))
-                except (TypeError, ValueError):
+                    host_evs.append((max(-INT_CAP, min(int(c.get("seq", 0)), INT_CAP)), e, c))
+                except (TypeError, ValueError, OverflowError):
                     continue
         host_evs.sort(key=lambda x: x[0])
         for _seq, e, c in host_evs:  # host events apply in the host's own order
             try:  # a host is a stranger: a malformed event is skipped, never breaks the view
                 self._apply_host_event(view, c)
-            except (TypeError, ValueError, AttributeError, KeyError):
+            except (TypeError, ValueError, AttributeError, KeyError, OverflowError):
                 log.debug("ninsei: skipped malformed host event %s", e.get("id"))
         last = max([sev["created_at"]] + [e["created_at"] for _s, e, _c in host_evs])
         view["last_at"] = last
@@ -4145,9 +4171,12 @@ class Engine:
     # ============================================================================================
     async def _presence_loop(self) -> None:
         while True:
-            await self._presence_once()
-            self._dm_touch()
-            self._art_touch()
+            try:   # a failed beat (a locked database, a bad row) must not end beats for good
+                await self._presence_once()
+                self._dm_touch()
+                self._art_touch()
+            except Exception:
+                log.exception("ninsei: presence loop iteration failed")
             await asyncio.sleep(PRESENCE_EVERY)
 
     def _beat_soon(self) -> None:
@@ -4518,7 +4547,7 @@ class Engine:
             if cur and (created < cur["created_at"] or (created == cur["created_at"] and eid >= cur["id"])):
                 return False   # newest wins; on a tie the lowest id, as NIP-01 says for replaceable events
             try:
-                c = json.loads(ev["content"]) if ev["content"].strip() else {}
+                c = _loads(ev["content"]) if ev["content"].strip() else {}
             except ValueError:
                 return False
             if not isinstance(c, dict):
