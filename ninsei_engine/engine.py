@@ -1778,15 +1778,18 @@ class Engine:
     def _agent_lookalike(cls, who: dict, pk: str, name, owner: Optional[str]) -> Optional[dict]:
         """The ONE test for an agent key wearing a name that isn't its own: another agent key holds it (look-alikes
         included), or a person does (held in the room, or my own name) and that person isn't this agent's owner.
-        Returns {"claimed", "real"} (real None when contested) or None. Every agent label, flag and list uses it."""
+        Returns {"claimed", "real"} (real None when contested) or None. Every agent label, flag and list uses it.
+        My own agent key is never a lookalike in my own view, whatever it is named."""
+        if pk == who["ident"]["agent_pk"]:
+            return None
         holder = cls._holder(who, name, agent=True)
         if holder not in (None, pk):
             return {"claimed": name, "real": None if holder == CONTESTED else holder}
-        sk = skeleton(name)
-        if sk and sk not in COMMON_WORDS:
-            person = who["ident"]["person_pk"] if sk == who["me_p"] else who["reg"].get("p:" + sk)
-            if person not in (None, owner):
-                return {"claimed": name, "real": None if person == CONTESTED else person}
+        # the person holder by the same rule as a person's own badge: my name is mine, and a full registry
+        # answers CONTESTED for a name it couldn't record (so "?" means contested or unknown: real None either way)
+        person = cls._holder(who, name)
+        if person not in (None, owner):
+            return {"claimed": name, "real": None if person == CONTESTED else person}
         return None
 
     def _uses_held_name(self, room: str, ev: dict, c: dict) -> bool:
@@ -1796,6 +1799,8 @@ class Engine:
         s = self.settings()
         who = {"ident": self._identity(), "reg": self._names_reg(room),
                "me_p": skeleton(s["display_name"]), "me_a": skeleton(s["agent_name"])}
+        if ev["pubkey"] in (who["ident"]["agent_pk"], who["ident"]["person_pk"]):
+            return False  # my own keys never use a held name in my own view
         owner = self.owner_of(ev)
         name = _name_ok(c.get("name"), "")
         if name and owner and self._agent_lookalike(who, ev["pubkey"], name, owner):
@@ -5373,7 +5378,9 @@ class Engine:
             if owner and c.get("t") == "offer":
                 offer_titles[e["id"]] = (e["pubkey"], str(c.get("title", ""))[:60])
             if owner:
-                agents[e["pubkey"]] = {"pk": e["pubkey"], "name": _name_ok(c.get("name"), "Agent"), "owner": owner,
+                # the first owner seen for a key is kept, as in _who (a later binding can't move it)
+                first = agents[e["pubkey"]]["owner"] if e["pubkey"] in agents else owner
+                agents[e["pubkey"]] = {"pk": e["pubkey"], "name": _name_ok(c.get("name"), "Agent"), "owner": first,
                                        "face": c.get("face"), "last": e["created_at"]}  # cleaned below, once
             elif e["kind"] == KIND_ROOM:
                 people[e["pubkey"]] = {"pk": e["pubkey"], "name": _name_ok(c.get("name"), _short(e["pubkey"])),
@@ -5396,7 +5403,7 @@ class Engine:
         for pk, person in people.items():
             mine = [a for a in agents.values() if a["owner"] == pk]
             # the same check as the message badge: someone else holds this name in the room
-            person["impostor"] = self._holder(who, person["name"]) not in (None, pk)
+            person["impostor"] = pk != ident["person_pk"] and self._holder(who, person["name"]) not in (None, pk)
             for a in mine:
                 a["impostor"] = self._agent_lookalike(who, a["pk"], a["name"], a["owner"]) is not None
             # A lookalike who only ever joined has said nothing that could mislead anyone: leave it out.
@@ -5470,7 +5477,9 @@ class Engine:
 
     def _flag(self, who: dict, pk: str, name: str, owner: Optional[str], owner_name: str, owner_ok: bool) -> Optional[dict]:
         """The impostor flag the room shows on a sender: someone else holds the name (look-alikes included), or
-        an agent whose owner key doesn't hold its owner's name."""
+        an agent whose owner key doesn't hold its owner's name. My own keys are never flagged in my own view."""
+        if pk in (who["ident"]["agent_pk"], who["ident"]["person_pk"]):
+            return None
         if owner:  # an agent wearing a person's name (held in the room, or mine) is a lookalike too
             flag = self._agent_lookalike(who, pk, name, owner)
             if flag:
