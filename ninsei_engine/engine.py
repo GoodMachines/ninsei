@@ -28,6 +28,7 @@ from typing import Any, Callable, Iterable, Optional
 
 from . import avatar, dm, game, nip44, nostr, persona as personas
 from .brain import Brain, BudgetExhausted, Line
+from .names import name_ok as _name_ok, skeleton  # one folding for every identity check (names.py)
 from .relays import RelayPool
 from .store import DM_PER_PEER, EVENT_ROOM_CAP, FRIEND_REQUESTS, Store, today
 from .topics import TopicTracker
@@ -445,45 +446,6 @@ def parse_room_link(text: str) -> tuple[str, str]:
     room = m.group(0)[:24] if m else ""
     ev = ev.strip().lower()
     return room, ev if nostr.is_hex(ev, 32) else ""
-
-
-def _name_ok(name: str, fallback: str) -> str:
-    # control and format characters (zero-width joiners, bidi overrides) never belong in a name
-    name = "".join(ch for ch in str(name or "") if unicodedata.category(ch) not in ("Cc", "Cf", "Zl", "Zp"))
-    return name.strip()[:32] or fallback
-
-
-# Capitals that look like Latin ones but casefold to something that doesn't (Greek Υ -> υ, Μ -> μ).
-_CONFUSABLE_CAPS = str.maketrans({
-    "Α": "a", "Β": "b", "Ε": "e", "Ζ": "z", "Η": "h", "Ι": "i", "Κ": "k", "Μ": "m", "Ν": "n", "Ο": "o",
-    "Ρ": "p", "Τ": "t", "Υ": "y", "Χ": "x",
-    "А": "a", "В": "b", "Е": "e", "К": "k", "М": "m", "Н": "h", "О": "o", "Р": "p", "С": "c", "Т": "t",
-    "У": "y", "Х": "x", "Ѕ": "s", "І": "i", "Ј": "j",
-})
-# Letters that look like Latin ones. Applied after casefolding, so lowercase forms only.
-_CONFUSABLES = str.maketrans({
-    # Cyrillic
-    "а": "a", "в": "b", "е": "e", "ё": "e", "г": "r", "к": "k", "м": "m", "н": "h", "о": "o", "п": "n",
-    "р": "p", "с": "c", "т": "t", "у": "y", "х": "x", "ѕ": "s", "і": "i", "ї": "i", "ј": "j", "һ": "h",
-    "ԁ": "d", "ԛ": "q", "ԝ": "w", "ӏ": "i", "ɡ": "g", "ь": "b",
-    # Greek
-    "α": "a", "β": "b", "ε": "e", "η": "n", "ι": "i", "κ": "k", "ν": "v", "ο": "o", "ρ": "p", "τ": "t",
-    "υ": "u", "χ": "x", "γ": "y", "ϲ": "c", "ϳ": "j", "ζ": "z",
-    # digits and marks that pass for letters; i, l and 1 all read as one stroke
-    "0": "o", "1": "i", "l": "i", "|": "i", "!": "i", "3": "e", "5": "s", "$": "s", "@": "a",
-})
-
-
-def skeleton(name) -> str:
-    """The comparable form of a display name: NFKC, no format or combining characters, casefolded,
-    look-alike letters mapped to Latin, separators dropped. Two names with the same skeleton are the
-    same name to a reader, so impostor and name-holder checks compare these, never raw strings."""
-    s = unicodedata.normalize("NFKC", str(name or ""))
-    s = unicodedata.normalize("NFKD", s)  # split accents off so they can be dropped below
-    s = "".join(ch for ch in s if unicodedata.category(ch)[0] not in ("C", "M", "Z") and not ch.isspace())
-    s = s.translate(_CONFUSABLE_CAPS).casefold().translate(_CONFUSABLES)
-    s = re.sub(r"[_.\-'’`\"]", "", s)
-    return s.replace("rn", "m").replace("vv", "w")
 
 
 def valid_reaction(c: dict) -> bool:
@@ -1866,7 +1828,9 @@ class Engine:
     # the agent's behaviour
     # ============================================================================================
     def _mentions(self, text: str, name: str) -> bool:
-        return bool(name) and (re.search(rf"(?<![\w@])@?{re.escape(name)}\b", text or "", re.I) is not None
+        # An everyday word ("Ok", "Agent", "Hi") or a one-letter name is never "named": every message with the
+        # word in it would address that agent, past away mode, quiet rooms and the game rule.
+        return _nameable(name) and (re.search(rf"(?<![\w@])@?{re.escape(name)}\b", text or "", re.I) is not None
                                or at_mentions(text or "", name))
 
     def _at_names_other(self, room: str, text: str) -> bool:
