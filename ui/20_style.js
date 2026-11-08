@@ -220,6 +220,8 @@ button.h-link{background:none;border:0;padding:0;font:inherit;cursor:pointer;tex
 .h-gm .h-gm-line{display:block}
 .h-gm button{flex:none;width:auto}
 .h-howto{border:1px solid var(--h-line2);border-radius:10px;padding:10px 12px;background:var(--h-raise);display:flex;flex-direction:column;gap:6px}
+.h-howto-compact summary{cursor:pointer}
+.h-howto-compact[open] summary{margin-bottom:6px}
 .h-howto-list{display:grid;grid-template-columns:auto 1fr;gap:4px 12px;margin:0;font-size:13px;line-height:1.4}
 .h-howto-list dt{font-weight:600;color:var(--h-fg2)}
 .h-howto-list dd{margin:0;color:var(--h-fg)}

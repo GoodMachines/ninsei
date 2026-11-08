@@ -3206,6 +3206,14 @@ class Engine:
         if dropped:
             view["options"] = [o for o in view["options"] if o.get("id") not in dropped]
 
+    def _game_to_show(self, room: str) -> Optional[dict]:
+        """The game the room view pins. A game that ended before I joined the room is history, not something
+        to pin above my composer: the timeline's "is over" line stays, the card does not."""
+        g = self.game_view(room)
+        if g and g["phase"] == "end" and self.store.joined_at(room) > g.get("last_at", 0):
+            return None
+        return g
+
     def game_view(self, room: str, evs: Optional[list] = None) -> Optional[dict]:
         ident = self._identity()
         evs = self._sorted(room) if evs is None else evs
@@ -3299,6 +3307,14 @@ class Engine:
                     else:
                         view["my_vote"] = got["option"]
         view["fakes_in"], view["votes_in"] = len(fakers), len(voters)
+        # Teams that took part in any round: they sealed an answer or a vote. The final scores list only these,
+        # so a player who joined late, or sat every round out, is not shown with 0 points.
+        took_part = set()
+        for e in evs:
+            c = self._content(e)
+            if c.get("gid") == gid and c.get("t") in ("tales_fake", "tales_vote") and is_sealed(c.get("enc")):
+                took_part.add(self.owner_of(e) or e["pubkey"])
+        view["players"] = sorted(took_part - self._hidden - self._hidden_agents)[:MAX_PLAYERS]
         view["agents"] = self._game_agents(room, view, fakers, evs)
         # what the "How to play" panel says, from the same constants that run the clock (never typed twice)
         view["rules"] = {"fake": game.FAKE_SECONDS, "vote": game.VOTE_SECONDS, "reveal": game.REVEAL_SECONDS,
@@ -3307,7 +3323,8 @@ class Engine:
             self._scrub_hidden(view)
         who = self._who(room, evs)
         view["team_names"] = {pk: self._person_name(room, pk, who)
-                              for pk in list(view["scores"])[:24] + [ident["person_pk"]] if pk not in self._hidden}
+                              for pk in list(dict.fromkeys(list(view["scores"]) + view["players"]))[:24] + [ident["person_pk"]]
+                              if pk not in self._hidden}
         # Your own team's fakes can't be voted for (the host enforces it too). Blocked by who wrote them, from
         # the host's tokens and the nonces sealed in your own answers, so an answer that only looks like yours
         # stays votable. If your answer matched the truth, the truth carries your token and is blocked: you
@@ -5462,7 +5479,7 @@ class Engine:
             members = self.members(room)
             shown, earlier = self.messages_view(room)
             snap["room"] = {"id": room, **self.room_meta(room), "members": members,
-                            "messages": shown, "earlier": earlier, "game": self.game_view(room),
+                            "messages": shown, "earlier": earlier, "game": self._game_to_show(room),
                             "typing": self.typing_view(room)}
             if mark and snap["room"]["messages"]:  # mark=False: the room is loaded but not on screen
                 self.store.mark_read(room, snap["room"]["messages"][-1]["ts"])

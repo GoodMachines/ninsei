@@ -288,6 +288,12 @@ class Store:
             rows = self._db.execute("SELECT id, meta, last_read FROM rooms ORDER BY joined_at").fetchall()
         return {r[0]: {**json.loads(r[1]), "last_read": r[2]} for r in rows}
 
+    def joined_at(self, room_id: str) -> int:
+        """When I joined the room (Unix seconds); 0 if unknown."""
+        with self._lock:
+            row = self._db.execute("SELECT joined_at FROM rooms WHERE id=?", (room_id,)).fetchone()
+        return int(row[0] or 0) if row else 0
+
     def mark_read(self, room_id: str, ts: int) -> None:
         # never past now: a message dated ahead of the clock (the relays' slack allows a minute) must not
         # push the mark forward and silence what arrives next

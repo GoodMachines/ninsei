@@ -35,15 +35,23 @@ function howToLines(mode, rules) {
   return rows
 }
 
+// `compact`: the first-time panel shown mid-round. It is a closed disclosure below the question and the answer
+// box, so the clock never runs while it covers them (the host can't pause it for one player).
 function HowToPlay(props) {
-  const { game, onClose } = props
+  const { game, onClose, compact } = props
+  const list = jsx('dl', { className: 'h-howto-list', children: howToLines(game.mode, game.rules).map(r =>
+    jsxs(Fragment, { children: [jsx('dt', { children: r[0] }), jsx('dd', { children: r[1] })] }, r[0])) })
+  const done = jsx(K.Button, { variant: 'secondary', size: 'sm', onClick: onClose, children: 'Got it' })
+  if (compact) {
+    return jsxs('details', { className: 'h-howto h-howto-compact', 'aria-label': 'How to play ' + gameName(game.mode), children: [
+      jsx('summary', { className: 'h-kicker h-sec', children: 'How to play ' + gameName(game.mode) }),
+      list,
+      jsx('div', { className: 'h-actions', children: done })
+    ] })
+  }
   return jsxs('section', { className: 'h-howto', 'aria-label': 'How to play ' + gameName(game.mode), children: [
-    jsxs('div', { className: 'h-row', children: [
-      jsx('div', { className: 'h-grow h-kicker h-sec', children: 'How to play' }),
-      jsx(K.Button, { variant: 'secondary', size: 'sm', onClick: onClose, children: 'Got it' })
-    ] }),
-    jsx('dl', { className: 'h-howto-list', children: howToLines(game.mode, game.rules).map(r =>
-      jsxs(Fragment, { children: [jsx('dt', { children: r[0] }), jsx('dd', { children: r[1] })] }, r[0])) })
+    jsxs('div', { className: 'h-row', children: [jsx('div', { className: 'h-grow h-kicker h-sec', children: 'How to play' }), done] }),
+    list
   ] })
 }
 
@@ -63,10 +71,14 @@ function AgentStatus(props) {
 function TallTales(props) {
   const { store, room, game, book } = props
   const [hidden, setHidden] = useState(false)
-  // Shown on its own the first time this install sees each game; after that, behind the "How to play" button.
+  // The first time this install sees each game the panel opens during the start countdown, when nothing is
+  // asked of you yet ("auto"). Once a round runs it is a closed disclosure below the answer box instead.
+  // After that it lives behind the "How to play" button ("open", also below the answer box).
   const howKey = 'howto.' + (game.mode === 'agent' ? 'agent' : 'tales')
-  const [how, setHow] = useState(() => !P.prefs.get(howKey, false))
-  const closeHow = () => { setHow(false); P.prefs.set(howKey, true) }
+  const [how, setHow] = useState(() => (P.prefs.get(howKey, false) ? 'off' : 'auto'))
+  const closeHow = () => { setHow('off'); P.prefs.set(howKey, true) }
+  const starting = game.phase === 'starting'
+  const howPanel = how !== 'off' && jsx(HowToPlay, { game, onClose: closeHow, compact: how === 'auto' && !starting })
   const running = game.phase !== 'end'
   const now = useNow(250, running && game.ends_at > 0)
   // A new phase that wants something from you (an answer, a vote) brings a hidden panel back, and so does
@@ -107,14 +119,15 @@ function TallTales(props) {
         jsx('div', { className: 'h-faint h-small', children: hostLabel })
       ] }),
       running && game.ends_at > 0 && jsx(Countdown, { game, now }),
-      jsx(K.Button, { variant: 'ghost', size: 'sm', 'aria-expanded': how, onClick: () => (how ? closeHow() : setHow(true)), children: 'How to play' }),
+      jsx(K.Button, { variant: 'ghost', size: 'sm', 'aria-expanded': how !== 'off', onClick: () => (how !== 'off' ? closeHow() : setHow('open')), children: 'How to play' }),
       // Always closable: a host that vanished mid-game must never pin a panel over the room.
       jsx(K.Button, { variant: 'ghost', size: 'sm', onClick: () => setHidden(true), children: running ? 'Hide' : 'Close' })
     ] }),
-    how && jsx(HowToPlay, { game, onClose: closeHow }),
+    starting && howPanel,
     game.q && game.phase !== 'end' && jsx('div', { className: 'h-tales-q', children: game.q }),
     body,
     game.phase === 'fakes' && jsx(AgentStatus, { game }),
+    !starting && howPanel,
     jsx(Scoreboard, { game, room })
   ] })
 }
@@ -319,7 +332,8 @@ function Scoreboard(props) {
   const { game, room } = props
   const book = nameBook(room, null)
   const scores = game.scores || {}
-  const teams = Object.keys(Object.assign({}, game.team_names || {}, scores))
+  // only teams that took part: a scored team, or one that answered or voted in some round
+  const teams = Array.from(new Set(Object.keys(scores).concat(game.players || [])))
   if (!teams.length) return null
   teams.sort((a, b) => (scores[b] || 0) - (scores[a] || 0))
   const you = (room.members || []).find(p => p.you)
