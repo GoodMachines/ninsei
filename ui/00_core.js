@@ -85,6 +85,13 @@ function repliesWords(n) {
   n = Math.max(0, Math.round(Number(n) || 0))
   return n < 1 ? 'less than a reply a day' : 'about ' + n + (n === 1 ? ' reply' : ' replies') + ' a day'
 }
+// What is left of today in replies, from the engine's budget.replies.left (it counts the message limit and held tokens).
+function repliesLeftWords(b) {
+  const r = b && b.replies
+  if (!r || r.left == null) return ''
+  const n = Math.max(0, Math.round(Number(r.left) || 0))
+  return n < 1 ? 'no replies left today' : 'about ' + n + (n === 1 ? ' reply' : ' replies') + ' left today'
+}
 function fmtTokens(n) {
   n = Number(n) || 0
   if (n >= 1000000) return (n / 1000000).toFixed(n % 1000000 ? 1 : 0) + 'M'

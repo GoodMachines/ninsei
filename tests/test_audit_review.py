@@ -23,7 +23,7 @@ from ninsei_engine.relays import RelayPool
 from test_audit_engine_reliability import RoomPool
 from test_audit_engine_trust import raw_event
 from test_audit_relays_platform import _server, until
-from test_audit_ui import SETUP, APP, TALES, const, fn, needs_node, run
+from test_audit_ui import CORE, SETUP, APP, TALES, const, fn, needs_node, run
 from test_hostile import ROOM, Key, bare, own_person_event, settle  # noqa: F401  (fixture re-export)
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -202,7 +202,8 @@ def test_offer_cards_have_copy_for_expired_and_dropped():
 # --- 4: an empty relay list is offline, and Settings says so -------------------------------------------------------
 
 SETTINGS_JS = lambda: (fn(SETUP, "parseCount") + const(SETUP, "BUDGET_MAX") + const(SETUP, "MSGS_MAX")
-                       + fn(SETUP, "limitError") + fn(SETUP, "SettingsForm") + """
+                       + fn(SETUP, "limitError") + fn(SETUP, "SettingsForm") + fn(SETUP, "capFirst") + fn(SETUP, "budgetOption")
+                       + fn(SETUP, "useKeepAboveBar") + fn(CORE, "repliesFor") + fn(CORE, "repliesWords") + fn(CORE, "repliesLeftWords") + const(CORE, "REPLY_TOKENS_GUESS") + """
 function Field() {}; function Seg() {}; function VibePresets() {}; function IdCard() {}; function FacePicker() {}; function BudgetRing() {}; const AWAY_CHOICES = []; const OTHERS_SPENT = ''; function othersLine() { return '' }
 function InterestInput() {}; function Notice() {}; function PersonLook() {}; const cleanAvatar = a => a || null
 function HermesPicker() {}; function PersonaField() {}; function applyProposal() {}

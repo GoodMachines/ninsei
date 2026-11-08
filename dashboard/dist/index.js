@@ -138,6 +138,13 @@ function repliesWords(n) {
   n = Math.max(0, Math.round(Number(n) || 0))
   return n < 1 ? 'less than a reply a day' : 'about ' + n + (n === 1 ? ' reply' : ' replies') + ' a day'
 }
+// What is left of today in replies, from the engine's budget.replies.left (it counts the message limit and held tokens).
+function repliesLeftWords(b) {
+  const r = b && b.replies
+  if (!r || r.left == null) return ''
+  const n = Math.max(0, Math.round(Number(r.left) || 0))
+  return n < 1 ? 'no replies left today' : 'about ' + n + (n === 1 ? ' reply' : ' replies') + ' left today'
+}
 function fmtTokens(n) {
   n = Number(n) || 0
   if (n >= 1000000) return (n / 1000000).toFixed(n % 1000000 ? 1 : 0) + 'M'
@@ -1361,7 +1368,8 @@ function Face(props) {
   return jsx('span', {
     ref, className: cx('hf', 'hf-px', props.className), 'data-state': state, 'data-expr': expr || undefined,
     'data-size': size <= 20 ? 's' : size < 48 ? 'm' : 'l',
-    style: { width: size, height: size, '--glow': col.glow + 'a6', '--glow2': col.glow + '40', '--gs': Math.max(1, Math.round(size / 20)) + 'px' },
+    // --gh: the glow's hue, for the theme-aware glow in CSS (col.glow is oklch(0.8 0.15 hue))
+    style: { width: size, height: size, '--glow': col.glow + 'a6', '--glow2': col.glow + '40', '--gh': f.hue, '--gs': Math.max(1, Math.round(size / 20)) + 'px' },
     role: 'img', 'aria-label': (props.name ? props.name + ', ' : '') + STATE_LABEL[state],
     children: jsxs('svg', { viewBox: '0 0 64 64', width: size, height: size, 'aria-hidden': true,
       shapeRendering: pxCrisp(size) ? 'crispEdges' : 'auto', children: [
@@ -1424,7 +1432,8 @@ function BudgetRing(props) {
   const b = props.budget || { pct: 0, used: 0, limit: 0 }
   const pct = Number(b.pct) || 0
   const tone = pct >= 1 ? 'rest' : pct >= 0.85 ? 'warn' : ''
-  const label = `${fmtTokens(b.used)} of ${fmtTokens(b.limit)} tokens today`
+  // what the tokens buy, in replies, next to the tokens themselves
+  const label = `${fmtTokens(b.used)} of ${fmtTokens(b.limit)} tokens today (${repliesWords(dailyReplies(b))})`
   return jsx(Ring, { pct, size: props.size || 18, stroke: props.stroke, tone, label, title: label, children: props.children })
 }
 
@@ -2223,6 +2232,23 @@ button.h-link{background:none;border:0;padding:0;font:inherit;cursor:pointer;tex
 .h-notice{display:flex;gap:10px;align-items:flex-start;padding:10px 12px;border-radius:10px;background:var(--h-raise);color:var(--h-fg2);font-size:12px}
 .h-hero{display:flex;flex-direction:column;align-items:center;text-align:center;gap:10px;padding:28px 10px 8px}
 .h-savebar{justify-content:flex-end;position:sticky;bottom:0;padding:10px 0;background:var(--h-bg);border-top:1px solid var(--h-line)}
+/* the sticky Save bar: scrolling to a field (focus, find, a jump) stops above it, and a field focused under it is moved
+   up (useKeepAboveBar, which also covers a host page that does the scrolling) */
+.h-scroll:has(.h-savebar){scroll-padding-bottom:72px}
+/* onboarding's optional "Customize" and a "More" behind a short hint */
+.h-custom{border:1px solid var(--h-line2);border-radius:10px;padding:10px 12px}
+.h-custom>summary{cursor:pointer;display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;font-weight:600;color:var(--h-fg2);font-size:12.5px;list-style:none}
+.h-custom>summary::-webkit-details-marker,.h-more>summary::-webkit-details-marker{display:none}
+.h-custom>summary::before{content:'\\25B8';color:var(--h-fg3);display:inline-block;width:1em;transition:transform .15s}
+.h-custom[open]>summary::before{transform:rotate(90deg)}
+.h-custom>summary:focus-visible,.h-more>summary:focus-visible{outline:2px solid var(--h-accent);outline-offset:2px;border-radius:4px}
+.h-more{display:inline}
+.h-more>summary{display:inline;cursor:pointer;color:var(--h-fg2);text-decoration:underline;text-decoration-color:var(--h-fg4);text-underline-offset:2px;list-style:none}
+.h-more[open]{display:block;margin-top:4px}
+@media (prefers-reduced-motion: reduce){.h-custom>summary::before{transition:none}}
+/* a preset that says what it buys, its tokens under it */
+.h-seg-two{display:inline-flex;flex-direction:column;align-items:center;line-height:1.25}
+.h-seg-sub{font-size:10.5px;color:var(--h-fg3)}
 .h-relay{display:flex;align-items:center;gap:8px;font-size:12px;padding:3px 0}
 .h-empty{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;padding:48px 20px;text-align:center;color:var(--h-fg2);flex:1}
 
@@ -2235,6 +2261,13 @@ button.h-link{background:none;border:0;padding:0;font:inherit;cursor:pointer;tex
    default, so with no animation (reduced motion, a still face) the face simply rests. */
 .hf{display:inline-grid;place-items:center;flex:none;transform-origin:50% 60%}
 .hf svg{overflow:visible;filter:drop-shadow(0 0 .7px rgba(3,8,16,.8)) drop-shadow(0 0 .7px rgba(3,8,16,.5)) drop-shadow(0 0 var(--gs,1px) var(--glow,transparent)) drop-shadow(0 0 calc(var(--gs,1px) * 3) var(--glow2,transparent))}
+/* The glow follows the theme: its strength comes from the text colour's lightness (light text, a dark theme: full glow;
+   dark text, a light theme: none, since a pale halo on a light page reads as a smudge). The hairline stays. Cards are
+   always dark, so faces on them glow whatever the theme (--h-glowbase). */
+@supports (color:oklch(from red l c h)){.hf svg{filter:drop-shadow(0 0 .7px rgba(3,8,16,.8)) drop-shadow(0 0 .7px rgba(3,8,16,.5))
+  drop-shadow(0 0 var(--gs,1px) oklch(from var(--h-glowbase,var(--h-fg,#fff)) 0.8 0.15 var(--gh,200) / clamp(0, (l - 0.5) * 1.45, .65)))
+  drop-shadow(0 0 calc(var(--gs,1px) * 3) oklch(from var(--h-glowbase,var(--h-fg,#fff)) 0.8 0.15 var(--gh,200) / clamp(0, (l - 0.5) * .56, .25)))}}
+.h-idcard{--h-glowbase:#fff}
 .hf[data-size=s] svg{filter:drop-shadow(0 0 .5px rgba(3,8,16,.5))}
 .pf-scan{opacity:.2}
 .hf[data-size=s] .pf-scan,.hf[data-size=m] .pf-scan{display:none}
@@ -2497,7 +2530,7 @@ function Field(props) {
     props.label && jsx('label', { htmlFor: props.id, children: props.label }),
     props.children,
     props.error && jsx('div', { className: 'h-hint h-err', id: props.id ? props.id + '-err' : undefined, role: 'alert', children: props.error }),
-    props.hint && jsx('div', { className: 'h-hint', children: props.hint })
+    props.hint && jsx('div', { className: 'h-hint', id: props.hintId, children: props.hint })
   ] })
 }
 
@@ -2545,9 +2578,12 @@ function hermesSub(p) {
   return p.display_name && p.display_name !== p.name ? p.name : ''
 }
 
+// `collapsible` (Settings): the list waits behind a "Re-import from a Hermes agent" button, since picking one is a
+// setup step; onboarding shows it open.
 function HermesPicker(props) {
   const [list, setList] = useState(null)
   const [busy, setBusy] = useState('')
+  const [open, setOpen] = useState(!props.collapsible)
   useEffect(() => {
     let live = true
     P.rest('/profiles/hermes').then(r => { if (live) setList((r && r.profiles) || []) }, () => { if (live) setList([]) })
@@ -2561,18 +2597,26 @@ function HermesPicker(props) {
     catch (e) { P.toast('error', errText(e)) }
     setBusy('')
   }
-  return jsxs('div', { className: 'h-field h-hermes', role: 'group', 'aria-label': 'Your Hermes agents', children: [
-    jsx('div', { className: 'h-label', children: 'Start from one of your Hermes agents' }),
-    jsx('div', { className: 'h-hermes-list', children: list.map(p =>
-      jsxs('button', { type: 'button', className: 'h-hermes-item', 'data-here': !!p.current, 'data-busy': busy === p.name, disabled: !!busy,
-        title: p.description || p.name, onClick: () => pick(p), children: [
-        jsxs('span', { className: 'h-hermes-top', children: [
-          jsx('b', { children: p.display_name || p.name }),
-          p.current && jsx('span', { className: 'h-chip h-hermes-here', children: 'this one' })
-        ] }),
-        hermesSub(p) && jsx('span', { className: 'h-hermes-sub', children: hermesSub(p) })
-      ] }, p.name)) }),
-    jsx('div', { className: 'h-hint', children: 'Reads that agent’s personality file (SOUL.md) and name once, and never changes it. Nothing is saved until you press Save.' })
+  // one toggle that stays mounted (focus stays on it), saying whether the list is open and which list it opens
+  const toggle = props.collapsible && jsx(K.Button, { variant: 'ghost', size: 'sm', 'aria-expanded': open, 'aria-controls': 'h-hermes-pick',
+    onClick: () => setOpen(!open), children: open ? 'Close' : 'Re-import from a Hermes agent' })
+  return jsxs('div', { className: open ? 'h-field h-hermes' : 'h-hermes-add', children: [
+    jsxs('div', { className: 'h-row', style: { justifyContent: open ? 'space-between' : 'flex-start' }, children: [
+      open && jsx('div', { className: 'h-label', id: 'h-hermes-label', children: props.collapsible ? 'Re-import from one of your Hermes agents' : 'Start from one of your Hermes agents' }),
+      toggle
+    ] }),
+    open && jsxs('div', { id: 'h-hermes-pick', className: 'h-col', role: 'group', 'aria-labelledby': 'h-hermes-label', style: { gap: 8 }, children: [
+      jsx('div', { className: 'h-hermes-list', children: list.map(p =>
+        jsxs('button', { type: 'button', className: 'h-hermes-item', 'data-here': !!p.current, 'data-busy': busy === p.name, disabled: !!busy,
+          title: p.description || p.name, onClick: () => pick(p), children: [
+          jsxs('span', { className: 'h-hermes-top', children: [
+            jsx('b', { children: p.display_name || p.name }),
+            p.current && jsx('span', { className: 'h-chip h-hermes-here', children: 'this one' })
+          ] }),
+          hermesSub(p) && jsx('span', { className: 'h-hermes-sub', children: hermesSub(p) })
+        ] }, p.name)) }),
+      jsx('div', { className: 'h-hint', children: 'Reads that agent’s personality file (SOUL.md) and name once, and never changes it. Nothing is saved until you press Save.' })
+    ] })
   ] })
 }
 
@@ -2962,6 +3006,7 @@ function AvatarCropper(props) {
 function PersonLook(props) {
   const [file, setFile] = useState(null)
   const [note, setNote] = useState('')
+  const [more, setMore] = useState(false)
   const input = useRef(null)
   const pick = e => {
     const f = e.target.files && e.target.files[0]
@@ -3003,9 +3048,14 @@ function PersonLook(props) {
       ] }),
       file && jsx(AvatarCropper, { file, onUse: used, onCancel: () => setFile(null), busy: props.busy,
         useLabel: props.stage ? 'Use this picture' : 'Use and publish' }),
-      jsxs('div', { className: 'h-hint', children: [
-        'Public and permanent: your picture goes to public Nostr relays, where anyone can see it, and relays or other apps may keep old pictures forever, even after you remove it. ',
-        'Ninsei crops it to a square, shrinks it to 256 pixels and re-encodes it on this computer, which drops EXIF details such as GPS location and camera model. The original file is never uploaded. People who turn pictures off see your avatar or initial instead.'
+      // the two facts that matter up front; how the file is handled waits behind "More"
+      jsxs('div', { className: 'h-hint h-look-public', children: [
+        jsx('span', { children: 'Public and permanent: anyone can see your photo, and relays or other apps may keep old pictures forever, even after you remove it. ' }),
+        // the summary stays (and keeps focus) when open, and says Less, so it closes the way it opened
+        jsxs('details', { className: 'h-more', onToggle: e => setMore(e.currentTarget.open), children: [
+          jsx('summary', { children: more ? 'Less' : 'More' }),
+          jsx('div', { children: 'Your picture goes to public Nostr relays. Ninsei crops it to a square, shrinks it to 256 pixels and re-encodes it on this computer, which drops EXIF details such as GPS location and camera model. The original file is never uploaded. People who turn pictures off see your avatar or initial instead.' })
+        ] })
       ] })
     ] })
   ] })
@@ -4902,6 +4952,47 @@ function limitError(v, max, unit, example) {
   return ''
 }
 
+// A daily token amount in words people can judge: "About 40 replies a day", the tokens under it, smaller.
+function capFirst(t) {
+  return t ? t[0].toUpperCase() + t.slice(1) : t
+}
+function budgetOption(n, b) {
+  return { id: n, label: jsxs('span', { className: 'h-seg-two', children: [
+    jsx('span', { children: capFirst(repliesWords(repliesFor(n, b))) }),
+    jsx('span', { className: 'h-vh', children: ', ' }),
+    jsx('span', { className: 'h-seg-sub', children: fmtTokens(n) + ' tokens' })
+  ] }) }
+}
+
+// What a missing field keeps the Create button waiting for, said next to the button (aria-describedby).
+function setupNeeds(form) {
+  const you = !form.display_name.trim(), agent = !form.agent_name.trim()
+  if (you && agent) return 'Add your name and your agent’s name to continue.'
+  if (you) return 'Add your name to continue.'
+  if (agent) return 'Add your agent’s name to continue.'
+  return ''
+}
+
+// A sticky Save bar sits over the bottom of the scroll area: whatever gets focus underneath it is scrolled up above
+// it (keyboard users never type into a hidden field), whichever element is the scroller (ours or the host's).
+function useKeepAboveBar(ref) {
+  useEffect(() => {
+    const root = ref.current
+    if (!root || !root.addEventListener) return
+    const onFocus = e => {
+      const bar = root.querySelector('.h-savebar')
+      const t = e.target
+      if (!bar || !t || bar.contains(t) || !t.getBoundingClientRect) return
+      const over = t.getBoundingClientRect().bottom - bar.getBoundingClientRect().top
+      if (over <= 0) return
+      let sc = root.parentElement
+      while (sc && !(sc.scrollHeight > sc.clientHeight && /auto|scroll/.test(getComputedStyle(sc).overflowY))) sc = sc.parentElement
+      if (sc) sc.scrollTop += over + 12
+    }
+    return P.listen(root, 'focusin', onFocus)
+  }, [])
+}
+
 function Onboarding(props) {
   const store = props.store
   const snap = props.snap
@@ -4920,6 +5011,7 @@ function Onboarding(props) {
   const [pick, setPick] = useState({ flags: [], truncated: false, open: false })   // page-only: never posted
   const set = patch => setForm(Object.assign({}, form, patch))
   const ready = form.display_name.trim() && form.agent_name.trim()
+  const needs = setupNeeds(form)
   const agentPk = snap.me && snap.me.agent && snap.me.agent.pk
 
   const save = async () => {
@@ -4945,9 +5037,9 @@ function Onboarding(props) {
     jsx(HermesPicker, { onPick: p => applyProposal(p, set, setPick) }),
     jsxs('div', { className: 'h-two', children: [
       jsx(Field, { label: 'Your name', id: 'h-on-name', children: jsx(K.Input, { id: 'h-on-name', value: form.display_name, maxLength: 32,
-        placeholder: 'Maya', autoFocus: true, onChange: e => set({ display_name: e.target.value }) }) }),
+        placeholder: 'Rowan', autoFocus: true, onChange: e => set({ display_name: e.target.value }) }) }),
       jsx(Field, { label: "Your agent's name", id: 'h-on-agent', children: jsx(K.Input, { id: 'h-on-agent', value: form.agent_name, maxLength: 32,
-        placeholder: 'Ada', onChange: e => set({ agent_name: e.target.value }) }) })
+        placeholder: 'Pixel', onChange: e => set({ agent_name: e.target.value }) }) })
     ] }),
     jsx(Field, { label: 'Its vibe, in one line', id: 'h-on-vibe', hint: 'This short line is public: your agent brings it into rooms and can repeat it there, so keep it free of anything private. It never sees your files or chats.',
       children: jsxs('div', { className: 'h-col', style: { gap: 8 }, children: [
@@ -4956,25 +5048,32 @@ function Onboarding(props) {
         jsx(VibePresets, { value: form.vibe, onPick: vibe => set({ vibe }) })
       ] }) }),
     jsx(PersonaField, { id: 'h-on-persona', value: form.persona, source: form.persona_source, pick, setPick, onChange: set }),
-    jsx(Field, { label: 'Its face', children: jsxs('div', { className: 'h-col', style: { gap: 14 }, children: [
-      jsx('div', { style: { maxWidth: 380 }, children: jsx(IdCard, { kind: 'agent', name: form.agent_name || 'Your agent', pk: agentPk, face: form.face,
-        fields: [['Owner', form.display_name || 'You'], ['Status', 'New']] }) }),
-      jsx(FacePicker, { value: form.face, pk: agentPk, name: form.agent_name, onChange: face => set({ face }) })
-    ] }) }),
-    jsx(Field, { label: 'How you look (optional)', children: jsx(PersonLook, { id: 'h-on-look', pk: snap.me && snap.me.pk, name: form.display_name, stage: true,
-      avatar: form.person_avatar, onAvatar: person_avatar => set({ person_avatar }),
-      face: form.person_face, onFace: person_face => set({ person_face }), staged: form.avatar, hasPicture: !!form.avatar,
-      art: { avatar: form.person_avatar || undefined, face: form.person_face || undefined },
-      onPicture: avatar => set({ avatar }) }) }),
+    // the card updates as you type; changing faces and pictures is optional, so it waits behind "Customize"
+    jsx(Field, { label: 'Your agent’s card', children: jsx('div', { style: { maxWidth: 380 }, children: jsx(IdCard, { kind: 'agent', name: form.agent_name || 'Your agent', pk: agentPk, face: form.face,
+      fields: [['Owner', form.display_name || 'You'], ['Status', 'New']] }) }) }),
+    jsxs('details', { className: 'h-custom', children: [
+      jsxs('summary', { children: [jsx('span', { children: 'Customize' }), jsx('span', { className: 'h-faint h-small', children: 'its face, your portrait or photo (optional)' })] }),
+      jsxs('div', { className: 'h-col', style: { gap: 18, paddingTop: 12 }, children: [
+        jsx(Field, { label: 'Its face', children: jsx(FacePicker, { value: form.face, pk: agentPk, name: form.agent_name, onChange: face => set({ face }) }) }),
+        jsx(Field, { label: 'How you look', children: jsx(PersonLook, { id: 'h-on-look', pk: snap.me && snap.me.pk, name: form.display_name, stage: true,
+          avatar: form.person_avatar, onAvatar: person_avatar => set({ person_avatar }),
+          face: form.person_face, onFace: person_face => set({ person_face }), staged: form.avatar, hasPicture: !!form.avatar,
+          art: { avatar: form.person_avatar || undefined, face: form.person_face || undefined },
+          onPicture: avatar => set({ avatar }) }) })
+      ] })
+    ] }),
     jsx(Field, { label: 'What are you into?', id: 'h-on-int', hint: 'Used to find rooms and people. Your interest card is published only if you choose to in the Lobby.',
       children: jsx(InterestInput, { id: 'h-on-int', value: form.interests, onChange: interests => set({ interests }) }) }),
     jsx(Field, { label: 'Daily budget for room chatter', hint: 'Reserved before every model call, settled after. At the limit your agent rests until tomorrow.',
       children: jsx(Seg, { label: 'Daily budget', value: form.budget_daily, onChange: v => set({ budget_daily: v }),
-        options: BUDGET_PRESETS.map(n => ({ id: n, label: fmtTokens(n) + ' tokens' })) }) }),
+        options: BUDGET_PRESETS.map(n => budgetOption(n, snap.budget)) }) }),
     jsx(Notice, { icon: 'globe', children: 'Finishing setup puts you and ' + (form.agent_name.trim() || 'your agent') +
       ' in Commons, a public room where everyone starts. Your names are signed and posted to public Nostr relays, and anyone can read them. You can leave Commons any time.' }),
-    jsx('div', { className: 'h-actions', style: { justifyContent: 'flex-end' }, children:
-      jsx(K.Button, { variant: 'primary', disabled: !ready || busy, onClick: save, children: busy ? 'Saving…' : 'Bring ' + (form.agent_name.trim() || 'my agent') + ' in' }) })
+    jsxs('div', { className: 'h-actions', style: { justifyContent: 'flex-end' }, children: [
+      needs && jsx('span', { id: 'h-on-need', className: 'h-faint h-small', children: needs }),
+      jsx(K.Button, { variant: 'primary', disabled: !ready || busy, onClick: save, 'aria-describedby': needs ? 'h-on-need' : undefined,
+        children: busy ? 'Saving…' : 'Bring ' + (form.agent_name.trim() || 'my agent') + ' in' })
+    ] })
   ] }) })
 }
 
@@ -5007,6 +5106,8 @@ function SettingsForm(props) {
   // An empty relay list means offline, so saving one takes a second press that says so.
   const [confirmOffline, setConfirmOffline] = useState(false)
   useFaceEditorFocus()
+  const root = useRef(null)
+  useKeepAboveBar(root)
   const set = patch => {
     setForm(Object.assign({}, form, patch))
     if ('relays' in patch) setConfirmOffline(false)
@@ -5046,10 +5147,21 @@ function SettingsForm(props) {
   const relayState = {}
   for (const r of snap.relays || []) relayState[r.url] = r
 
-  return jsxs('div', { className: 'hx h-pane', style: { padding: props.inset ? '4px 0 24px' : undefined }, children: [
+  // what the typed limit buys, in replies: at the agent's recent average reply, and never past the message limit
+  const limitTokens = parseCount(form.budget_daily)
+  const perReply = (snap.budget && snap.budget.reply_tokens) || REPLY_TOKENS_GUESS
+  const limitReplies = limitTokens == null ? null : repliesFor(limitTokens, snap.budget)
+  const msgsCap = parseCount(form.msgs_daily)
+  // a preset already says its replies; a typed number gets them here
+  const per = 'at ' + fmtTokens(perReply) + ' tokens a reply (' + (snap.budget && snap.budget.reply_tokens ? 'your agent’s recent average' : 'a typical reply') + ')'
+  const budgetHint = limitReplies == null ? undefined
+    : (BUDGET_PRESETS.includes(limitTokens) ? capFirst(per) : capFirst(repliesWords(limitReplies)) + ', ' + per) +
+      (msgsCap != null && msgsCap < limitReplies ? '. The message limit below stops it at ' + msgsCap + ' replies first.' : '.')
+
+  return jsxs('div', { className: 'hx h-pane h-settings', ref: root, style: { padding: props.inset ? '4px 0 24px' : undefined }, children: [
     jsxs('section', { className: 'h-col', style: { gap: 14 }, children: [
       jsx('div', { className: 'h-sec', children: 'Your agent' }),
-      jsx(HermesPicker, { onPick: p => applyProposal(p, set, setPick) }),
+      jsx(HermesPicker, { collapsible: true, onPick: p => applyProposal(p, set, setPick) }),
       jsxs('div', { className: 'h-two', children: [
         jsx(Field, { label: 'Name', id: 'h-s-agent', children: jsx(K.Input, { id: 'h-s-agent', value: form.agent_name, maxLength: 32, onChange: e => set({ agent_name: e.target.value }) }) }),
         jsx(Field, { label: 'Vibe', id: 'h-s-vibe', children: jsx(K.Input, { id: 'h-s-vibe', value: form.vibe, maxLength: 200, onChange: e => set({ vibe: e.target.value }) }) })
@@ -5084,7 +5196,8 @@ function SettingsForm(props) {
       jsxs('div', { className: 'h-row', style: { gap: 12 }, children: [
         jsx(BudgetRing, { budget: snap.budget, size: 36, stroke: 3.5 }),
         jsxs('div', { className: 'h-grow', children: [
-          jsx('div', { children: fmtTokens(snap.budget.used) + ' of ' + fmtTokens(snap.budget.limit) + ' tokens used today' }),
+          jsx('div', { children: fmtTokens(snap.budget.used) + ' of ' + fmtTokens(snap.budget.limit) + ' tokens used today' +
+            (repliesLeftWords(snap.budget) ? ' · ' + repliesLeftWords(snap.budget) : '') }),
           jsx('div', { className: 'h-faint h-small', children: Object.keys(snap.budget.by || {}).map(k => k + ' ' + fmtTokens(snap.budget.by[k])).join(' · ') || 'Nothing spent yet' }),
           othersLine(snap.budget) && jsx('div', { className: 'h-faint h-small', children: othersLine(snap.budget) }),
           snap.budget.msgs && jsx('div', { className: 'h-faint h-small', children: snap.budget.msgs.used + ' of ' + snap.budget.msgs.limit + ' messages said today' })
@@ -5094,11 +5207,15 @@ function SettingsForm(props) {
       jsx(Field, { label: 'Others can use', hint: 'The most of the daily budget, and of the message limit, that people other than you can use by talking to your agent. It halves while you are away, and you always keep the rest.',
         children: jsx(Seg, { label: 'Others can use', value: s.stranger_share == null ? 0.5 : s.stranger_share, onChange: v => now({ stranger_share: v }),
           options: [{ id: 0.25, label: 'A quarter' }, { id: 0.5, label: 'Half' }, { id: 0.75, label: 'Three quarters' }] }) }),
-      jsx(Field, { label: 'Daily limit (tokens)', id: 'h-s-budget', error: budgetErr, children: jsxs('div', { className: 'h-row', children: [
+      jsx(Field, { label: 'Daily limit', id: 'h-s-budget', error: budgetErr, hint: budgetErr ? undefined : budgetHint, hintId: 'h-s-budget-hint',
+        children: jsxs('div', { className: 'h-row', style: { flexWrap: 'wrap' }, children: [
         jsx(Seg, { label: 'Budget presets', value: Number(form.budget_daily), onChange: v => set({ budget_daily: v }),
-          options: BUDGET_PRESETS.map(n => ({ id: n, label: fmtTokens(n) })) }),
-        jsx(K.Input, { id: 'h-s-budget', type: 'number', min: 0, step: 1000, value: form.budget_daily, style: { width: 120 },
-          'aria-invalid': budgetErr ? true : undefined, 'aria-describedby': budgetErr ? 'h-s-budget-err' : undefined, onChange: e => set({ budget_daily: e.target.value }) })
+          options: BUDGET_PRESETS.map(n => budgetOption(n, snap.budget)) }),
+        jsxs('span', { className: 'h-row', style: { gap: 6 }, children: [
+          jsx(K.Input, { id: 'h-s-budget', type: 'number', min: 0, step: 1000, value: form.budget_daily, style: { width: 120 }, 'aria-label': 'Daily limit in tokens',
+            'aria-invalid': budgetErr ? true : undefined, 'aria-describedby': budgetErr ? 'h-s-budget-err' : 'h-s-budget-hint', onChange: e => set({ budget_daily: e.target.value }) }),
+          jsx('span', { className: 'h-faint h-small', 'aria-hidden': true, children: 'tokens' })
+        ] })
       ] }) }),
       jsx(Field, { label: 'Daily limit (messages)', id: 'h-s-msgs', error: msgsErr,
         hint: 'How many messages your agent may say in rooms each day, across all rooms. At the limit it rests until tomorrow, even with tokens left.',
@@ -8593,8 +8710,11 @@ function NewRoomDialog(props) {
   return jsx(Modal, { open: true, onClose: props.onClose, title: 'New room',
     description: 'Rooms are public: they are listed in the Lobby under their interests, and anyone with the code can join.',
     footer: [
+      // the footer says why Create waits, next to it (and tied to it for screen readers)
+      !name.trim() && jsx('span', { id: 'h-nr-need', className: 'h-faint h-small', children: 'Name the room to create it.' }, 'n'),
       jsx(K.Button, { variant: 'ghost', onClick: props.onClose, children: 'Cancel' }, 'c'),
-      jsx(K.Button, { variant: 'primary', disabled: busy || !name.trim(), onClick: create, children: busy ? 'Creating…' : 'Create room' }, 'k')
+      jsx(K.Button, { variant: 'primary', disabled: busy || !name.trim(), onClick: create, 'aria-describedby': name.trim() ? undefined : 'h-nr-need',
+        children: busy ? 'Creating…' : 'Create room' }, 'k')
     ],
     children: jsxs('div', { className: 'h-col', style: { gap: 12 }, children: [
       jsx(Field, { label: 'Name', id: 'h-nr-name', children: jsx(K.Input, { id: 'h-nr-name', value: name, maxLength: 40, autoFocus: true, placeholder: 'shader club', onChange: e => setName(e.target.value) }) }),
@@ -8619,11 +8739,13 @@ function JoinDialog(props) {
   }
   return jsx(Modal, { open: true, onClose: props.onClose, title: 'Join by code', description: 'Paste a code like ninsei:203f22bcfd1b4b2f, or a link to a message in a room.',
     footer: [
+      !code.trim() && jsx('span', { id: 'h-jn-need', className: 'h-faint h-small', children: 'Paste a code to join.' }, 'n'),
       jsx(K.Button, { variant: 'ghost', onClick: props.onClose, children: 'Cancel' }, 'c'),
-      jsx(K.Button, { variant: 'primary', disabled: busy || !code.trim(), onClick: join, children: busy ? 'Joining…' : 'Join' }, 'j')
+      jsx(K.Button, { variant: 'primary', disabled: busy || !code.trim(), onClick: join, 'aria-describedby': code.trim() ? undefined : 'h-jn-need',
+        children: busy ? 'Joining…' : 'Join' }, 'j')
     ],
     children: jsx(K.Input, { value: code, autoFocus: true, placeholder: 'ninsei:…', 'aria-label': 'Room code', onChange: e => setCode(e.target.value),
-      onKeyDown: e => { if (e.key === 'Enter') join() } }) })
+      onKeyDown: e => { if (e.key === 'Enter' && code.trim() && !busy) join() } }) })
 }
 
 // ---- Desktop status bar chip ------------------------------------------------------------------
@@ -8759,13 +8881,18 @@ function StatusChip(props) {
       destructive: variant === 'danger' }, rest, { children }))
   }
 
+  // The SDK's DialogTitle is `font-expanded uppercase` and its DialogDescription `font-mondwest`, a serif display face;
+  // Ninsei's dialogs keep the page's own type (inline, so it wins over the theme's classes without naming its markup).
+  const DIALOG_TITLE = { fontFamily: 'inherit', textTransform: 'none', letterSpacing: 'normal', fontSize: 15, fontWeight: 600 }
+  const DIALOG_DESC = { fontFamily: 'inherit', fontSize: 12.5, lineHeight: 1.45 }
   function Dialog(props) {
     return jsx(C.Dialog, { open: !!props.open, onOpenChange: v => { if (!v) props.onClose() }, children:
       jsx(C.DialogContent, { style: props.wide ? { maxWidth: 680, width: 'calc(100vw - 32px)' } : { width: 'calc(100vw - 32px)', maxWidth: 460 },
         children: jsxs('div', { className: 'hx h-col', 'data-ninsei-view': '', style: { gap: 14, padding: 20 }, children: [
-          jsxs(C.DialogHeader, { style: { padding: 0 }, children: [
-            jsx(C.DialogTitle, { children: props.title }),
-            props.description && jsx(C.DialogDescription, { children: props.description })
+          // the theme's header has a bottom rule (border-b); padding below the text keeps the rule off the description
+          jsxs(C.DialogHeader, { style: { padding: '0 0 12px' }, children: [
+            jsx(C.DialogTitle, { style: DIALOG_TITLE, children: props.title }),
+            props.description && jsx(C.DialogDescription, { style: DIALOG_DESC, children: props.description })
           ] }),
           props.children,
           props.footer && jsx('div', { className: 'h-actions', style: { justifyContent: 'flex-end' }, children: props.footer })

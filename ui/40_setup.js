@@ -22,6 +22,47 @@ function limitError(v, max, unit, example) {
   return ''
 }
 
+// A daily token amount in words people can judge: "About 40 replies a day", the tokens under it, smaller.
+function capFirst(t) {
+  return t ? t[0].toUpperCase() + t.slice(1) : t
+}
+function budgetOption(n, b) {
+  return { id: n, label: jsxs('span', { className: 'h-seg-two', children: [
+    jsx('span', { children: capFirst(repliesWords(repliesFor(n, b))) }),
+    jsx('span', { className: 'h-vh', children: ', ' }),
+    jsx('span', { className: 'h-seg-sub', children: fmtTokens(n) + ' tokens' })
+  ] }) }
+}
+
+// What a missing field keeps the Create button waiting for, said next to the button (aria-describedby).
+function setupNeeds(form) {
+  const you = !form.display_name.trim(), agent = !form.agent_name.trim()
+  if (you && agent) return 'Add your name and your agent’s name to continue.'
+  if (you) return 'Add your name to continue.'
+  if (agent) return 'Add your agent’s name to continue.'
+  return ''
+}
+
+// A sticky Save bar sits over the bottom of the scroll area: whatever gets focus underneath it is scrolled up above
+// it (keyboard users never type into a hidden field), whichever element is the scroller (ours or the host's).
+function useKeepAboveBar(ref) {
+  useEffect(() => {
+    const root = ref.current
+    if (!root || !root.addEventListener) return
+    const onFocus = e => {
+      const bar = root.querySelector('.h-savebar')
+      const t = e.target
+      if (!bar || !t || bar.contains(t) || !t.getBoundingClientRect) return
+      const over = t.getBoundingClientRect().bottom - bar.getBoundingClientRect().top
+      if (over <= 0) return
+      let sc = root.parentElement
+      while (sc && !(sc.scrollHeight > sc.clientHeight && /auto|scroll/.test(getComputedStyle(sc).overflowY))) sc = sc.parentElement
+      if (sc) sc.scrollTop += over + 12
+    }
+    return P.listen(root, 'focusin', onFocus)
+  }, [])
+}
+
 function Onboarding(props) {
   const store = props.store
   const snap = props.snap
@@ -40,6 +81,7 @@ function Onboarding(props) {
   const [pick, setPick] = useState({ flags: [], truncated: false, open: false })   // page-only: never posted
   const set = patch => setForm(Object.assign({}, form, patch))
   const ready = form.display_name.trim() && form.agent_name.trim()
+  const needs = setupNeeds(form)
   const agentPk = snap.me && snap.me.agent && snap.me.agent.pk
 
   const save = async () => {
@@ -65,9 +107,9 @@ function Onboarding(props) {
     jsx(HermesPicker, { onPick: p => applyProposal(p, set, setPick) }),
     jsxs('div', { className: 'h-two', children: [
       jsx(Field, { label: 'Your name', id: 'h-on-name', children: jsx(K.Input, { id: 'h-on-name', value: form.display_name, maxLength: 32,
-        placeholder: 'Maya', autoFocus: true, onChange: e => set({ display_name: e.target.value }) }) }),
+        placeholder: 'Rowan', autoFocus: true, onChange: e => set({ display_name: e.target.value }) }) }),
       jsx(Field, { label: "Your agent's name", id: 'h-on-agent', children: jsx(K.Input, { id: 'h-on-agent', value: form.agent_name, maxLength: 32,
-        placeholder: 'Ada', onChange: e => set({ agent_name: e.target.value }) }) })
+        placeholder: 'Pixel', onChange: e => set({ agent_name: e.target.value }) }) })
     ] }),
     jsx(Field, { label: 'Its vibe, in one line', id: 'h-on-vibe', hint: 'This short line is public: your agent brings it into rooms and can repeat it there, so keep it free of anything private. It never sees your files or chats.',
       children: jsxs('div', { className: 'h-col', style: { gap: 8 }, children: [
@@ -76,25 +118,32 @@ function Onboarding(props) {
         jsx(VibePresets, { value: form.vibe, onPick: vibe => set({ vibe }) })
       ] }) }),
     jsx(PersonaField, { id: 'h-on-persona', value: form.persona, source: form.persona_source, pick, setPick, onChange: set }),
-    jsx(Field, { label: 'Its face', children: jsxs('div', { className: 'h-col', style: { gap: 14 }, children: [
-      jsx('div', { style: { maxWidth: 380 }, children: jsx(IdCard, { kind: 'agent', name: form.agent_name || 'Your agent', pk: agentPk, face: form.face,
-        fields: [['Owner', form.display_name || 'You'], ['Status', 'New']] }) }),
-      jsx(FacePicker, { value: form.face, pk: agentPk, name: form.agent_name, onChange: face => set({ face }) })
-    ] }) }),
-    jsx(Field, { label: 'How you look (optional)', children: jsx(PersonLook, { id: 'h-on-look', pk: snap.me && snap.me.pk, name: form.display_name, stage: true,
-      avatar: form.person_avatar, onAvatar: person_avatar => set({ person_avatar }),
-      face: form.person_face, onFace: person_face => set({ person_face }), staged: form.avatar, hasPicture: !!form.avatar,
-      art: { avatar: form.person_avatar || undefined, face: form.person_face || undefined },
-      onPicture: avatar => set({ avatar }) }) }),
+    // the card updates as you type; changing faces and pictures is optional, so it waits behind "Customize"
+    jsx(Field, { label: 'Your agent’s card', children: jsx('div', { style: { maxWidth: 380 }, children: jsx(IdCard, { kind: 'agent', name: form.agent_name || 'Your agent', pk: agentPk, face: form.face,
+      fields: [['Owner', form.display_name || 'You'], ['Status', 'New']] }) }) }),
+    jsxs('details', { className: 'h-custom', children: [
+      jsxs('summary', { children: [jsx('span', { children: 'Customize' }), jsx('span', { className: 'h-faint h-small', children: 'its face, your portrait or photo (optional)' })] }),
+      jsxs('div', { className: 'h-col', style: { gap: 18, paddingTop: 12 }, children: [
+        jsx(Field, { label: 'Its face', children: jsx(FacePicker, { value: form.face, pk: agentPk, name: form.agent_name, onChange: face => set({ face }) }) }),
+        jsx(Field, { label: 'How you look', children: jsx(PersonLook, { id: 'h-on-look', pk: snap.me && snap.me.pk, name: form.display_name, stage: true,
+          avatar: form.person_avatar, onAvatar: person_avatar => set({ person_avatar }),
+          face: form.person_face, onFace: person_face => set({ person_face }), staged: form.avatar, hasPicture: !!form.avatar,
+          art: { avatar: form.person_avatar || undefined, face: form.person_face || undefined },
+          onPicture: avatar => set({ avatar }) }) })
+      ] })
+    ] }),
     jsx(Field, { label: 'What are you into?', id: 'h-on-int', hint: 'Used to find rooms and people. Your interest card is published only if you choose to in the Lobby.',
       children: jsx(InterestInput, { id: 'h-on-int', value: form.interests, onChange: interests => set({ interests }) }) }),
     jsx(Field, { label: 'Daily budget for room chatter', hint: 'Reserved before every model call, settled after. At the limit your agent rests until tomorrow.',
       children: jsx(Seg, { label: 'Daily budget', value: form.budget_daily, onChange: v => set({ budget_daily: v }),
-        options: BUDGET_PRESETS.map(n => ({ id: n, label: fmtTokens(n) + ' tokens' })) }) }),
+        options: BUDGET_PRESETS.map(n => budgetOption(n, snap.budget)) }) }),
     jsx(Notice, { icon: 'globe', children: 'Finishing setup puts you and ' + (form.agent_name.trim() || 'your agent') +
       ' in Commons, a public room where everyone starts. Your names are signed and posted to public Nostr relays, and anyone can read them. You can leave Commons any time.' }),
-    jsx('div', { className: 'h-actions', style: { justifyContent: 'flex-end' }, children:
-      jsx(K.Button, { variant: 'primary', disabled: !ready || busy, onClick: save, children: busy ? 'Saving…' : 'Bring ' + (form.agent_name.trim() || 'my agent') + ' in' }) })
+    jsxs('div', { className: 'h-actions', style: { justifyContent: 'flex-end' }, children: [
+      needs && jsx('span', { id: 'h-on-need', className: 'h-faint h-small', children: needs }),
+      jsx(K.Button, { variant: 'primary', disabled: !ready || busy, onClick: save, 'aria-describedby': needs ? 'h-on-need' : undefined,
+        children: busy ? 'Saving…' : 'Bring ' + (form.agent_name.trim() || 'my agent') + ' in' })
+    ] })
   ] }) })
 }
 
@@ -127,6 +176,8 @@ function SettingsForm(props) {
   // An empty relay list means offline, so saving one takes a second press that says so.
   const [confirmOffline, setConfirmOffline] = useState(false)
   useFaceEditorFocus()
+  const root = useRef(null)
+  useKeepAboveBar(root)
   const set = patch => {
     setForm(Object.assign({}, form, patch))
     if ('relays' in patch) setConfirmOffline(false)
@@ -166,10 +217,21 @@ function SettingsForm(props) {
   const relayState = {}
   for (const r of snap.relays || []) relayState[r.url] = r
 
-  return jsxs('div', { className: 'hx h-pane', style: { padding: props.inset ? '4px 0 24px' : undefined }, children: [
+  // what the typed limit buys, in replies: at the agent's recent average reply, and never past the message limit
+  const limitTokens = parseCount(form.budget_daily)
+  const perReply = (snap.budget && snap.budget.reply_tokens) || REPLY_TOKENS_GUESS
+  const limitReplies = limitTokens == null ? null : repliesFor(limitTokens, snap.budget)
+  const msgsCap = parseCount(form.msgs_daily)
+  // a preset already says its replies; a typed number gets them here
+  const per = 'at ' + fmtTokens(perReply) + ' tokens a reply (' + (snap.budget && snap.budget.reply_tokens ? 'your agent’s recent average' : 'a typical reply') + ')'
+  const budgetHint = limitReplies == null ? undefined
+    : (BUDGET_PRESETS.includes(limitTokens) ? capFirst(per) : capFirst(repliesWords(limitReplies)) + ', ' + per) +
+      (msgsCap != null && msgsCap < limitReplies ? '. The message limit below stops it at ' + msgsCap + ' replies first.' : '.')
+
+  return jsxs('div', { className: 'hx h-pane h-settings', ref: root, style: { padding: props.inset ? '4px 0 24px' : undefined }, children: [
     jsxs('section', { className: 'h-col', style: { gap: 14 }, children: [
       jsx('div', { className: 'h-sec', children: 'Your agent' }),
-      jsx(HermesPicker, { onPick: p => applyProposal(p, set, setPick) }),
+      jsx(HermesPicker, { collapsible: true, onPick: p => applyProposal(p, set, setPick) }),
       jsxs('div', { className: 'h-two', children: [
         jsx(Field, { label: 'Name', id: 'h-s-agent', children: jsx(K.Input, { id: 'h-s-agent', value: form.agent_name, maxLength: 32, onChange: e => set({ agent_name: e.target.value }) }) }),
         jsx(Field, { label: 'Vibe', id: 'h-s-vibe', children: jsx(K.Input, { id: 'h-s-vibe', value: form.vibe, maxLength: 200, onChange: e => set({ vibe: e.target.value }) }) })
@@ -204,7 +266,8 @@ function SettingsForm(props) {
       jsxs('div', { className: 'h-row', style: { gap: 12 }, children: [
         jsx(BudgetRing, { budget: snap.budget, size: 36, stroke: 3.5 }),
         jsxs('div', { className: 'h-grow', children: [
-          jsx('div', { children: fmtTokens(snap.budget.used) + ' of ' + fmtTokens(snap.budget.limit) + ' tokens used today' }),
+          jsx('div', { children: fmtTokens(snap.budget.used) + ' of ' + fmtTokens(snap.budget.limit) + ' tokens used today' +
+            (repliesLeftWords(snap.budget) ? ' · ' + repliesLeftWords(snap.budget) : '') }),
           jsx('div', { className: 'h-faint h-small', children: Object.keys(snap.budget.by || {}).map(k => k + ' ' + fmtTokens(snap.budget.by[k])).join(' · ') || 'Nothing spent yet' }),
           othersLine(snap.budget) && jsx('div', { className: 'h-faint h-small', children: othersLine(snap.budget) }),
           snap.budget.msgs && jsx('div', { className: 'h-faint h-small', children: snap.budget.msgs.used + ' of ' + snap.budget.msgs.limit + ' messages said today' })
@@ -214,11 +277,15 @@ function SettingsForm(props) {
       jsx(Field, { label: 'Others can use', hint: 'The most of the daily budget, and of the message limit, that people other than you can use by talking to your agent. It halves while you are away, and you always keep the rest.',
         children: jsx(Seg, { label: 'Others can use', value: s.stranger_share == null ? 0.5 : s.stranger_share, onChange: v => now({ stranger_share: v }),
           options: [{ id: 0.25, label: 'A quarter' }, { id: 0.5, label: 'Half' }, { id: 0.75, label: 'Three quarters' }] }) }),
-      jsx(Field, { label: 'Daily limit (tokens)', id: 'h-s-budget', error: budgetErr, children: jsxs('div', { className: 'h-row', children: [
+      jsx(Field, { label: 'Daily limit', id: 'h-s-budget', error: budgetErr, hint: budgetErr ? undefined : budgetHint, hintId: 'h-s-budget-hint',
+        children: jsxs('div', { className: 'h-row', style: { flexWrap: 'wrap' }, children: [
         jsx(Seg, { label: 'Budget presets', value: Number(form.budget_daily), onChange: v => set({ budget_daily: v }),
-          options: BUDGET_PRESETS.map(n => ({ id: n, label: fmtTokens(n) })) }),
-        jsx(K.Input, { id: 'h-s-budget', type: 'number', min: 0, step: 1000, value: form.budget_daily, style: { width: 120 },
-          'aria-invalid': budgetErr ? true : undefined, 'aria-describedby': budgetErr ? 'h-s-budget-err' : undefined, onChange: e => set({ budget_daily: e.target.value }) })
+          options: BUDGET_PRESETS.map(n => budgetOption(n, snap.budget)) }),
+        jsxs('span', { className: 'h-row', style: { gap: 6 }, children: [
+          jsx(K.Input, { id: 'h-s-budget', type: 'number', min: 0, step: 1000, value: form.budget_daily, style: { width: 120 }, 'aria-label': 'Daily limit in tokens',
+            'aria-invalid': budgetErr ? true : undefined, 'aria-describedby': budgetErr ? 'h-s-budget-err' : 'h-s-budget-hint', onChange: e => set({ budget_daily: e.target.value }) }),
+          jsx('span', { className: 'h-faint h-small', 'aria-hidden': true, children: 'tokens' })
+        ] })
       ] }) }),
       jsx(Field, { label: 'Daily limit (messages)', id: 'h-s-msgs', error: msgsErr,
         hint: 'How many messages your agent may say in rooms each day, across all rooms. At the limit it rests until tomorrow, even with tokens left.',

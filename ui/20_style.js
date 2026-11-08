@@ -339,6 +339,23 @@ button.h-link{background:none;border:0;padding:0;font:inherit;cursor:pointer;tex
 .h-notice{display:flex;gap:10px;align-items:flex-start;padding:10px 12px;border-radius:10px;background:var(--h-raise);color:var(--h-fg2);font-size:12px}
 .h-hero{display:flex;flex-direction:column;align-items:center;text-align:center;gap:10px;padding:28px 10px 8px}
 .h-savebar{justify-content:flex-end;position:sticky;bottom:0;padding:10px 0;background:var(--h-bg);border-top:1px solid var(--h-line)}
+/* the sticky Save bar: scrolling to a field (focus, find, a jump) stops above it, and a field focused under it is moved
+   up (useKeepAboveBar, which also covers a host page that does the scrolling) */
+.h-scroll:has(.h-savebar){scroll-padding-bottom:72px}
+/* onboarding's optional "Customize" and a "More" behind a short hint */
+.h-custom{border:1px solid var(--h-line2);border-radius:10px;padding:10px 12px}
+.h-custom>summary{cursor:pointer;display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;font-weight:600;color:var(--h-fg2);font-size:12.5px;list-style:none}
+.h-custom>summary::-webkit-details-marker,.h-more>summary::-webkit-details-marker{display:none}
+.h-custom>summary::before{content:'\\25B8';color:var(--h-fg3);display:inline-block;width:1em;transition:transform .15s}
+.h-custom[open]>summary::before{transform:rotate(90deg)}
+.h-custom>summary:focus-visible,.h-more>summary:focus-visible{outline:2px solid var(--h-accent);outline-offset:2px;border-radius:4px}
+.h-more{display:inline}
+.h-more>summary{display:inline;cursor:pointer;color:var(--h-fg2);text-decoration:underline;text-decoration-color:var(--h-fg4);text-underline-offset:2px;list-style:none}
+.h-more[open]{display:block;margin-top:4px}
+@media (prefers-reduced-motion: reduce){.h-custom>summary::before{transition:none}}
+/* a preset that says what it buys, its tokens under it */
+.h-seg-two{display:inline-flex;flex-direction:column;align-items:center;line-height:1.25}
+.h-seg-sub{font-size:10.5px;color:var(--h-fg3)}
 .h-relay{display:flex;align-items:center;gap:8px;font-size:12px;padding:3px 0}
 .h-empty{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;padding:48px 20px;text-align:center;color:var(--h-fg2);flex:1}
 
@@ -351,6 +368,13 @@ button.h-link{background:none;border:0;padding:0;font:inherit;cursor:pointer;tex
    default, so with no animation (reduced motion, a still face) the face simply rests. */
 .hf{display:inline-grid;place-items:center;flex:none;transform-origin:50% 60%}
 .hf svg{overflow:visible;filter:drop-shadow(0 0 .7px rgba(3,8,16,.8)) drop-shadow(0 0 .7px rgba(3,8,16,.5)) drop-shadow(0 0 var(--gs,1px) var(--glow,transparent)) drop-shadow(0 0 calc(var(--gs,1px) * 3) var(--glow2,transparent))}
+/* The glow follows the theme: its strength comes from the text colour's lightness (light text, a dark theme: full glow;
+   dark text, a light theme: none, since a pale halo on a light page reads as a smudge). The hairline stays. Cards are
+   always dark, so faces on them glow whatever the theme (--h-glowbase). */
+@supports (color:oklch(from red l c h)){.hf svg{filter:drop-shadow(0 0 .7px rgba(3,8,16,.8)) drop-shadow(0 0 .7px rgba(3,8,16,.5))
+  drop-shadow(0 0 var(--gs,1px) oklch(from var(--h-glowbase,var(--h-fg,#fff)) 0.8 0.15 var(--gh,200) / clamp(0, (l - 0.5) * 1.45, .65)))
+  drop-shadow(0 0 calc(var(--gs,1px) * 3) oklch(from var(--h-glowbase,var(--h-fg,#fff)) 0.8 0.15 var(--gh,200) / clamp(0, (l - 0.5) * .56, .25)))}}
+.h-idcard{--h-glowbase:#fff}
 .hf[data-size=s] svg{filter:drop-shadow(0 0 .5px rgba(3,8,16,.5))}
 .pf-scan{opacity:.2}
 .hf[data-size=s] .pf-scan,.hf[data-size=m] .pf-scan{display:none}
