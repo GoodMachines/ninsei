@@ -17,6 +17,7 @@ from ninsei_engine import game, nip44, nostr
 from ninsei_engine.engine import (KIND_LIVE, FAKE_SEALED_BYTES, SEALED_CHARS, Engine, _claim_token, open_fake,
                                   open_vote, seal_fake, seal_vote)
 from test_engine import StubLLM, wait_for
+from start_helpers import started
 from test_hostile import ROOM, FakePool, Key, bare, settle  # noqa: F401  (fixture re-export)
 
 VECTORS = json.loads((Path(__file__).parent / "data" / "nip44_vectors.json").read_text())["v2"]
@@ -346,7 +347,7 @@ async def test_a_hosted_tall_tales_round_is_secret_until_the_reveal(bare, monkey
     monkeypatch.setattr(game, "FAKE_SECONDS", 2400)  # phases end when every present player is in
     monkeypatch.setattr(game, "VOTE_SECONDS", 2400)
     host, sam, eve = await _three(bare)
-    gid = (await host.start_tales(ROOM, 1))["gid"]
+    gid = (await started(host, ROOM, 1))["gid"]
     assert await wait_for(lambda: (sam.game_view(ROOM) or {}).get("phase") == "fakes")
     await sam.submit_fake(ROOM, gid, 1, "seven")
     await host.submit_fake(ROOM, gid, 1, "Bo hearts")  # the same as Bo's: one option, two writers
@@ -382,7 +383,7 @@ async def test_a_lucky_match_reads_as_your_own_answer_and_cant_be_voted_for(bare
     monkeypatch.setattr(game, "FAKE_SECONDS", 2400)
     monkeypatch.setattr(game, "VOTE_SECONDS", 2400)
     host, sam, eve = await _three(bare)
-    gid = (await host.start_tales(ROOM, 1))["gid"]
+    gid = (await started(host, ROOM, 1))["gid"]
     assert await wait_for(lambda: (sam.game_view(ROOM) or {}).get("phase") == "fakes")
     await sam.submit_fake(ROOM, gid, 1, "Three")  # the truth is "three": lucky
     await host.submit_fake(ROOM, gid, 1, "nine")
@@ -411,7 +412,7 @@ async def test_a_hosted_whos_the_agent_round_hides_who_wrote_what(bare, monkeypa
     monkeypatch.setattr(game, "FAKE_SECONDS", 2400)
     monkeypatch.setattr(game, "VOTE_SECONDS", 2400)
     host, sam, eve = await _three(bare)
-    gid = (await host.start_tales(ROOM, 1, mode="agent"))["gid"]
+    gid = (await started(host, ROOM, 1, mode="agent"))["gid"]
     assert await wait_for(lambda: (sam.game_view(ROOM) or {}).get("phase") == "fakes")
     await sam.submit_fake(ROOM, gid, 1, "toast")
     await host.submit_fake(ROOM, gid, 1, "eggs")
@@ -440,7 +441,7 @@ async def test_the_host_ignores_plaintext_and_misdirected_answers(bare):
     for k in (old, stray):
         await e._on_event(k.agent({"t": "presence", "name": "Oldbot", "state": "activity: idle"}, kind=KIND_LIVE),
                           "relay")
-    gid = (await e.start_tales(ROOM, 1))["gid"]
+    gid = (await started(e, ROOM, 1))["gid"]
     assert await wait_for(lambda: (e.game_view(ROOM) or {}).get("phase") == "fakes")
     await e.submit_fake(ROOM, gid, 1, "nine")
     await e._on_event(old.person({"t": "tales_fake", "gid": gid, "n": 1, "text": "plain answer", "name": "Old"}),

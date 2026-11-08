@@ -5424,11 +5424,21 @@ function RoomReactions(props) {
   return jsx(ExprContext.Provider, { value: exprs, children: props.children })
 }
 
+// A game start that failed in the background (no budget, no questions) arrives as room.start_error with an
+// id; each id is toasted once, however many snapshots carry it or views mount.
+const START_ERRORS_SEEN = new Set()
+
 function RoomView(props) {
   const { store, snap, room } = props
   const book = useMemo(() => nameBook(room, snap.me), [room, snap.me])
   const drafts = (snap.drafts || []).filter(d => d.room === room.id)
   const game = room.game
+  const startErr = room.start_error
+  useEffect(() => {
+    if (!startErr || START_ERRORS_SEEN.has(startErr.id)) return
+    START_ERRORS_SEEN.add(startErr.id)
+    P.toast('error', startErr.text)
+  }, [startErr && startErr.id])
   // The message being answered: set from a message's Reply button, cleared by the composer (Escape, its cancel
   // button, a sent reply) or by leaving the room. It is a small copy, so it survives the message scrolling away.
   const [replyTo, setReplyTo] = useState(null)

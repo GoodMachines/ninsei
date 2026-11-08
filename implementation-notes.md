@@ -1016,3 +1016,14 @@ Demo captions say only what code enforces. Ada turning down Sam's order is the m
 ## "Ada is thinking" stays in view at the bottom of a chat (2026-11-08)
 
 Found filming the demo's new opening: while you sat at the bottom of a room, your agent's "is thinking" row rendered just under the fold and you never saw it until the reply landed (it only showed for Bo because his message pulled the list down while his row was still up). `useScrollKeeper` re-pinned to the bottom only when the message list changed. It now also watches the timeline's height with a `ResizeObserver` and, while you are following the bottom (and the list is placed and not loading earlier history), keeps it pinned. That covers any growth at the foot without a new message, not just the thinking row. Reading further up is left alone. Test: `test_e1_ui.py::test_at_the_bottom_the_list_stays_at_the_bottom_when_its_foot_grows_without_a_new_message`.
+
+## Starting a game no longer holds the route open (2026-11-08)
+
+Seen live: `POST /game/start` awaited the question-writing model call, which sometimes took over 30 s, and Hermes Desktop's `host` REST bridge gives up at 30 s, so the person got "Timed out connecting to Hermes backend" while the game started anyway. Routes must not await model calls.
+
+`start_tales` keeps its synchronous checks (unknown mode, game running, no model) and reserves the room, then spawns `_run_start` with `_spawn` and returns `{"starting": True}`. `_starting_games` became a dict (room to mode and task). Decisions:
+- **Starting state is the snapshot's `room.game`.** While a start is in flight `_game_to_show` returns `_start_view`: the same shape `game_view` builds for a "starting" game, with `gid: ""` and `you_host: true`. The existing "is writing questions…" body shows with no UI change; the poll runs at 1 s because the phase is not `end`.
+- **Failures are `room.start_error` `{id, text}`.** No async-notice channel existed (`last_error` is not in the snapshot). It is per room, replaced by the next attempt, and shown for 120 s (`START_ERROR_SECS`) so a view that opens late still tells the owner. The UI toasts each id once (`START_ERRORS_SEEN` in `ui/50_room.js`). Budget, no questions and RoomLeft keep their old words; anything else says "couldn't start the game, try again" and goes to `last_error`.
+- **Cancel.** `_end_hosted` (leave room, shutdown) cancels the room's start tasks and awaits them first; a done callback frees the slot even for a task cancelled before its first step, which never runs its own `finally`. A cancel after `tales_start` was posted leaves the game in `_host_games`, which `_end_hosted` then ends with `tales_end`.
+- Tests that wanted the old "returns when started" shape use `tests/start_helpers.py::started`.
+- ARCHITECTURE.md lost a few words elsewhere (the player cap, EOSE and art catch-up asides) to stay under its 1,500-word test.

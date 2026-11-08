@@ -15,6 +15,7 @@ from ninsei_engine import game
 from ninsei_engine.engine import KIND_LIVE, SEALED_CHARS, _gave_up_claim, open_fake
 from test_audit_ui import ROOT, TALES, ROOM as ROOM_JS, fn, needs_node, run as run_node, const
 from test_engine import Result, StubLLM, Usage, wait_for
+from start_helpers import started
 from test_game_secrecy import HubPool, _fakes, _presence, _vote_open
 from test_hostile import ROOM, Key, bare, settle  # noqa: F401  (fixture re-export)
 
@@ -68,7 +69,7 @@ async def test_the_hosts_agent_plays_with_a_fake_written_alongside_the_questions
     _long(monkeypatch)
     llm = Llm("Ada", "five")
     host, sam, eve = await _table(bare, llm)
-    gid = (await host.start_tales(ROOM, 1))["gid"]
+    gid = (await started(host, ROOM, 1))["gid"]
     assert await wait_for(lambda: (eve.game_view(ROOM) or {}).get("phase") == "fakes")
     await sam.submit_fake(ROOM, gid, 1, "seven")
     await host.submit_fake(ROOM, gid, 1, "nine")
@@ -95,7 +96,7 @@ async def test_the_hosts_agent_fake_follows_the_secrecy_rules(bare, monkeypatch)
     for Maya's team), and the host person's own view blocks it."""
     _long(monkeypatch)
     host, sam, eve = await _table(bare, Llm("Ada", "five"))
-    gid = (await host.start_tales(ROOM, 1))["gid"]
+    gid = (await started(host, ROOM, 1))["gid"]
     assert await wait_for(lambda: (eve.game_view(ROOM) or {}).get("phase") == "fakes")
     await sam.submit_fake(ROOM, gid, 1, "seven")
     await host.submit_fake(ROOM, gid, 1, "nine")
@@ -121,7 +122,7 @@ async def test_a_host_fake_equal_to_the_truth_is_dropped_and_gets_no_lucky_point
     _long(monkeypatch)
     llm = Llm("Ada", "Three.", fake_reply="THREE")      # the question's fake AND the retry both match the truth
     host, sam, eve = await _table(bare, llm)
-    gid = (await host.start_tales(ROOM, 1))["gid"]
+    gid = (await started(host, ROOM, 1))["gid"]
     assert await wait_for(lambda: (eve.game_view(ROOM) or {}).get("phase") == "fakes")
     await sam.submit_fake(ROOM, gid, 1, "seven")
     await host.submit_fake(ROOM, gid, 1, "nine")
@@ -143,7 +144,7 @@ async def test_a_host_fake_equal_to_the_truth_is_replaced_by_one_more_try(bare, 
     _long(monkeypatch)
     llm = Llm("Ada", "three", fake_reply="a pair")
     host, sam, eve = await _table(bare, llm)
-    gid = (await host.start_tales(ROOM, 1))["gid"]
+    gid = (await started(host, ROOM, 1))["gid"]
     assert await wait_for(lambda: (eve.game_view(ROOM) or {}).get("phase") == "fakes")
     await sam.submit_fake(ROOM, gid, 1, "seven")
     await host.submit_fake(ROOM, gid, 1, "nine")
@@ -158,7 +159,7 @@ async def test_a_missing_host_fake_is_asked_for_when_the_round_opens(bare, monke
     _long(monkeypatch)
     llm = Llm("Ada", "", fake_reply="a pair")           # the question call gave no fake
     host, sam, eve = await _table(bare, llm)
-    gid = (await host.start_tales(ROOM, 1))["gid"]
+    gid = (await started(host, ROOM, 1))["gid"]
     assert await wait_for(lambda: (eve.game_view(ROOM) or {}).get("phase") == "fakes")
     await sam.submit_fake(ROOM, gid, 1, "seven")
     await host.submit_fake(ROOM, gid, 1, "nine")
@@ -172,7 +173,7 @@ async def test_only_present_players_count_beside_the_hosts_agent(bare, monkeypat
     _long(monkeypatch)
     host, sam, eve = await _table(bare, Llm("Ada", "five"))
     mal = Key("mal")    # never sent a presence beat: not here
-    gid = (await host.start_tales(ROOM, 1))["gid"]
+    gid = (await started(host, ROOM, 1))["gid"]
     assert await wait_for(lambda: (host.game_view(ROOM) or {}).get("phase") == "fakes")
     ev, _ = mal.fake(host._identity()["agent_pk"], gid, 1, "ghost answer", agent=True)
     for e in (host, eve):
@@ -188,7 +189,7 @@ async def test_only_present_players_count_beside_the_hosts_agent(bare, monkeypat
 async def test_who_is_the_agent_still_counts_the_hosts_agent_once(bare, monkeypatch):
     _long(monkeypatch)
     host, sam, eve = await _table(bare, Llm("Ada", "five"))
-    gid = (await host.start_tales(ROOM, 1, mode="agent"))["gid"]
+    gid = (await started(host, ROOM, 1, mode="agent"))["gid"]
     assert await wait_for(lambda: (eve.game_view(ROOM) or {}).get("phase") == "fakes")
     await sam.submit_fake(ROOM, gid, 1, "toast")
     await host.submit_fake(ROOM, gid, 1, "eggs")
@@ -210,7 +211,7 @@ async def test_agents_write_their_fakes_with_no_two_to_seven_second_wait(bare, m
     real = random.uniform
     monkeypatch.setattr(engine_mod.random, "uniform", lambda a, b: waits.append((a, b)) or real(a, b))
     host, sam, eve = await _table(bare, Llm("Ada", "five"))
-    await host.start_tales(ROOM, 1)
+    await started(host, ROOM, 1)
     assert await wait_for(lambda: (eve.game_view(ROOM) or {}).get("phase") in ("vote", "reveal", "end"), timeout=30)
     assert any(f.get("n") == 1 and f.get("t") == "tales_fake" for f in
                (json.loads(ev["content"]) for ev in _fakes(eve))), "Bo's fake is in"
@@ -223,7 +224,7 @@ async def test_agents_write_their_fakes_with_no_two_to_seven_second_wait(bare, m
 async def test_an_agent_that_cant_answer_shows_couldnt_answer(bare, reply):
     bo = Llm("Bo", None, fake_reply=reply)
     host, sam, eve = await _table(bare, Llm("Ada", "five"), bo)
-    await host.start_tales(ROOM, 1)
+    await started(host, ROOM, 1)
 
     def bo_status():
         view = host.game_view(ROOM) or {}
@@ -245,7 +246,7 @@ async def test_an_agent_with_no_model_budget_or_error_also_says_so(bare):
                 raise RuntimeError("provider down")
             return super().complete(*a, purpose=purpose, **k)
     host, sam, eve = await _table(bare, Llm("Ada", "five"), Boom("Bo", None))
-    await host.start_tales(ROOM, 1)
+    await started(host, ROOM, 1)
     assert await wait_for(lambda: sam._gave_up is not None, timeout=30)
     assert await wait_for(lambda: any(a["status"] == "gave_up" for a in (host.game_view(ROOM) or {}).get("agents", [])),
                           timeout=30)
@@ -289,7 +290,7 @@ RULES = {"fake": game.FAKE_SECONDS, "vote": game.VOTE_SECONDS, "reveal": game.RE
 async def test_the_view_carries_the_rules_the_clock_runs_on(bare, monkeypatch):
     _long(monkeypatch)
     host, sam, eve = await _table(bare, Llm("Ada", "five"))
-    await host.start_tales(ROOM, 2)   # the stub writes one question, so one round
+    await started(host, ROOM, 2)   # the stub writes one question, so one round
     assert await wait_for(lambda: (eve.game_view(ROOM) or {}).get("phase") == "fakes")
     assert eve.game_view(ROOM)["rules"] == {"fake": 2400, "vote": 2400, "reveal": game.REVEAL_SECONDS, "rounds": 1}
     await host._end_hosted(ROOM)

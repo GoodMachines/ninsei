@@ -12,6 +12,7 @@ from ninsei_engine import engine as eng_mod
 from ninsei_engine import nostr
 from ninsei_engine.engine import IDLE_OPEN, KIND_LIVE, PACE_LIMIT, PACE_OWNER_RESERVE, _plays_claim
 from test_engine import Result, StubLLM, Usage, wait_for
+from start_helpers import started
 from test_hostile import ROOM, Key, bare, own_person_event, settle  # noqa: F401
 from test_presence import Heavy, ROOM2, ROOM3, _table, away, claims, rooms3, seen, small_budget
 
@@ -181,7 +182,7 @@ async def test_named_does_not_play_a_game_that_started_after_the_owner_left(bare
     host, sam = await _table(bare)
     host.save_settings({"away_mode": "named"})
     away(host)
-    await sam.start_tales(ROOM, 1, mode="agent")
+    await started(sam, ROOM, 1, mode="agent")
     assert await wait_for(lambda: tales_rounds(host))
     await settle(host)
     assert answered(host) == [] and host._plays_in(ROOM) is False
@@ -202,7 +203,7 @@ async def test_an_agent_that_sits_out_shows_as_sitting_out_not_writing(bare, mon
     host, sam = await _table(bare)
     host.save_settings({"away_mode": "named"})
     away(host)
-    await sam.start_tales(ROOM, 1, mode="agent")
+    await started(sam, ROOM, 1, mode="agent")
     assert await wait_for(lambda: tales_rounds(host))
     await settle(host)
     status = lambda e, pk: next((a["status"] for a in (e.game_view(ROOM) or {}).get("agents", []) if a["pk"] == pk), None)
@@ -227,7 +228,7 @@ async def test_named_keeps_playing_the_game_that_was_running_when_the_owner_left
         await gate.wait()
         return await real(*a, **k)
     monkeypatch.setattr(host, "_play_round", gated)
-    await sam.start_tales(ROOM, 1, mode="agent")
+    await started(sam, ROOM, 1, mode="agent")
     assert await wait_for(lambda: tales_rounds(host))
     for ev in host.events[ROOM].values():             # the game began long before the owner left
         if json.loads(ev["content"]).get("t") == "tales_start":
@@ -334,7 +335,7 @@ async def test_the_default_trigger_is_the_safe_one_and_my_own_game_is_charged_to
     small_budget(e, daily=100000, share=0.25)
     stranger_row(e, 25000)                                    # others' share is used up exactly
     with pytest.raises(ValueError) as err:                    # (the stub's text is not JSON: no questions)
-        await e.start_tales(ROOM, 1, mode="tales")
+        await started(e, ROOM, 1, mode="tales")
     assert "budget" not in str(err.value) and "ninsei.tales.questions" in llm.calls
     assert e.store.stranger_used() == 25000                   # the questions were my owner's, not others'
 
