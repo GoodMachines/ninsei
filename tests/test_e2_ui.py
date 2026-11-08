@@ -303,7 +303,7 @@ def test_the_app_draws_the_banner_from_relays_down_and_clears_it_by_itself():
 
 
 def test_new_rooms_dms_search_and_lobby_have_proper_empty_states():
-    assert "EmptyState" in fn(ROOM, "Timeline") and "Say hi, or start a game" in fn(ROOM, "Timeline")
+    assert "RoomStarter" in fn(ROOM, "Timeline") and "EmptyState" in fn(ROOM, "RoomStarter")
     assert "Nothing found for" in fn(ROOM, "SearchPanel")
     assert "No friends yet" in fn(src("57_dm.js"), "DmEmpty")
     assert "No public rooms yet" in src("70_lobby.js")

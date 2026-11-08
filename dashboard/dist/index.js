@@ -4738,6 +4738,12 @@ function RoomView(props) {
     return false
   }, [room.messages])
   const onEditDone = useCallback(() => setEditReq(null), [])
+  // The starter panel asks the composer to fill itself or open its Games menu: a counter makes each ask new.
+  const [fillReq, setFillReq] = useState(null)
+  const [gamesReq, setGamesReq] = useState(0)
+  useEffect(() => { setFillReq(null); setGamesReq(0) }, [room.id])
+  const onSay = useCallback(text => setFillReq(r => ({ text, n: (r ? r.n : 0) + 1 })), [])
+  const onGames = useCallback(() => setGamesReq(n => n + 1), [])
   const onFocusComposer = useCallback(() => {
     const t = typeof document !== 'undefined' && document.querySelector && document.querySelector('.h-compose-box textarea')
     if (t && t.focus) t.focus()
@@ -4745,7 +4751,7 @@ function RoomView(props) {
   return jsxs(Fragment, { children: [
     jsx(RoomHeader, { store, room, snap, onPeople: props.onPeople, searching, onSearch: () => (searching ? closeSearch() : openSearch()) }),
     searching && jsx(SearchPanel, { room, onClose: closeSearch, onPick: id => !!(jumpRef.current && jumpRef.current(id, true)) }, room.id),
-    jsx(Timeline, { store, snap, room, book, onReply, newAfter: readMark.current.ts, jumpRef, bottomRef, onRetry, onDiscard, editReq, onEditDone, onFocusComposer }),
+    jsx(Timeline, { store, snap, room, book, onReply, newAfter: readMark.current.ts, jumpRef, bottomRef, onRetry, onDiscard, editReq, onEditDone, onFocusComposer, onSay, onGames }),
     jsxs('div', { className: 'h-composer', children: [
       // pinned above the input: model notice, the running game, drafts. Scrolls on its own if tall.
       jsxs('div', { className: 'h-pinned', children: [
@@ -4755,9 +4761,15 @@ function RoomView(props) {
         drafts.length > 0 && jsx(DraftTray, { store, drafts })
       ] }),
       jsx(TypingLine, { list: room.typing }),
-      jsx(Composer, { store, room, snap, gameOn: !!(game && game.phase !== 'end'), reply: replyTo, onCancelReply, onSubmit: submit, onEditLast })
+      jsx(Composer, { store, room, snap, gameOn: !!(game && game.phase !== 'end'), reply: replyTo, onCancelReply, onSubmit: submit, onEditLast, fillReq, gamesReq })
     ] })
   ] })
+}
+
+// The code people use to join a room, to the clipboard (the header's button, the starter panel, the Games menu).
+async function copyRoomCode(room) {
+  const ok = await P.copy('ninsei:' + room.id)
+  P.toast(ok ? 'info' : 'error', ok ? 'Room code copied. Anyone with it can join; rooms are public.' : 'Could not reach the clipboard. The code is ninsei:' + room.id)
 }
 
 function RoomHeader(props) {
@@ -4770,10 +4782,7 @@ function RoomHeader(props) {
   const closeMenu = back => { setMenu(false); if (back) P.setTimeout(() => menuBtn.current && menuBtn.current.focus && menuBtn.current.focus(), 0) }
   const mine = new Set((snap.settings && snap.settings.interests) || [])
   const online = (room.members || []).filter(isHere).length
-  const copyCode = async () => {
-    const ok = await P.copy('ninsei:' + room.id)
-    P.toast(ok ? 'info' : 'error', ok ? 'Room code copied. Anyone with it can join; rooms are public.' : 'Could not reach the clipboard. The code is ninsei:' + room.id)
-  }
+  const copyCode = () => copyRoomCode(room)
   return jsxs('div', { className: 'h-head', children: [
     jsxs('div', { className: 'h-grow h-col', style: { gap: 3 }, children: [
       jsxs('div', { className: 'h-row', children: [
@@ -4919,6 +4928,19 @@ function useScrollKeeper(key, ready, msgs, more, loadEarlier) {
 }
 
 // The button (and the auto-load on scrolling to the top) for older messages.
+// A room with nothing said yet: three first moves instead of a blank timeline.
+function RoomStarter(props) {
+  const { room, snap } = props
+  const mine = mentionCandidates(room).find(c => c.yours)
+  const agent = (mine && mine.name) || (snap.settings && snap.settings.agent_name) || ''
+  return jsx(EmptyState, { icon: 'smiley', title: 'Nothing here yet', hint: 'Start with a game, say hi to your agent, or invite someone with the room code.',
+    action: jsxs(Fragment, { children: [
+      jsx(K.Button, { variant: 'primary', size: 'sm', onClick: props.onGames, children: 'Play Tall Tales' }),
+      agent && jsx(K.Button, { variant: 'secondary', size: 'sm', onClick: () => props.onSay('@' + agent + ' '), children: 'Say hi to ' + agent }),
+      jsx(K.Button, { variant: 'secondary', size: 'sm', onClick: () => copyRoomCode(room), children: 'Share the room code' })
+    ] }) })
+}
+
 function EarlierButton(props) {
   return jsx('div', { className: 'h-earlier', children: jsx(K.Button, { variant: 'ghost', size: 'sm', onClick: props.onClick, disabled: props.busy,
     children: props.busy ? 'Loading…' : 'Load earlier messages' }) })
@@ -5015,7 +5037,7 @@ function Timeline(props) {
   return jsxs('div', { className: 'h-tlwrap', children: [
     jsx('div', { className: 'h-scroll', ref: scroller, onScroll, children: jsxs('div', { className: 'h-timeline', role: 'log', 'aria-live': 'polite', children: [
       er.more && jsx(EarlierButton, { onClick: keeper.loadMore, busy: loadingMore }),
-      items.length === 0 && jsx(EmptyState, { icon: 'smiley', title: 'Say hi, or start a game', hint: 'Nothing has been said here yet. Write the first message, or start a game from the box below.' }),
+      items.length === 0 && jsx(RoomStarter, { room, snap, onSay: props.onSay, onGames: props.onGames }),
       items.map(it => jsx(TimelineItem, Object.assign({ it, store, snap, room, book, animate: fresh(it.key) }, actions), it.key)),
       jsx(Thinking, { room })
     ] }) }),
@@ -5967,6 +5989,17 @@ function Composer(props) {
     if (!mentionQuery(v, c) && !shortcodeQuery(v, c)) setShut(-1)
     if (!dm && v.trim()) typingPing(room.id)
   }
+  // The starter panel's asks: "Say hi" fills an empty box with the mention and focuses it; "Play" opens the Games menu.
+  const fillN = props.fillReq ? props.fillReq.n : 0
+  useEffect(() => {
+    if (!props.fillReq || dm) return
+    if (!text.trim()) { setText(props.fillReq.text); setCaret(props.fillReq.text.length); caretTo.current = props.fillReq.text.length }
+    if (ta.current && ta.current.focus) ta.current.focus()
+  }, [fillN])
+  const gamesN = props.gamesReq || 0
+  useEffect(() => { if (gamesN && !dm) setMenu(true) }, [gamesN])
+  // Nobody else here: the menu says a game is better with company, and offers the room code.
+  const alone = !(room.members || []).some(p => !p.you && isHere(p))
   const startGame = async mode => {
     setMenu(false)
     try { await store.post('/game/start', { room: room.id, mode }, gameName(mode) + ' is starting') } catch (_) { /* toasted */ }
@@ -5993,7 +6026,7 @@ function Composer(props) {
     !dm && jsxs('div', { style: { position: 'relative' }, children: [
       jsx(K.Tip, { label: 'Games', children: jsx(K.Button, { variant: 'ghost', size: 'icon', 'aria-label': 'Games', 'aria-expanded': menu,
         onClick: () => setMenu(!menu), children: jsx(K.Icon, { name: 'game', size: 15 }) }) }),
-      menu && jsx(GamesMenu, { onClose: () => setMenu(false), onStart: startGame, gameOn })
+      menu && jsx(GamesMenu, { onClose: () => setMenu(false), onStart: startGame, gameOn, alone, onShare: () => copyRoomCode(room) })
     ] }),
     jsx(K.Button, { variant: 'primary', size: 'icon', 'aria-label': 'Send', disabled: !text.trim(), onClick: send,
       children: jsx(K.Icon, { name: 'send', size: 14 }) })
@@ -6010,19 +6043,21 @@ function GamesMenu(props) {
     return () => { off1(); off2() }
   }, [])
   // Each game says what it is in two lines and starts only from its own Start button.
-  const item = (mode, icon, lines) => jsxs('div', { className: 'h-gm', role: 'group', 'aria-label': gameName(mode), children: [
+  const item = (mode, icon, lines, note) => jsxs('div', { className: 'h-gm', role: 'group', 'aria-label': gameName(mode), children: [
     jsx(K.Icon, { name: icon, size: 15 }),
     jsxs('span', { className: 'h-grow', children: [
       jsx('b', { children: gameName(mode) }),
       jsx('span', { className: 'h-faint h-small h-gm-line', children: props.gameOn ? 'A game is already running' : lines[0] }),
-      !props.gameOn && jsx('span', { className: 'h-faint h-small h-gm-line', children: lines[1] })
+      !props.gameOn && jsx('span', { className: 'h-faint h-small h-gm-line', children: lines[1] }),
+      !props.gameOn && props.alone && jsxs('span', { className: 'h-small h-gm-line h-gm-alone', 'data-alone': mode, children: [
+        note + ' ', jsx(K.Button, { variant: 'ghost', size: 'sm', onClick: props.onShare, children: 'Share code' })] })
     ] }),
     jsx(K.Button, { variant: 'primary', size: 'sm', disabled: props.gameOn, 'aria-label': 'Start ' + gameName(mode),
       onClick: () => props.onStart(mode), children: 'Start' })
   ] }, mode)
   return jsxs('div', { className: 'h-menu h-gm-menu', ref, role: 'menu', style: { left: 'auto', right: 0 }, children: [
-    item('tales', 'game', ['Your agent hosts and asks a question with a real answer.', 'Everyone writes a fake. Vote for the true one.']),
-    item('agent', 'organization', ['Everyone answers a prompt, agents too, trying to sound human.', 'Spot the agents.'])
+    item('tales', 'game', ['Your agent hosts and asks a question with a real answer.', 'Everyone writes a fake. Vote for the true one.'], 'Best with 2 or more people. Share the room code to invite someone.'),
+    item('agent', 'organization', ['Everyone answers a prompt, agents too, trying to sound human.', 'Spot the agents.'], 'Best with 2 or more people, since you can’t call your own team’s answers. Share the room code to invite someone.')
   ] })
 }
 
