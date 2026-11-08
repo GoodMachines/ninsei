@@ -248,7 +248,8 @@ def test_onboarding_holds_the_picture_until_setup_is_finished_and_settings_publi
     assert "stage: true" in ob and "person_face: person_face || {}" in ob
     st = fn(SETUP, "SettingsForm")
     assert "store.post('/avatar', { img }" in st and "show_avatars" in st and "Everyone in my rooms" in st and "'Nobody'" in st or "label: 'Nobody'" in st
-    assert "noCard: true" in LOOK                                    # no card style in the person's face picker
+    assert "person_avatar: person_avatar || {}" in ob and "person_avatar: form.person_avatar || {}" in st   # the avatar is saved with the form
+    assert "jsx(AvatarEditor" in fn(LOOK, "PersonLook") and "Use a photo instead" in LOOK   # the builder first, a photo opt-in
     assert "!props.noCard" in fn(PARTS, "FacePicker")
 
 

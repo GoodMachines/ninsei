@@ -179,14 +179,7 @@ function InterestInput(props) {
   ] })
 }
 
-// The face editor: every part as a row of small faces, each showing the agent with that option.
-const FACE_PARTS = [
-  { key: 'shape', label: 'Shape', opts: SHAPES },
-  { key: 'eyes', label: 'Eyes', opts: FACE_EYES },
-  { key: 'mouth', label: 'Mouth', opts: FACE_MOUTHS },
-  { key: 'acc', label: 'Extra', opts: FACE_ACCS },
-  { key: 'pattern', label: 'Cheeks', opts: FACE_PATTERNS }
-]
+// The face editor's labels, for every option a face can have.
 const FACE_OPT_LABEL = { dot: 'Dots', round: 'Round', sleepy: 'Sleepy', wide: 'Wide', visor: 'Visor', smile: 'Smile',
   flat: 'Flat', grin: 'Grin', cat: 'Cat', o: 'Surprised', none: 'None', antenna: 'Antenna', glasses: 'Glasses',
   headphones: 'Headphones', halo: 'Halo', sprout: 'Sprout', horns: 'Horns', bow: 'Bow', blush: 'Blush', freckles: 'Freckles',
@@ -243,43 +236,24 @@ function useFaceEditorFocus() {
   }, [])
 }
 
+// An agent's face editor: a big live preview, a tab per part, each option a small live face (ui/33_builder.js).
+// `noCard` leaves out the card style.
 function FacePicker(props) {
   const face = faceFor(props.value, props.pk)
+  const [tab, setTab] = useState('shape')
+  const uid = (props.id || 'h-face') + '-b'
   const set = patch => props.onChange(Object.assign({}, face, patch))
-  const accent = face.acc !== 'none' || face.pattern !== 'none'
-  return jsxs('div', { className: 'h-row h-facepick', id: props.id, tabIndex: props.id ? -1 : undefined, role: props.id ? 'group' : undefined,
-    'aria-label': props.id ? 'Face editor' : undefined, children: [
-    !props.noPreview && jsx(Face, { face, pk: props.pk, state: props.previewState || 'activity: idle', size: 64, name: props.name }),
-    jsxs('div', { className: 'h-col h-grow', style: { gap: 10, minWidth: 0 }, children: [
-      !props.noCard && jsxs('div', { className: 'h-facepart', children: [
-        jsx('div', { className: 'h-faint h-tiny h-caps', children: 'Card' }),
-        jsx('div', { className: 'h-shapes', role: 'radiogroup', 'aria-label': 'Card style', children: FACE_CARDS.map(o =>
-          jsxs('button', { type: 'button', className: 'h-shape h-cardpick', role: 'radio', 'aria-checked': face.card === o, 'data-on': face.card === o,
-            onClick: () => set({ card: o }), children: [
-              jsx(CardSwatch, { card: o, hue: face.hue, hue2: face.hue2 }, 's'),
-              jsx('span', { children: CARD_STYLE_LABEL[o] }, 'l')
-            ] }, o)) })
-      ] }),
-      ...FACE_PARTS.map(part => jsxs('div', { className: 'h-facepart', children: [
-        jsx('div', { className: 'h-faint h-tiny h-caps', children: part.label }),
-        jsx('div', { className: 'h-shapes', role: 'radiogroup', 'aria-label': 'Face ' + part.label.toLowerCase(), children: part.opts.map(o =>
-          jsx('button', { type: 'button', className: 'h-shape', role: 'radio', 'aria-checked': face[part.key] === o,
-            'aria-label': FACE_OPT_LABEL[o] || o, title: FACE_OPT_LABEL[o] || o, 'data-on': face[part.key] === o,
-            onClick: () => set({ [part.key]: o }),
-            children: jsx(Face, { face: Object.assign({}, face, { [part.key]: o }), pk: props.pk, state: 'activity: idle', size: 30, className: 'hf-still' }) }, o)) })
-      ] }, part.key)),
-      jsxs('div', { className: 'h-facepart', children: [
-        jsx('div', { className: 'h-faint h-tiny h-caps', children: 'Colour' }),
-        jsx('input', { type: 'range', className: 'h-hue', min: 0, max: 359, value: face.hue, 'aria-label': 'Face colour',
-          onChange: e => set({ hue: Number(e.target.value) }) })
-      ] }),
-      accent && jsxs('div', { className: 'h-facepart', children: [
-        jsx('div', { className: 'h-faint h-tiny h-caps', children: 'Accent' }),
-        jsx('input', { type: 'range', className: 'h-hue', min: 0, max: 359, value: face.hue2, 'aria-label': 'Accent colour',
-          onChange: e => set({ hue2: Number(e.target.value) }) })
-      ] })
-    ] })
-  ] })
+  const layers = FACE_LAYERS.concat(!props.noCard ? [{ key: 'card', label: 'Card' }] : [])
+  const layer = layers.find(l => l.key === tab) || layers[0]
+  const thumb = patch => jsx(Face, { face: Object.assign({}, face, patch), pk: props.pk, state: 'activity: idle', size: 64, className: 'hf-still' })
+  const panel = layer.key === 'colour' ? jsx(FaceColours, { face, set })
+    : layer.key === 'card' ? jsx(OptionGrid, { label: 'Card style', value: face.card, swatch: true, onChange: v => set({ card: v }),
+      options: FACE_CARDS.map(o => ({ id: o, label: CARD_STYLE_LABEL[o], render: () => jsx(CardSwatch, { card: o, hue: face.hue, hue2: face.hue2 }) })) })
+    : jsx(OptionGrid, { label: 'Face ' + layer.label.toLowerCase(), value: face[layer.key], onChange: v => set({ [layer.key]: v }),
+      options: layer.opts.map(o => ({ id: o, label: FACE_OPT_LABEL[o] || o, render: () => thumb({ [layer.key]: o }) })) })
+  return jsx(BuilderShell, { id: props.id, uid, label: 'Face editor', version: JSON.stringify(face), tab, setTab, layers, panel,
+    preview: jsx(Face, { face, pk: props.pk, state: props.previewState || 'activity: idle', size: 128, name: props.name }),
+    actions: [jsx(K.Button, { variant: 'secondary', size: 'sm', onClick: () => props.onChange(randomFace(face)), children: 'Randomize' }, 'r')] })
 }
 
 function Initial(props) {
@@ -297,8 +271,9 @@ function PersonPhoto(props) {
     children: jsx('img', { src: props.uri, alt: '', width: size, height: size, draggable: false, decoding: 'async', referrerPolicy: 'no-referrer' }) })
 }
 
-// How a person shows up anywhere: their picture (when they set one and pictures are on), else their face, else the
-// letter. A lookalike (`flagged`) gets the letter only, so a copied picture can't make it pass for the real person.
+// How a person shows up anywhere: their picture (when they set one and pictures are on), else their pixel avatar, else
+// the face they built before avatars existed, else the letter. A lookalike (`flagged`) gets the letter only, so a
+// copied picture or avatar can't make it pass for the real person. Nothing is ever made up from the key.
 // `art` overrides the snapshot's (Settings previews a picture before it is published).
 function PersonMark(props) {
   const ctx = useContext(PeopleContext)
@@ -308,6 +283,7 @@ function PersonMark(props) {
   const uri = useAvatarUri(art && art.av && pics ? props.pk : '', art && art.av)
   const body = art && art.uri && pics ? art.uri : uri
   if (body) return jsx(PersonPhoto, { uri: body, size, className: props.className })
+  if (art && art.avatar && cleanAvatar(art.avatar)) return jsx(PersonAvatar, { avatar: art.avatar, size, className: props.className })
   if (art && art.face) return jsx(PersonFace, { face: art.face, pk: props.pk, size, className: props.className })
   return jsx(Initial, { name: props.name, size: props.size })
 }

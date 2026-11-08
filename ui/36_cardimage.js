@@ -181,6 +181,12 @@ function faceMarkup(markup) {
   return m
 }
 
+// A face's own viewBox ("x y w h", plain numbers only), else the pixel grid's.
+function faceBox(vb) {
+  const n = String(vb == null ? '' : vb).trim().split(/\s+/).map(Number)
+  return n.length === 4 && n.every(Number.isFinite) && n[2] > 0 && n[3] > 0 ? n.join(' ') : '0 0 64 64'
+}
+
 function cardHue(h) {
   const n = Number(h)
   return Number.isFinite(n) ? ((n % 360) + 360) % 360 : 0
@@ -253,7 +259,7 @@ function cardSvg(o) {
       const top = Number(f.top) || 0
       const size = Number(f.size) || 100
       out.push('<svg x="' + num(bx + left / 100 * bs) + '" y="' + num(by + top / 100 * bs) + '" width="' + num(size / 100 * bs) + '" height="' + num(size / 100 * bs) +
-        '" viewBox="0 0 40 40" overflow="visible"' + (f.front ? '' : ' filter="url(#ncdim)"') + '>' + inner + '</svg>')
+        '" viewBox="' + faceBox(f.vb) + '" overflow="visible"' + (f.front ? '' : ' filter="url(#ncdim)"') + '>' + inner + '</svg>')
     }
   } else if (o.initial) {
     out.push(text(bx + bs / 2, by + bs / 2 + W * 0.3 * 0.36, Array.from(xmlClean(o.initial))[0] || '?', { size: W * 0.3, weight: 200, fill: hx(0.95, 0.04, hue), anchor: 'middle' }))
@@ -348,6 +354,8 @@ function inlineFace(svgEl) {
         const v = parseFloat(cs.getPropertyValue(key))
         if (Number.isFinite(v) && v !== 1) style.push(key + ':' + v)
       }
+      // pixel art (ui/12_pixel.js marks its paths) stays hard-edged at the picture's size
+      if (el.hasAttribute('data-px')) style.push('shape-rendering:crispEdges')
       const sw = parseFloat(cs.getPropertyValue('stroke-width'))
       if (Number.isFinite(sw)) style.push('stroke-width:' + sw)
       for (const key of ['stroke-linecap', 'stroke-linejoin']) {
@@ -379,7 +387,7 @@ function heroFaces(front) {
   const mates = Array.from(front.querySelectorAll('.h-idcard-mate'))
   const place = (svg, left, top, size, isFront) => {
     const inner = svg ? inlineFace(svg) : ''
-    if (inner) out.push({ inner, left, top, size, front: isFront })
+    if (inner) out.push({ inner, left, top, size, front: isFront, vb: svg.getAttribute('viewBox') })
   }
   if (mates.length) {
     mates.forEach(el => place(el.querySelector('svg'), parseFloat(el.style.left) || 0, parseFloat(el.style.top) || 0, parseFloat(el.style.width) || 100, el.getAttribute('data-front') === 'true'))

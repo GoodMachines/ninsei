@@ -346,57 +346,45 @@ button.h-link{background:none;border:0;padding:0;font:inherit;cursor:pointer;tex
 .h-statuschip{display:inline-flex;align-items:center;gap:5px;height:100%;padding:0 6px;border:0;background:transparent;color:var(--h-fg3);font-size:11px;cursor:pointer}
 .h-statuschip:hover{color:var(--h-fg);background:var(--h-hover)}
 
-/* faces */
+/* faces: pixel art (ui/12_pixel.js). Animation swaps or steps whole layers by whole cells (1px in the 64-cell
+   viewBox is one cell); the state picks the frames. Frames that wait their turn (a blink, a talking mouth) are hidden by
+   default, so with no animation (reduced motion, a still face) the face simply rests. */
 .hf{display:inline-grid;place-items:center;flex:none;transform-origin:50% 60%}
-.hf svg{overflow:visible}
-.hf-body{fill:var(--h-accent);fill:color-mix(in oklch,oklch(from var(--h-fg) l 0.15 var(--hue)) 64%,var(--h-bg))}
-.hf-shine{fill:none;stroke:color-mix(in oklch,var(--h-fg) 22%,transparent);stroke-width:1}
-.hf-eye{fill:var(--h-bg);transform-box:fill-box;transform-origin:center}
-.hf-xeyes path,.hf-line{fill:none;stroke:var(--h-bg);stroke-width:1.8;stroke-linecap:round}
-.hf-mouth{fill:var(--h-bg);transform-box:fill-box;transform-origin:center}
-.hf-clock circle{fill:var(--h-card);stroke:var(--h-fg2);stroke-width:1.2}
-.hf-clock path{stroke:var(--h-fg2);stroke-width:1.2;stroke-linecap:round}
-.hf-hand{transform-origin:33px 7px}
-.hf-head{transform-origin:20px 22px;transition:transform .5s cubic-bezier(.34,1.45,.5,1),opacity .4s linear,filter .4s linear}
-.hf[data-state=idle] .hf-eye{animation:hf-blink 4.7s infinite}
-.hf[data-state=working] .hf-eyes{animation:hf-scan 1.6s cubic-bezier(.45,.05,.4,1) infinite alternate}
-.hf[data-state=working] .hf-eye{animation:hf-blink 4.7s infinite}
-.hf[data-state=speaking] .hf-talk{animation:hf-talk .34s cubic-bezier(.3,.7,.4,1) infinite alternate}
-.hf[data-state=waiting] .hf-eye{transform:scaleY(.42)}
+.hf svg{overflow:visible;filter:drop-shadow(0 0 .7px rgba(3,8,16,.8)) drop-shadow(0 0 .7px rgba(3,8,16,.5)) drop-shadow(0 0 var(--gs,1px) var(--glow,transparent)) drop-shadow(0 0 calc(var(--gs,1px) * 3) var(--glow2,transparent))}
+.hf[data-size=s] svg{filter:drop-shadow(0 0 .5px rgba(3,8,16,.5))}
+.pf-scan{opacity:.2}
+.hf[data-size=s] .pf-scan,.hf[data-size=m] .pf-scan{display:none}
+.pf-ec,.pf-mt{opacity:0}
+.hf-clock circle{fill:var(--h-card);stroke:var(--h-fg2);stroke-width:2.2}
+.hf-clock path{stroke:var(--h-fg2);stroke-width:2.2;stroke-linecap:round}
+.hf-hand{transform-origin:54px 10px}
+.hf[data-state=idle] .pf-eo,.hf[data-state=working] .pf-eo{animation:pf-blink-o 4.7s step-end infinite}
+.hf[data-state=idle] .pf-ec,.hf[data-state=working] .pf-ec{animation:pf-blink-c 4.7s step-end infinite}
+.hf[data-state=working] .hf-eyes{animation:pf-scan 1.6s step-end infinite}
+.hf[data-state=speaking] .pf-mr{animation:pf-talk-r .36s step-end infinite}
+.hf[data-state=speaking] .pf-mt{animation:pf-talk-t .36s step-end infinite}
 .hf[data-state=waiting] .hf-hand{animation:hf-tick 6s steps(12) infinite}
-.hf[data-state=error] .hf-head{transform:rotate(-9deg)}
-.hf[data-state=absent] .hf-head{opacity:.42;filter:saturate(.2)}
-.hf[data-state=absent] .hf-eye{transform:scaleY(.14)}
-.hf[data-size=s] .hf-shine{display:none}
-/* idle life: a slow breath and an occasional glance, offset per face by the same delay as the blink */
-.hf[data-state=idle]:not([data-expr]) .hf-head{animation:hf-breathe 4.2s cubic-bezier(.45,.05,.55,.95) infinite alternate}
-.hf[data-state=idle]:not([data-expr]) .hf-eyes{animation:hf-glance 9.4s cubic-bezier(.3,.7,.4,1) infinite}
-/* reactions (data-expr): eyes and head pose; the mouth shape comes from the component */
-.hf[data-expr] .hf-eye{animation:none}
-.hf[data-expr=smug] .hf-eye{transform:scaleY(.48) translateY(.7px)}
-.hf[data-expr=smug] .hf-head{transform:rotate(8deg)}
-.hf[data-expr=caught] .hf-eye{transform:scale(1.25)}
-.hf[data-expr=caught] .hf-head{animation:hf-shake .5s cubic-bezier(.36,.07,.19,.97) 1}
-.hf[data-expr=happy] .hf-eye{transform:scaleY(.42) translateY(-.4px)}
-.hf[data-expr=happy] .hf-head{animation:hf-hop .62s cubic-bezier(.3,.7,.4,1) 2}
-.hf[data-expr=wary] .hf-eye{transform:scaleY(.36) translateX(-1.2px)}
-.hf[data-expr=wary] .hf-head{transform:rotate(-6deg)}
-.hf[data-expr=perk] .hf-eye{transform:scale(1.12)}
-.hf[data-expr=perk] .hf-head{animation:hf-hop .5s cubic-bezier(.3,.7,.4,1) 1}
-@keyframes hf-breathe{0%{transform:scale(1)}100%{transform:scale(1.022,.985) translateY(.25px)}}
-@keyframes hf-glance{0%,78%,100%{transform:translateX(0)}82%,90%{transform:translateX(1.5px)}94%{transform:translateX(-.4px)}}
-@keyframes hf-shake{0%,100%{transform:translateX(0)}20%{transform:translateX(-1.6px) rotate(-4deg)}45%{transform:translateX(1.4px) rotate(3deg)}70%{transform:translateX(-.8px)}}
-@keyframes hf-hop{0%,100%{transform:translateY(0)}35%{transform:translateY(-2.6px) scale(1.03,.97)}60%{transform:translateY(0) scale(.98,1.02)}}
-@keyframes hf-blink{0%,93%,100%{transform:scaleY(1)}95.5%{transform:scaleY(.1)}}
-@keyframes hf-scan{0%{transform:translateX(-1.6px)}100%{transform:translateX(1.6px)}}
-@keyframes hf-talk{0%{transform:scaleY(.35) scaleX(1.1)}100%{transform:scaleY(1.15) scaleX(.9)}}
+.hf[data-state=error] .hf-head{transform:translateY(2px)}
+.hf[data-state=absent] .hf-head{opacity:.45;filter:saturate(.25)}
+/* idle life: a one-cell breath and an occasional glance, offset per face by the same delay as the blink */
+.hf[data-state=idle]:not([data-expr]) .hf-head{animation:pf-bob 4.2s step-end infinite}
+.hf[data-state=idle]:not([data-expr]) .hf-eyes{animation:pf-glance 9.4s step-end infinite}
+/* reactions (data-expr): the frames come from the component; the head moves in whole cells */
+.hf[data-expr=caught] .hf-head{animation:pf-shake .5s step-end 1}
+.hf[data-expr=happy] .hf-head{animation:pf-hop .62s step-end 2}
+.hf[data-expr=perk] .hf-head{animation:pf-hop .5s step-end 1}
+.hf[data-expr=smug] .hf-head{transform:translateX(1px)}
+@keyframes pf-blink-o{0%{opacity:1}94%{opacity:0}97%{opacity:1}}
+@keyframes pf-blink-c{0%{opacity:0}94%{opacity:1}97%{opacity:0}}
+@keyframes pf-talk-r{0%{opacity:1}50%{opacity:0}}
+@keyframes pf-talk-t{0%{opacity:0}50%{opacity:1}}
+@keyframes pf-bob{0%{transform:none}50%{transform:translateY(1px)}}
+@keyframes pf-glance{0%{transform:none}80%{transform:translateX(2px)}91%{transform:translateX(-1px)}94%{transform:none}}
+@keyframes pf-scan{0%{transform:translateX(-2px)}25%{transform:translateX(0)}50%{transform:translateX(2px)}75%{transform:translateX(0)}}
+@keyframes pf-shake{0%{transform:translateX(-2px)}20%{transform:translateX(2px)}40%{transform:translateX(-1px)}60%{transform:translateX(1px)}80%{transform:none}}
+@keyframes pf-hop{0%{transform:translateY(-2px)}30%{transform:translateY(-4px)}55%{transform:translateY(-1px)}75%{transform:none}}
 @keyframes hf-tick{to{transform:rotate(360deg)}}
 @media (prefers-reduced-motion: reduce){.hf *{animation:none!important;transition:none!important}}
-.hf-acc{fill:color-mix(in oklch,oklch(from var(--h-fg) l 0.17 var(--hue2)) 80%,var(--h-bg))}
-.hf-acc-line{fill:none;stroke:color-mix(in oklch,oklch(from var(--h-fg) l 0.17 var(--hue2)) 80%,var(--h-bg));stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round}
-.hf-thick{stroke-width:2.1}
-.hf-blush{opacity:.75}
-.hf-glint{fill:color-mix(in oklch,oklch(from var(--h-fg) l 0.15 var(--hue)) 64%,var(--h-bg))}
 .hf-still *{animation:none!important}
 .h-facepick{align-items:flex-start;gap:16px}
 .h-facepart{display:flex;flex-direction:column;gap:5px}
@@ -429,13 +417,6 @@ button.h-link{background:none;border:0;padding:0;font:inherit;cursor:pointer;tex
 .h-idcard-crew{position:relative;width:100%;height:100%}
 .h-idcard-mate{position:absolute;aspect-ratio:1;filter:brightness(.86) saturate(.85)}
 .h-idcard-mate[data-front=true]{filter:drop-shadow(0 4px 10px oklch(0.2 0.14 var(--hue) / .55))}
-.h-idcard .hf-body{fill:oklch(0.94 0.045 var(--hue))}
-.h-idcard .hf-shine{stroke:oklch(1 0 0 / .55)}
-.h-idcard .hf-eye,.h-idcard .hf-mouth{fill:oklch(0.27 0.12 var(--hue))}
-.h-idcard .hf-line,.h-idcard .hf-xeyes path{stroke:oklch(0.27 0.12 var(--hue))}
-.h-idcard .hf-glint{fill:oklch(0.94 0.045 var(--hue))}
-.h-idcard .hf-acc{fill:oklch(0.8 0.15 var(--hue2))}
-.h-idcard .hf-acc-line{stroke:oklch(0.84 0.13 var(--hue2))}
 .h-idcard-initial{font-size:clamp(60px,30cqw,120px);font-weight:200;line-height:1;color:oklch(0.95 0.04 var(--hue));text-shadow:0 0 28px oklch(0.85 0.14 var(--hue) / .7)}
 .h-idcard-top{position:absolute;z-index:4;left:8%;top:13%;right:46%;display:flex;flex-direction:column;align-items:flex-start;gap:9px}
 .h-idcard-name{font-weight:300;font-size:clamp(16px,6.6cqw,26px);line-height:1.08;letter-spacing:.12em;text-transform:uppercase;font-stretch:condensed;overflow-wrap:anywhere;text-shadow:0 1px 14px oklch(0.2 0.12 var(--hue) / .55);
@@ -499,13 +480,6 @@ button.h-link{background:none;border:0;padding:0;font:inherit;cursor:pointer;tex
   background-size:var(--a) var(--w),var(--w) var(--a),var(--a) var(--w),var(--w) var(--a),var(--a) var(--w),var(--w) var(--a),var(--a) var(--w),var(--w) var(--a)}
 .h-idcard[data-warn=true] .h-scan-box::before{--w:3px}
 .h-scan-box .h-idcard-hero{inset:12%;right:12%;top:12%;width:auto;transform:none;filter:drop-shadow(0 0 1.3cqw color-mix(in oklch,var(--scan-glow) 75%,transparent))}
-.h-idcard[data-card=scanner] .hf-body{fill:oklch(0.92 0.06 205)}
-.h-idcard[data-card=scanner] .hf-shine{stroke:oklch(1 0 0 / .7)}
-.h-idcard[data-card=scanner] .hf-eye,.h-idcard[data-card=scanner] .hf-mouth{fill:oklch(0.2 0.07 250)}
-.h-idcard[data-card=scanner] .hf-line,.h-idcard[data-card=scanner] .hf-xeyes path{stroke:oklch(0.2 0.07 250)}
-.h-idcard[data-card=scanner] .hf-glint{fill:oklch(0.92 0.06 205)}
-.h-idcard[data-card=scanner] .hf-acc{fill:oklch(0.84 0.1 var(--hue2))}
-.h-idcard[data-card=scanner] .hf-acc-line{stroke:oklch(0.87 0.09 var(--hue2))}
 .h-idcard[data-card=scanner] .h-idcard-mate{filter:brightness(.78)}
 .h-idcard[data-card=scanner] .h-idcard-mate[data-front=true]{filter:drop-shadow(0 .6cqw 1cqw oklch(0.08 0.04 255 / .7))}
 .h-idcard[data-card=scanner] .h-idcard-initial{font-family:var(--h-mono,ui-monospace),ui-monospace,monospace;font-size:20cqw;font-weight:400;color:var(--scan-ink);text-shadow:0 0 1.6cqw var(--scan-glow)}
@@ -575,9 +549,39 @@ button.h-link{background:none;border:0;padding:0;font:inherit;cursor:pointer;tex
 .h-profile-agents .h-plain{gap:8px;padding:4px 6px;border-radius:10px}
 .h-profile-agents .h-plain:hover{background:var(--h-hover)}
 /* people's pictures and faces: a plain circle, no tint (an agent's face has its bubble and its label) */
+/* the builders (agent face, person avatar): preview and actions beside layer tabs and option grids; stacks when narrow */
+.h-bld-wrap{container-type:inline-size}
+.h-bld{display:flex;flex-wrap:wrap;gap:16px;align-items:flex-start;outline:none}
+.h-bld-side{flex:none;display:flex;flex-direction:column;align-items:center;gap:10px;width:148px}
+.h-bld-preview{width:148px;height:148px;display:grid;place-items:center;border-radius:18px;background:#0b1117;box-shadow:inset 0 0 0 1px var(--h-line)}
+.h-bld-preview .h-pav{border-radius:12px}
+.h-bld-actions{justify-content:center}
+.h-bld-main{flex:1 1 260px;min-width:0;display:flex;flex-direction:column;gap:10px}
+.h-bld-tabs{display:flex;flex-wrap:wrap;gap:4px}
+.h-bld-tabs button{flex:none;border:1px solid transparent;background:transparent;color:var(--h-fg2);border-radius:999px;padding:4px 10px;font-size:12px;cursor:pointer;white-space:nowrap}
+.h-bld-tabs button:hover{background:var(--h-hover);color:var(--h-fg)}
+.h-bld-tabs button[data-on=true]{background:var(--h-raise);color:var(--h-fg);border-color:var(--h-line2)}
+.h-bld-tabs button:focus-visible,.h-bld-opt:focus-visible{outline:2px solid var(--h-accent);outline-offset:1px}
+.h-bld-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(74px,1fr));gap:6px}
+.h-bld-swatches{grid-template-columns:repeat(auto-fill,minmax(82px,1fr))}
+.h-bld-opt{display:flex;flex-direction:column;align-items:center;gap:4px;padding:4px;border:1px solid var(--h-line);border-radius:12px;background:#0b1117;cursor:pointer;
+  transition:transform .32s cubic-bezier(.3,1.5,.5,1),border-color .15s linear,box-shadow .15s linear}
+.h-bld-swatches .h-bld-opt{background:var(--h-raise);padding:8px 4px 6px}
+.h-bld-opt:hover{border-color:var(--h-line2)}
+.h-bld-opt:active{transform:scale(.95)}
+.h-bld-opt[data-on=true]{border-color:var(--h-accent);box-shadow:0 0 0 1px var(--h-accent)}
+.h-bld-opt .h-pav{border-radius:8px}
+.h-bld-swatch{width:28px;height:28px;border-radius:50%;box-shadow:inset 0 0 0 1px oklch(0 0 0 / .25)}
+.h-bld-name{font-size:11px;color:var(--h-fg2);text-align:center;line-height:1.2}
+@media (prefers-reduced-motion: reduce){.h-bld-opt{transition:none}.h-bld-opt:active{transform:none}}
+@container (max-width: 440px){.h-bld-side{flex-direction:row;width:100%;align-items:flex-end}.h-bld-actions{flex-direction:column;align-items:flex-start}}
+.h-pav{display:inline-grid;flex:none;border-radius:50%;overflow:hidden}
+.h-pav svg{display:block}
 .h-pface,.h-photo{display:inline-grid;place-items:center;flex:none;border-radius:50%;overflow:hidden;background:var(--h-raise);box-shadow:inset 0 0 0 1px var(--h-line)}
 .h-photo img{width:100%;height:100%;object-fit:cover;display:block}
-.h-idcard-hero .h-pface,.h-idcard-hero .h-photo{width:100%!important;height:100%!important}
+.h-idcard-hero .h-pface,.h-idcard-hero .h-photo,.h-idcard-hero .h-pav{width:100%!important;height:100%!important}
+.h-idcard-hero .h-pav{border-radius:16%;box-shadow:0 0 0 1px oklch(1 0 0 / .18)}
+.h-idcard-hero .h-pav svg{width:100%;height:100%}
 .h-typingline{min-height:22px;padding:2px 6px 3px;font-size:12px;color:var(--h-fg3);display:flex;align-items:center}
 .h-typingrow{display:flex;align-items:center;gap:7px;min-width:0}
 .h-typing.h-typing-s{padding:3px 6px;gap:3px;border-radius:999px;flex:none}.h-typing-s i{width:4px;height:4px}

@@ -82,6 +82,7 @@ class Settings(BaseModel):
     relays: Optional[list[str]] = None
     onboarded: Optional[bool] = None
     person_face: Optional[dict] = None   # my own built face; {} takes it away (None means "not in this request")
+    person_avatar: Optional[dict] = None   # my pixel avatar; {} takes it away (None means "not in this request")
     show_avatars: Optional[str] = None   # "everyone" or "nobody"
     status_mode: Optional[str] = Field(None, max_length=16)   # auto | present | idle | dnd | invisible
     away_mode: Optional[str] = Field(None, max_length=16)     # chat | named | quiet
@@ -214,15 +215,17 @@ async def state(room: str = "", read: bool = True):
 async def settings(body: Settings):
     eng = await _engine()
     patch = {k: v for k, v in body.model_dump().items() if v is not None}
-    if "person_face" in patch:
-        await _run(eng.check_face_pace, patch["person_face"])  # too soon to publish it: refuse before saving anything
+    looks = {k: patch[k] for k in ("person_face", "person_avatar") if k in patch}
+    if looks:
+        # too soon to publish it: refuse before saving anything
+        await _run(eng.check_looks_pace, looks)
     relays_before = eng.relays()
     out = await _sync(eng.save_settings, patch)
     if "relays" in patch and eng.relays() != relays_before:
         await _run(eng.reconnect)
     if patch.get("onboarded"):
         await _run(eng.ensure_commons)  # nobody starts alone: join Commons right after setup
-    if "person_face" in patch:
+    if looks:
         await _run(eng.publish_face)  # only when it differs from what was last published
     eng._bump()
     return out

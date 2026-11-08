@@ -65,7 +65,7 @@ def test_card_options_match_between_engine_and_ui():
     assert _js_list(CORE, "FACE_CARDS") == eng_mod.FACE_CARDS == ["member", "scanner"]
     # the face editor offers exactly these, and Member stays the default (first)
     parts = (ROOT / "ui" / "30_parts.js").read_text()
-    assert "FACE_CARDS.map(o =>" in parts and "onClick: () => set({ card: o })" in parts
+    assert "FACE_CARDS.map(o =>" in parts and "onChange: v => set({ card: v })" in parts
 
 
 @pytest.mark.parametrize("bad", ["SCANNER", "Scanner ", "<script>", "javascript:", 5, None, ["scanner"], {"scanner": 1}, "", "holo"])
@@ -343,7 +343,7 @@ const bad = {json.dumps(bad)}
 console.log(JSON.stringify(bad.map(m => scannerSvg({{ hue: 10, name: 'A', tag: 'Agent', faces: [{{ inner: m, left: 0, top: 0, size: 100, front: true }}] }}))))""")
     for svg in out:
         _check_inert(svg)
-        assert 'viewBox="0 0 40 40"' not in svg
+        assert 'viewBox="0 0 64 64"' not in svg
     odd = "\u0000\u0007bad\ud800 name \n\t" + "x" * 500
     for opts in ("{}", "{ name: %s, tag: %s, fields: [[%s, %s]], serial: %s, led: %s, pk: %s }" % ((json.dumps(odd),) * 7),
                  "{ hue: 'x', name: null, fields: [null, ['a'], ['b', null], ['c', 'd']], faces: 'nope', warn: 1 }",

@@ -187,8 +187,8 @@ function IdCard(props) {
   const crew = (props.agents || []).filter(a => a && a.pk).slice(0, 3)
   const idle = 'activity: idle'
 
-  // a person who set a picture or a face is shown by it (never a lookalike: the sheet passes `art` only for the real key)
-  const mark = !agent && !warn && props.art && (props.art.av || props.art.face) ? jsx(PersonHero, { pk: props.pk, art: props.art }) : null
+  // a person who set a picture, an avatar or a face is shown by it (never a lookalike: the sheet passes `art` only for the real key)
+  const mark = !agent && !warn && props.art && (props.art.av || props.art.avatar || props.art.face) ? jsx(PersonHero, { pk: props.pk, art: props.art }) : null
   const hero = agent
     // the picture is always the whole face; an away agent's status is in the corner, not a faded portrait
     ? jsx(Face, { face: props.face, pk: props.pk, state: stateWord(props.state) === 'absent' ? idle : (props.state || idle), size: 120 })
@@ -257,11 +257,12 @@ function IdCard(props) {
     children: jsx('div', { className: 'h-idcard-tilt', children: jsxs('div', { className: 'h-idcard-turn', ref: turn, children: [front, back] }) }) })
 }
 
-// A person's picture or face as the card's big picture. The saved card image draws a face but not a picture
-// (the picture is a stranger's file: it stays out of anything that gets exported).
+// A person's picture, avatar or face as the card's big picture. The saved card image draws an avatar or face but not a
+// picture (the picture is a stranger's file: it stays out of anything that gets exported).
 function PersonHero(props) {
   const uri = useAvatarUri(props.art.av && props.pk ? props.pk : '', props.art.av)
   if (uri) return jsx(PersonPhoto, { uri, size: 120, className: 'h-idcard-photo' })
+  if (props.art.avatar && cleanAvatar(props.art.avatar)) return jsx(PersonAvatar, { avatar: props.art.avatar, size: 120 })
   if (props.art.face) return jsx(PersonFace, { face: props.art.face, pk: props.pk, size: 120 })
   return null
 }

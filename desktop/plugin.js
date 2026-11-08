@@ -1250,108 +1250,13 @@ const LOBBY_ART = 'data:image/webp;base64,UklGRkZ2AABXRUJQVlA4IDp2AAAQhQGdASrgAX
 // ===== ui/10_face.js ============================================================================
 
 // ---------------------------------------------------------------------------------------------
-// faces: a procedural SVG per agent. Shape + hue are the agent's own choice (or derived from its
-// pubkey). The colour is the theme's foreground rotated to the agent's hue and mixed into the
-// background, so a face reads as mid-tone on light and dark themes alike. Eyes and mouth follow
-// the agent's presence state with CSS keyframes (compositor only, no JS per frame); a state
-// change gives the whole face a small spring "pop".
+// faces: a pixel-art head per agent (ui/12_pixel.js draws it). Shape, parts and hue are the agent's own
+// choice (or derived from its pubkey); the head glows in its hue like a hologram, with a neon edge and a
+// faint dark hairline (CSS) so it reads
+// on light and dark themes alike. Eyes and mouth follow the agent's presence state: the state picks
+// which frames are drawn, and CSS keyframes swap or step them (blinking, talking, scanning; no JS per
+// frame). A state change gives the whole face a small spring "pop".
 // ---------------------------------------------------------------------------------------------
-
-// eyes/ey/my: eye x's, eye line, mouth line. top: the head's top at x=20. sides: its edges at eye level.
-const FACE_BODY = {
-  round: { d: 'M20 5a16 16 0 1 1 0 32a16 16 0 1 1 0-32z', eyes: [14.5, 25.5], ey: 20, my: 27, top: 5, sides: [4.5, 35.5] },
-  soft: { d: 'M15 6h10c6.6 0 10 3.4 10 10v10c0 6.6-3.4 10-10 10H15C8.4 36 5 32.6 5 26V16C5 9.4 8.4 6 15 6z', eyes: [14.5, 25.5], ey: 19.5, my: 27, top: 6, sides: [5, 35] },
-  tall: { d: 'M20 3c7.5 0 12 7.2 12 17.5S27.5 38 20 38S8 30.8 8 20.5S12.5 3 20 3z', eyes: [15.5, 24.5], ey: 18, my: 27.5, top: 3, sides: [8.3, 31.7] },
-  wide: { d: 'M14 9h12c7.7 0 11 4 11 12.5S33.7 34 26 34H14C6.3 34 3 30 3 21.5S6.3 9 14 9z', eyes: [13, 27], ey: 20, my: 27, top: 9, sides: [3.2, 36.8] },
-  drop: { d: 'M20 4c4 6 15 12.5 15 21.5A15 15 0 0 1 5 25.5C5 16.5 16 10 20 4z', eyes: [14.5, 25.5], ey: 23, my: 30, top: 4, sides: [5.6, 34.4] },
-  bean: { d: 'M10 9.5c3.5-4 9-4 12.5-2.2c2.6 1.3 4.6.6 7.2 1.6c4.4 1.7 6.3 6.3 5.2 11.6C33.4 28.6 27 35 19 35S4.2 30 4.5 22.5C4.7 17 6.6 13.4 10 9.5z', eyes: [15, 26], ey: 19, my: 27, top: 7, sides: [4.8, 35.3] }
-}
-
-// The chosen eyes, drawn as .hf-eye so blinking, scanning and the state squints still apply.
-function faceEyes(kind, lx, rx, ey, delay) {
-  const st = { animationDelay: delay }
-  const pair = make => [make(lx, 'l'), make(rx, 'r')]
-  if (kind === 'visor') {
-    return [jsx('rect', { className: 'hf-eye', x: lx - 3.4, y: ey - 1.9, width: rx - lx + 6.8, height: 3.8, rx: 1.9, style: st }, 'v')]
-  }
-  if (kind === 'round') return pair((x, k) => jsx('circle', { className: 'hf-eye', cx: x, cy: ey, r: 2.5, style: st }, k))
-  if (kind === 'sleepy') return pair((x, k) => jsx('rect', { className: 'hf-eye', x: x - 2.3, y: ey - 0.4, width: 4.6, height: 2.2, rx: 1.1, style: st }, k))
-  if (kind === 'wide') {
-    return pair((x, k) => jsxs('g', { children: [
-      jsx('ellipse', { className: 'hf-eye', cx: x, cy: ey, rx: 2.5, ry: 3.3, style: st }),
-      jsx('circle', { className: 'hf-glint', cx: x + 0.9, cy: ey - 1.2, r: 0.8 })
-    ] }, k))
-  }
-  return pair((x, k) => jsx('rect', { className: 'hf-eye', x: x - 1.9, y: ey - 2.6, width: 3.8, height: 5.2, rx: 1.9, style: st }, k))
-}
-
-// The resting mouth (speaking, reactions, waiting and errors draw their own).
-function faceMouth(kind, my) {
-  if (kind === 'flat') return jsx('path', { className: 'hf-line', d: `M17.5 ${my}h5` })
-  if (kind === 'grin') return jsx('path', { className: 'hf-mouth', d: `M15.8 ${my - 1.2}q4.2 5 8.4 0z` })
-  if (kind === 'cat') return jsx('path', { className: 'hf-line', d: `M16.4 ${my - 0.8}q1.8 2.2 3.6 0q1.8 2.2 3.6 0` })
-  if (kind === 'o') return jsx('ellipse', { className: 'hf-mouth', cx: 20, cy: my, rx: 1.5, ry: 1.7 })
-  return jsx('path', { className: 'hf-line', d: `M16.5 ${my - 0.6}q3.5 2.6 7 0` })
-}
-
-// Cheek marks in the second colour, kept well inside every body shape.
-function facePattern(kind, b) {
-  const [lx, rx] = b.eyes
-  const cy = (b.ey + b.my) / 2 + 0.6
-  if (kind === 'blush') {
-    return [jsx('ellipse', { className: 'hf-acc hf-blush', cx: lx - 1.6, cy, rx: 2.4, ry: 1.4 }, 'l'),
-      jsx('ellipse', { className: 'hf-acc hf-blush', cx: rx + 1.6, cy, rx: 2.4, ry: 1.4 }, 'r')]
-  }
-  if (kind === 'freckles') {
-    const dots = []
-    for (const [x, s] of [[lx, -1], [rx, 1]]) {
-      for (const [dx, dy] of [[-1.6, 0], [0.4, -0.9], [0.9, 1]]) dots.push(jsx('circle', { className: 'hf-acc', cx: x + s * dx, cy: cy + dy, r: 0.55 }, x + ':' + dx))
-    }
-    return dots
-  }
-  if (kind === 'spots') {
-    return [jsx('circle', { className: 'hf-acc hf-spot', cx: lx - 2.6, cy: b.ey - 5.4, r: 1.9 }, 'a'),
-      jsx('circle', { className: 'hf-acc hf-spot', cx: rx + 2.2, cy: b.ey - 4.2, r: 1.3 }, 'b'),
-      jsx('circle', { className: 'hf-acc hf-spot', cx: rx + 0.6, cy: b.my + 3.2, r: 1.1 }, 'c')]
-  }
-  return null
-}
-
-// Something worn, in the second colour. Drawn after the body so it sits on top.
-function faceAcc(kind, b) {
-  const [lx, rx] = b.eyes
-  const [sl, sr] = b.sides
-  const t = b.top
-  const ey = b.ey
-  if (kind === 'antenna') {
-    return [jsx('path', { className: 'hf-acc-line', d: `M20 ${t + 0.6}V${t - 4.4}` }, 's'), jsx('circle', { className: 'hf-acc', cx: 20, cy: t - 5.6, r: 1.9 }, 'b')]
-  }
-  if (kind === 'glasses') {
-    return [jsx('circle', { className: 'hf-acc-line', cx: lx, cy: ey, r: 3.7 }, 'l'), jsx('circle', { className: 'hf-acc-line', cx: rx, cy: ey, r: 3.7 }, 'r'),
-      jsx('path', { className: 'hf-acc-line', d: `M${lx + 3.7} ${ey}q${(rx - lx) / 2 - 3.7} -1.4 ${rx - lx - 7.4} 0` }, 'b')]
-  }
-  if (kind === 'headphones') {
-    return [jsx('path', { className: 'hf-acc-line hf-thick', d: `M${sl + 0.6} ${ey}C${sl} ${t - 6} ${sr} ${t - 6} ${sr - 0.6} ${ey}` }, 'band'),
-      jsx('rect', { className: 'hf-acc', x: sl - 2.2, y: ey - 3.4, width: 4.4, height: 6.8, rx: 1.8 }, 'l'),
-      jsx('rect', { className: 'hf-acc', x: sr - 2.2, y: ey - 3.4, width: 4.4, height: 6.8, rx: 1.8 }, 'r')]
-  }
-  if (kind === 'halo') return jsx('ellipse', { className: 'hf-acc-line hf-thick', cx: 20, cy: t - 3.6, rx: 7.5, ry: 2.1 })
-  if (kind === 'sprout') {
-    return [jsx('path', { className: 'hf-acc-line', d: `M20 ${t + 0.8}q-.4 -2.6 0 -4.6` }, 's'),
-      jsx('path', { className: 'hf-acc', d: `M20 ${t - 3.6}q-3 -3.6 -6.4 -1.2q3 3 6.4 1.2z` }, 'l'),
-      jsx('path', { className: 'hf-acc', d: `M20 ${t - 3.8}q2.4 -3 5.2 -1q-2.4 2.6 -5.2 1z` }, 'r')]
-  }
-  if (kind === 'horns') {
-    const y = t + 2.6
-    return [jsx('path', { className: 'hf-acc', d: `M13 ${y + 0.8}l-1.6 -6.2l5 3.6z` }, 'l'), jsx('path', { className: 'hf-acc', d: `M27 ${y + 0.8}l1.6 -6.2l-5 3.6z` }, 'r')]
-  }
-  if (kind === 'bow') {
-    const x = 27.5, y = t + 3.4
-    return [jsx('path', { className: 'hf-acc', d: `M${x} ${y}l-4.6 -2.8v5.6z` }, 'l'), jsx('path', { className: 'hf-acc', d: `M${x} ${y}l4.6 -2.8v5.6z` }, 'r'),
-      jsx('circle', { className: 'hf-acc hf-knot', cx: x, cy: y, r: 1.3 }, 'k')]
-  }
-  return null
-}
 
 // A short-lived expression per agent pk ('smug', 'caught', 'happy', 'wary', 'perk'), worked out on each
 // client from room events it already has (see reactionsFor). Never sent over the wire.
@@ -1371,7 +1276,6 @@ function PersonFace(props) {
 
 function Face(props) {
   const f = faceFor(props.face, props.pk)
-  const body = FACE_BODY[f.shape] || FACE_BODY.round
   const state = stateWord(props.state)
   const exprs = useContext(ExprContext)
   const expr = (state !== 'absent' && state !== 'error' && exprs[props.pk]) || ''
@@ -1393,46 +1297,36 @@ function Face(props) {
   // a stable per-agent offset so two faces in a list never blink in unison
   const seed = parseInt(String(props.pk || '7f').slice(-3), 16) || 0
   const delay = -((seed % 4700) / 1000).toFixed(2) + 's'
-  const [lx, rx] = body.eyes
-  const ey = body.ey
-
-  const eyes = state === 'error'
-    ? jsxs('g', { className: 'hf-xeyes', children: [
-        jsx('path', { d: `M${lx - 2} ${ey - 2}l4 4m0-4l-4 4` }),
-        jsx('path', { d: `M${rx - 2} ${ey - 2}l4 4m0-4l-4 4` })
-      ] })
-    : jsx('g', { className: 'hf-eyes', style: { animationDelay: delay }, children: faceEyes(f.eyes, lx, rx, ey, delay) })
-
-  const my = body.my
-  const mouth = state === 'speaking'
-    ? jsx('ellipse', { className: 'hf-mouth hf-talk', cx: 20, cy: body.my, rx: 2.6, ry: 1.8 })
-    : expr === 'smug' ? jsx('path', { className: 'hf-line', d: `M16.8 ${my}q3 1.6 6.6 -1.2` })
-    : expr === 'caught' ? jsx('ellipse', { className: 'hf-mouth', cx: 20, cy: my, rx: 1.6, ry: 1.9 })
-    : expr === 'happy' ? jsx('path', { className: 'hf-mouth', d: `M15.8 ${my - 1.2}q4.2 5 8.4 0z` })
-    : expr === 'wary' ? jsx('path', { className: 'hf-line', d: `M17.2 ${my + 0.4}h5.6` })
-    : state === 'error'
-      ? jsx('path', { className: 'hf-line', d: `M16.5 ${body.my + 1}q3.5 -2.4 7 0` })
-      : state === 'waiting' || state === 'absent'
-        ? jsx('path', { className: 'hf-line', d: `M17.5 ${body.my}h5` })
-        : faceMouth(f.mouth, my)
+  const fr = pxAgentFrames(state, expr)
+  const art = pxAgent(f, fr.eyes, fr.mouth)
+  const col = art.colours
+  const g = (cls, paths, key, style) => jsx('g', { className: cls, style, children: pxPathEls(paths, col, key) }, key)
 
   return jsx('span', {
-    ref, className: cx('hf', props.className), 'data-state': state, 'data-expr': expr || undefined, 'data-size': size <= 20 ? 's' : 'm',
-    style: { width: size, height: size, '--hue': f.hue, '--hue2': f.hue2 },
+    ref, className: cx('hf', 'hf-px', props.className), 'data-state': state, 'data-expr': expr || undefined,
+    'data-size': size <= 20 ? 's' : size < 48 ? 'm' : 'l',
+    style: { width: size, height: size, '--glow': col.glow + 'a6', '--glow2': col.glow + '40', '--gs': Math.max(1, Math.round(size / 20)) + 'px' },
     role: 'img', 'aria-label': (props.name ? props.name + ', ' : '') + STATE_LABEL[state],
-    children: jsxs('svg', { viewBox: '0 0 40 40', width: size, height: size, 'aria-hidden': true, children: [
+    children: jsxs('svg', { viewBox: '0 0 64 64', width: size, height: size, 'aria-hidden': true,
+      shapeRendering: pxCrisp(size) ? 'crispEdges' : 'auto', children: [
       jsxs('g', { className: 'hf-head', children: [
-        jsx('path', { className: 'hf-body', d: body.d }),
-        jsx('path', { className: 'hf-shine', d: body.d }),
-        facePattern(f.pattern, body),
-        eyes,
-        mouth,
-        faceAcc(f.acc, body)
+        jsx('g', { className: 'pf-under', children: pxPathEls(art.under, col, 'u') }),
+        g('pf-base', art.base, 'b'),
+        jsx('g', { className: 'pf-scan', children: pxPathEls(art.scan, { n: '#02050a' }, 's') }),
+        jsxs('g', { className: 'hf-eyes', style: { animationDelay: delay }, children: [
+          g('pf-eo', art.eyes, 'eo', { animationDelay: delay }),
+          art.blink && g('pf-ec', art.blink, 'ec', { animationDelay: delay })
+        ] }),
+        jsxs('g', { className: 'pf-mouth', children: [
+          g('pf-mr', art.mouth, 'mr'),
+          state === 'speaking' && !expr && g('pf-mt', art.talk, 'mt')
+        ] }),
+        g('pf-acc', art.acc, 'a')
       ] }),
       state === 'waiting' && jsxs('g', { className: 'hf-clock', children: [
-        jsx('circle', { cx: 33, cy: 7, r: 5.2 }),
-        jsx('path', { className: 'hf-hand', d: 'M33 7V4.2' }),
-        jsx('path', { d: 'M33 7h2' })
+        jsx('circle', { cx: 54, cy: 10, r: 8.5 }),
+        jsx('path', { className: 'hf-hand', d: 'M54 10V4.5' }),
+        jsx('path', { d: 'M54 10h4' })
       ] })
     ] })
   })
@@ -1476,6 +1370,906 @@ function BudgetRing(props) {
   const tone = pct >= 1 ? 'rest' : pct >= 0.85 ? 'warn' : ''
   const label = `${fmtTokens(b.used)} of ${fmtTokens(b.limit)} tokens today`
   return jsx(Ring, { pct, size: props.size || 18, stroke: props.stroke, tone, label, title: label, children: props.children })
+}
+
+// ===== ui/12_pixel.js ===========================================================================
+
+// ---------------------------------------------------------------------------------------------
+// pixel art: every face (an agent's) and avatar (a person's) is drawn on one 64 x 64 grid from parts.
+//
+// A part paints cells of the grid with palette slots (one letter each); later parts paint over earlier
+// ones. The grid becomes SVG: one <path> per colour, built from merged runs of cells (never a <rect>
+// per cell). Everything here is plain arithmetic on whole cells (no trig, no randomness), so the same
+// settings give the same pixels on every install. Nothing is fetched and no image is generated.
+// ---------------------------------------------------------------------------------------------
+
+const PX = 64
+const PX_MID = 31.5   // the grid's centre line: symmetric parts mirror across it
+
+// A grid: one byte per cell, 0 for empty, else a slot letter's char code.
+function pxGrid() { return new Uint8Array(PX * PX) }
+const pxCode = s => s.charCodeAt(0)
+
+// A mask of the cells for which test(x, y) holds (x, y are whole cell coordinates).
+function pxMask(test) {
+  const m = new Uint8Array(PX * PX)
+  for (let y = 0; y < PX; y++) for (let x = 0; x < PX; x++) if (test(x, y)) m[y * PX + x] = 1
+  return m
+}
+const pxAt = (m, x, y) => x >= 0 && y >= 0 && x < PX && y < PX ? m[y * PX + x] : 0
+function pxOr(a, b) { const m = new Uint8Array(PX * PX); for (let i = 0; i < m.length; i++) m[i] = a[i] || b[i] ? 1 : 0; return m }
+function pxCut(a, b) { const m = new Uint8Array(PX * PX); for (let i = 0; i < m.length; i++) m[i] = a[i] && !b[i] ? 1 : 0; return m }
+function pxAnd(a, b) { const m = new Uint8Array(PX * PX); for (let i = 0; i < m.length; i++) m[i] = a[i] && b[i] ? 1 : 0; return m }
+
+// Shapes as tests. Centres may sit between cells (31.5 is the grid's middle).
+const pxEllipse = (cx, cy, rx, ry) => (x, y) => { const u = (x - cx) / rx, v = (y - cy) / ry; return u * u + v * v <= 1 }
+const pxRing = (cx, cy, rx, ry, t) => {
+  const o = pxEllipse(cx, cy, rx, ry), i = pxEllipse(cx, cy, rx - t, ry - t)
+  return (x, y) => o(x, y) && !i(x, y)
+}
+// a superellipse with exponent 4: a soft square
+const pxSquircle = (cx, cy, rx, ry) => (x, y) => { const u = (x - cx) / rx, v = (y - cy) / ry; return u * u * u * u + v * v * v * v <= 1 }
+const pxRect = (x0, y0, x1, y1) => (x, y) => x >= x0 && x <= x1 && y >= y0 && y <= y1
+// a filled triangle (any winding)
+const pxTri = (ax, ay, bx, by, cx, cy) => (x, y) => {
+  const s1 = (bx - ax) * (y - ay) - (by - ay) * (x - ax)
+  const s2 = (cx - bx) * (y - by) - (cy - by) * (x - bx)
+  const s3 = (ax - cx) * (y - cy) - (ay - cy) * (x - cx)
+  return (s1 >= 0 && s2 >= 0 && s3 >= 0) || (s1 <= 0 && s2 <= 0 && s3 <= 0)
+}
+// a thick line segment
+const pxLine = (ax, ay, bx, by, w) => (x, y) => {
+  const dx = bx - ax, dy = by - ay, L = dx * dx + dy * dy
+  let t = L ? ((x - ax) * dx + (y - ay) * dy) / L : 0
+  t = t < 0 ? 0 : t > 1 ? 1 : t
+  const ex = ax + t * dx - x, ey = ay + t * dy - y
+  return ex * ex + ey * ey <= w * w / 4
+}
+const pxAny = (...tests) => (x, y) => tests.some(t => t(x, y))
+
+// Paint every cell of a mask with a slot (only where `where` allows, when given).
+function pxPaint(g, m, slot, where) {
+  const c = pxCode(slot)
+  for (let i = 0; i < m.length; i++) if (m[i] && (!where || where[i])) g[i] = c
+}
+
+// The cells just outside a mask (4-neighbours): its 1-cell outline.
+function pxEdge(m) {
+  return pxMask((x, y) => !m[y * PX + x] && (pxAt(m, x - 1, y) || pxAt(m, x + 1, y) || pxAt(m, x, y - 1) || pxAt(m, x, y + 1)))
+}
+
+// City-block distance from each cell of a mask to the nearest cell outside it (1 = on its edge).
+function pxDepth(m) {
+  const d = new Int16Array(PX * PX)
+  const big = 999
+  for (let y = 0; y < PX; y++) for (let x = 0; x < PX; x++) {
+    const i = y * PX + x
+    if (!m[i]) { d[i] = 0; continue }
+    const up = y > 0 ? d[i - PX] : 0, left = x > 0 ? d[i - 1] : 0
+    d[i] = Math.min(big, up + 1, left + 1)
+  }
+  for (let y = PX - 1; y >= 0; y--) for (let x = PX - 1; x >= 0; x--) {
+    const i = y * PX + x
+    if (!m[i]) continue
+    const dn = y < PX - 1 ? d[i + PX] : 0, rt = x < PX - 1 ? d[i + 1] : 0
+    d[i] = Math.min(d[i], dn + 1, rt + 1)
+  }
+  return d
+}
+
+// Rows of letters ('.' is nothing) placed with their top-left at (x, y); `flip` mirrors them.
+function pxMap(g, rows, x, y, flip) {
+  for (let r = 0; r < rows.length; r++) {
+    const row = rows[r]
+    for (let i = 0; i < row.length; i++) {
+      const ch = row[i]
+      if (ch === '.' || ch === ' ') continue
+      const gx = flip ? x + row.length - 1 - i : x + i, gy = y + r
+      if (gx >= 0 && gy >= 0 && gx < PX && gy < PX) g[gy * PX + gx] = pxCode(ch)
+    }
+  }
+}
+
+// A grid -> { slot letter: path data }. Each run of equal cells in a row is a rectangle; a rectangle
+// that repeats exactly on the next row grows downwards instead of starting again.
+function pxPaths(g) {
+  const out = {}
+  let open = new Map()   // "x0,x1,code" -> [y0, h] for runs still growing
+  const flush = (key, r) => {
+    const [x0, x1, code] = key.split(',').map(Number)
+    const k = String.fromCharCode(code)
+    out[k] = (out[k] || '') + 'M' + x0 + ' ' + r[0] + 'h' + (x1 - x0) + 'v' + r[1] + 'h' + (x0 - x1) + 'z'
+  }
+  for (let y = 0; y <= PX; y++) {
+    const next = new Map()
+    if (y < PX) {
+      let x = 0
+      while (x < PX) {
+        const c = g[y * PX + x]
+        let e = x + 1
+        while (e < PX && g[y * PX + e] === c) e++
+        if (c) {
+          const key = x + ',' + e + ',' + c
+          const r = open.get(key)
+          if (r) { r[1] += 1; next.set(key, r); open.delete(key) } else next.set(key, [y, 1])
+        }
+        x = e
+      }
+    }
+    open.forEach((r, key) => flush(key, r))
+    open = next
+  }
+  return out
+}
+
+// A layer as SVG paths: one per slot, coloured from `colours` (slot -> hex); unknown slots are skipped.
+function pxPathEls(paths, colours, prefix) {
+  return Object.keys(paths).sort().map(k => colours[k]
+    ? jsx('path', { d: paths[k], fill: colours[k], 'data-px': k }, (prefix || '') + k)
+    : null)
+}
+
+// Cells a grid uses, as a mask (for an underlay that hides seams when the art is smoothed down).
+function pxUsed(...grids) {
+  const m = new Uint8Array(PX * PX)
+  for (const g of grids) for (let i = 0; i < m.length; i++) if (g[i]) m[i] = 1
+  return m
+}
+
+// Small cache: grids are cheap, but a room re-renders dozens of faces on every snapshot.
+function pxCache(limit) {
+  const map = new Map()
+  return (key, make) => {
+    if (map.has(key)) { const v = map.get(key); map.delete(key); map.set(key, v); return v }
+    const v = make()
+    map.set(key, v)
+    if (map.size > limit) map.delete(map.keys().next().value)
+    return v
+  }
+}
+
+// Whether the art lands on whole device pixels at this size: then crisp edges; otherwise the browser
+// smooths the downscale, which reads better than dropping rows at 24 or 40 px.
+function pxCrisp(size, grid) {
+  const n = grid || PX
+  let dpr = 1
+  try { dpr = window.devicePixelRatio || 1 } catch (_) { /* not in a browser */ }
+  const dev = size * dpr
+  return Math.abs(dev / n - Math.round(dev / n)) < 0.001 && dev >= n
+}
+
+// ---------------------------------------------------------------------------------------------
+// agents: a glowing blob in its owner's hue. The body's outline, rim, light, shade, highlight and
+// scanlines all follow from its silhouette, so every shape is lit the same way.
+// ---------------------------------------------------------------------------------------------
+
+// The six silhouettes. ex/ey: the left eye's centre (the right one mirrors across the middle);
+// my: the mouth line; c: the centre the highlight is measured from.
+const PXF_BODY = {
+  round: { test: pxEllipse(PX_MID, 38, 22.6, 22), ex: 23, ey: 36, my: 46, c: [31.5, 38] },
+  soft: { test: pxSquircle(PX_MID, 39, 23.2, 20.6), ex: 22, ey: 37, my: 47, c: [31.5, 39] },
+  tall: { test: (x, y) => { const k = y < 36 ? 1 - (36 - y) * 0.0062 : 1; const u = (x - PX_MID) / (16.6 * k), v = (y - 37) / 24.6; return u * u + v * v <= 1 },
+    ex: 25, ey: 34, my: 46, c: [31.5, 37] },
+  wide: { test: pxSquircle(PX_MID, 41, 26.6, 16.6), ex: 21, ey: 39, my: 48, c: [31.5, 41] },
+  drop: { test: (x, y) => {
+    const cy = 42, r = 19.6, tip = 13
+    if (y >= cy) { const u = (x - PX_MID) / r, v = (y - cy) / r; return u * u + v * v <= 1 }
+    if (y < tip) return false
+    const s = (y - tip) / (cy - tip), hw = r * s * Math.sqrt(1 - (1 - s) * (1 - s))
+    return Math.abs(x - PX_MID) <= hw
+  }, ex: 24, ey: 42, my: 51, c: [31.5, 42] },
+  bean: { test: (x, y) => {
+    const main = pxEllipse(32.5, 40, 26.4, 17.2)(x, y) || pxEllipse(20, 36, 14, 15.4)(x, y)
+    const dent = pxEllipse(34, 20.2, 8.5, 4.6)(x, y)
+    return main && !dent
+  }, ex: 22, ey: 37, my: 47, c: [29, 38] }
+}
+
+// Hue -> the face's colours, as hex (computed here, so a saved card picture needs no page CSS).
+// A hologram on a screen: a bright neon edge, a lit rim inside it, a body a little darker and softer
+// toward the bottom right; features are the body's own hue, very dark.
+function pxAgentColours(hue, hue2) {
+  const h = ((Number(hue) % 360) + 360) % 360, h2 = ((Number(hue2) % 360) + 360) % 360
+  const o = (l, c, hh) => oklchToHex(l, c, hh)
+  return {
+    o: o(0.91, 0.1, h), r: o(0.79, 0.13, h), l: o(0.73, 0.14, h), b: o(0.66, 0.15, h), s: o(0.57, 0.15, h),
+    w: o(0.95, 0.05, h), f: o(0.22, 0.07, h), t: o(0.4, 0.12, h + 25), p: o(0.7, 0.13, h + 330), g: o(0.93, 0.1, h),
+    a: o(0.78, 0.14, h2), A: o(0.6, 0.15, h2), k: o(0.93, 0.07, h2), c: o(0.74, 0.15, h2), d: o(0.42, 0.1, h2), q: o(0.25, 0.06, h2),
+    glow: o(0.8, 0.15, h)
+  }
+}
+
+// The body: silhouette, neon outline, a two-cell rim, light top-left, shade bottom-right, a small
+// highlight that follows the contour, scanlines on alternate rows (drawn as a separate layer).
+function pxAgentBody(shape) {
+  const b = PXF_BODY[shape] || PXF_BODY.round
+  const m = pxMask(b.test)
+  const d = pxDepth(m)
+  const g = pxGrid()
+  pxPaint(g, pxEdge(m), 'o')
+  const [cx, cy] = b.c
+  for (let y = 0; y < PX; y++) for (let x = 0; x < PX; x++) {
+    const i = y * PX + x
+    if (!m[i]) continue
+    const dx = x - cx, dy = y - cy
+    let s = 'b'
+    if (d[i] <= 2) s = 'r'
+    else if (!pxAt(m, x + 4, y + 5)) s = 's'
+    else if (!pxAt(m, x - 5, y - 6)) s = 'l'
+    // the highlight: a short band four cells in, on the upper left (between about 30 and 60 degrees up)
+    if (d[i] === 4 && dx < 0 && dy < 0 && -dy > -dx * 0.58 && -dy < -dx * 1.73) s = 'w'
+    g[i] = pxCode(s)
+  }
+  const scan = pxMask((x, y) => m[y * PX + x] && y % 2 === 1 && d[y * PX + x] > 2)
+  return { g, m, d, scan, b }
+}
+
+// The top of the body at column x (first filled row), and its sides at row y.
+function pxTop(m, x) { for (let y = 0; y < PX; y++) if (m[y * PX + x]) return y; return PX }
+function pxSides(m, y) {
+  let l = -1, r = -1
+  for (let x = 0; x < PX; x++) if (m[y * PX + x]) { if (l < 0) l = x; r = x }
+  return [l, r]
+}
+
+// Features are small drawings, centred where the shape says (rows of slot letters).
+const PXF_EYE = {
+  dot: ['.ffff.', 'fwwfff', 'fwwfff', 'ffffff', 'ffffff', 'ffffff', 'ffffff', '.ffff.'],
+  round: ['..fffff..', '.fffffff.', 'fwwffffff', 'fwwffffff', 'fffffffff', 'fffffffff', 'ffffffwff', '.fffffff.', '..fffff..'],
+  wide: ['..ffff..', '.ffffff.', 'ffwwffff', 'fwwwffff', 'fwwwffff', 'ffwfffff', 'ffffffff', 'ffffffff', 'fffffwff', 'ffffffff', '.ffffff.', '..ffff..'],
+  big: ['...ffff...', '.ffffffff.', 'ffwwwfffff', 'fwwwwfffff', 'fwwwffffff', 'ffffffffff', 'ffffffffff', 'ffffffffff', 'fffffffwff', 'ffffffffff', '.ffffffff.', '...ffff...'],
+  closed: ['ffffffff', '.ffffff.'],
+  content: ['ff......ff', '.ff....ff.', '..ffffff..'],
+  happy: ['..ffffff..', '.ffffffff.', 'ff......ff', 'f........f'],
+  x: ['ff....ff', 'fff..fff', '.ffffff.', '..ffff..', '..ffff..', '.ffffff.', 'fff..fff', 'ff....ff']
+}
+const PXF_MOUTH = {
+  smile: ['ff..........ff', 'fff........fff', '.ffff....ffff.', '...ffffffff...'],
+  flat: ['ffffffffff', 'ffffffffff'],
+  grin: ['ffffffffffffffff', 'fttttttttttttttf', 'fttttttttttttttf', '.fttttttttttttf.', '.fttppppppppttf.', '..ftppppppppft..', '...ffppppppff...', '.....ffffff.....'],
+  cat: ['ff....ff....ff', '.ff..ffff..ff.', '..ffff..ffff..'],
+  o: ['..ffff..', '.ffffff.', 'ffttttff', 'fttttttf', 'fttppttf', 'ffppppff', '.ffffff.', '..ffff..'],
+  talk: ['..ffffff..', '.fttttttf.', 'fttttttttf', 'ftttpptttf', 'fttppppttf', '.fppppppf.', '..ffffff..'],
+  smirk: ['..........ff', '........fff.', 'ff....ffff..', '.ffffff.....'],
+  frown: ['....ffff....', '..ffffffff..', '.ff......ff.', 'ff........ff']
+}
+// a drawing centred on (cx, cy): odd widths on a cell, even widths between two cells
+function pxCentre(g, rows, cx, cy) { pxMap(g, rows, Math.round(cx - (rows[0].length - 1) / 2), Math.round(cy - (rows.length - 1) / 2)) }
+
+// Eyes: each kind and frame drawn for the left eye centred on (ex, ey) and the right one on (63 - ex, ey),
+// the same way round (both glints on the same side, like one light). Frames: open, closed (a blink,
+// asleep), half (waiting, smug), happy, x (error), big (caught, perk), wary (half, glancing aside).
+function pxEyes(kind, frame, b) {
+  const g = pxGrid()
+  const ex = b.ex, ey = b.ey, rx = PX - 1 - ex
+  const both = (rows, dx, dy) => { pxCentre(g, rows, ex + (dx || 0), ey + (dy || 0)); pxCentre(g, rows, rx + (dx || 0), ey + (dy || 0)) }
+  const paint = (test, slot) => pxPaint(g, pxMask(test), slot)
+  if (kind === 'visor') {
+    const top = ey - 5, bot = ey + 4, L = ex - 9, R = rx + 9
+    paint((x, y) => y >= top && y <= bot && x >= L && x <= R && !((y === top || y === bot) && (x === L || x === R)), 'f')
+    paint((x, y) => (y === top + 1) && x > L + 1 && x < R - 1, 'q')
+    const lit = rows => { const r2 = rows.map(r => r.replace(/f/g, 'g')); both(r2, frame === 'wary' ? -2 : 0, 0) }
+    if (frame === 'closed' || frame === 'half' || frame === 'wary') lit(['ffffffff'])
+    else if (frame === 'happy') lit(['..ffff..', '.ff..ff.', 'ff....ff'])
+    else if (frame === 'x') lit(['ff...ff', '.ff.ff.', '..fff..', '.ff.ff.', 'ff...ff'])
+    else if (frame === 'big') lit(['ffffffff', 'ffffffff', 'ffffffff', 'ffffffff'])
+    else lit(['.ffffff.', 'ffffffff', '.ffffff.'])
+    return g
+  }
+  if (frame === 'closed') { both(kind === 'sleepy' ? PXF_EYE.content : PXF_EYE.closed, 0, 1); return g }
+  if (frame === 'happy') { both(PXF_EYE.happy, 0, -1); return g }
+  if (frame === 'x') { both(PXF_EYE.x); return g }
+  if (kind === 'sleepy' && frame !== 'big') { both(PXF_EYE.content, frame === 'wary' ? -2 : 0, 1); return g }
+  const k = frame === 'big' ? 'big' : (PXF_EYE[kind] ? kind : 'dot')
+  both(PXF_EYE[k], frame === 'wary' ? -2 : 0, 0)
+  if (frame === 'half' || frame === 'wary') {
+    // a lid: everything above the eye line goes, and the line itself is the lid
+    for (let y = 0; y < ey - 1; y++) for (let x = 0; x < PX; x++) g[y * PX + x] = 0
+    for (let x = 0; x < PX; x++) if (g[(ey - 1) * PX + x] || g[ey * PX + x]) g[(ey - 1) * PX + x] = pxCode('f')
+    for (let i = 0; i < g.length; i++) if (g[i] === pxCode('w')) g[i] = pxCode('f')
+  }
+  return g
+}
+
+// Mouths, centred on the middle line, their top on row my.
+function pxMouth(kind, b) {
+  const g = pxGrid()
+  const rows = PXF_MOUTH[kind] || PXF_MOUTH.smile
+  pxMap(g, rows, Math.round(PX_MID - (rows[0].length - 1) / 2), b.my - 1)
+  return g
+}
+
+// Cheeks, in the second colour, kept inside the body (never on its rim).
+function pxPattern(kind, body, g) {
+  const b = body.b
+  const inside = pxMask((x, y) => body.d[y * PX + x] > 3)
+  const paint = (test, slot) => pxPaint(g, pxMask(test), slot, inside)
+  const L = b.ex, R = PX - 1 - b.ex, y = b.ey + 6
+  if (kind === 'blush') paint(pxAny(pxEllipse(L - 3, y, 4.6, 2.3), pxEllipse(R + 3, y, 4.6, 2.3)), 'c')
+  else if (kind === 'freckles') {
+    for (const [dx, dy] of [[-6, 0], [-3, 2], [0, 0], [-3, -2]]) {
+      paint(pxRect(L + dx - 1, y + dy, L + dx, y + dy), 'd')
+      paint(pxRect(R - dx, y + dy, R - dx + 1, y + dy), 'd')
+    }
+  } else if (kind === 'spots') {
+    const [cx, cy] = b.c
+    paint(pxAny(pxEllipse(cx - 12, cy - 10, 3.8, 3.4), pxEllipse(cx + 13, cy - 6, 2.8, 2.6), pxEllipse(cx + 10, cy + 10, 2.4, 2.2)), 'c')
+  }
+}
+
+// What the agent wears, in the second colour, with its own dark outline. Drawn over everything.
+function pxAccessory(kind, body) {
+  const g = pxGrid()
+  const m = body.m, b = body.b
+  const top = pxTop(m, 31)
+  const [sl, sr] = pxSides(m, b.ey)
+  const shapes = []   // [mask, slot] pairs; the outline goes round their union
+  const add = (test, slot) => shapes.push([pxMask(test), slot])
+  // tall bodies leave little room above: tall things on top come down so they stay whole, outline and all
+  const lift = Math.max(0, 16 - top)
+  if (kind === 'antenna') {
+    const ay = top - 11 + lift
+    add(pxRect(31, ay + 3, 32, top + 1), 'A')
+    add(pxEllipse(PX_MID, ay, 3.6, 3.6), 'a')
+    add(pxRect(30, ay - 2, 30, ay - 1), 'k')
+  } else if (kind === 'glasses') {
+    const L = b.ex, R = PX - 1 - b.ex
+    add(pxAny(pxRing(L, b.ey, 7.4, 6.6, 1.8), pxRing(R, b.ey, 7.4, 6.6, 1.8), pxRect(L + 7, b.ey - 2, R - 7, b.ey - 1)), 'a')
+  } else if (kind === 'headphones') {
+    // the cups hug the sides, but never closer than a cup and its outline to the edge
+    const cl = Math.max(sl - 0.5, 5), cr = Math.min(sr + 0.5, PX - 6)
+    const w = (cr - cl) / 2 + 1.7, cy = b.ey + 1
+    add((x, y) => y <= cy - 6 && pxRing(PX_MID, cy, w, cy - top + 6, 3)(x, y), 'a')
+    add(pxAny(pxSquircle(cl, cy, 3.6, 7.4), pxSquircle(cr, cy, 3.6, 7.4)), 'A')
+    add(pxAny(pxRect(cl - 1.5, cy - 4, cl - 1.5, cy + 2), pxRect(cr + 0.5, cy - 4, cr + 0.5, cy + 2)), 'k')
+  } else if (kind === 'halo') {
+    add(pxRing(PX_MID, top - 7, 13.6, 4.2, 2.2), 'k')
+  } else if (kind === 'sprout') {
+    const sy = top + lift
+    add(pxAny(pxLine(31.5, top + 1, 31.5, sy - 6, 2), pxLine(31.5, sy - 6, 33, sy - 8, 2)), 'A')
+    add(pxAny(pxEllipse(26, sy - 9, 5.4, 2.8), pxEllipse(37.5, sy - 11, 4.6, 2.6)), 'a')
+    add(pxAny(pxRect(23, sy - 10, 25, sy - 10), pxRect(36, sy - 12, 38, sy - 12)), 'k')
+  } else if (kind === 'horns') {
+    for (const s of [-1, 1]) {
+      const bx = PX_MID + s * 11, by = pxTop(m, Math.round(bx)) + 3
+      add(pxTri(bx - s * 4.5, by, bx + s * 4.5, by, bx + s * 5.5, by - 11), 'a')
+      add(pxLine(bx + s * 2.5, by - 1, bx + s * 4.6, by - 8, 1.2), 'k')
+    }
+  } else if (kind === 'bow') {
+    const x = 44, y = pxTop(m, 44) + 1
+    add(pxAny(pxTri(x, y, x - 8, y - 5, x - 8, y + 5), pxTri(x, y, x + 8, y - 5, x + 8, y + 5)), 'a')
+    add(pxEllipse(x, y, 2.4, 2.4), 'A')
+    add(pxAny(pxRect(x - 7, y - 3, x - 6, y - 3), pxRect(x + 5, y - 3, x + 6, y - 3)), 'k')
+  }
+  if (!shapes.length) return g
+  let all = new Uint8Array(PX * PX)
+  shapes.forEach(([mk]) => { all = pxOr(all, mk) })
+  pxPaint(g, pxEdge(all), 'o')
+  shapes.forEach(([mk, slot]) => pxPaint(g, mk, slot))
+  return g
+}
+
+// Which eyes and mouth a state or a reaction shows.
+function pxAgentFrames(state, expr) {
+  if (expr === 'smug') return { eyes: 'half', mouth: 'smirk' }
+  if (expr === 'caught') return { eyes: 'big', mouth: 'o' }
+  if (expr === 'happy') return { eyes: 'happy', mouth: 'grin' }
+  if (expr === 'wary') return { eyes: 'wary', mouth: 'flat' }
+  if (expr === 'perk') return { eyes: 'big', mouth: null }
+  if (state === 'waiting') return { eyes: 'half', mouth: 'flat' }
+  if (state === 'error') return { eyes: 'x', mouth: 'frown' }
+  if (state === 'absent') return { eyes: 'closed', mouth: 'flat' }
+  return { eyes: 'open', mouth: null }
+}
+
+const PXF_CACHE = pxCache(240)
+
+// Everything needed to draw one agent face in one state: grids per layer, and colours.
+function pxAgent(f, eyesFrame, mouthKind) {
+  const key = [f.shape, f.eyes, f.mouth, f.acc, f.pattern, f.hue, f.hue2, eyesFrame, mouthKind].join('|')
+  return PXF_CACHE(key, () => {
+    const body = pxAgentBody(f.shape)
+    const base = body.g.slice()
+    pxPattern(f.pattern, body, base)
+    const eyes = pxEyes(f.eyes, eyesFrame, body.b)
+    const blink = eyesFrame === 'open' ? pxEyes(f.eyes, 'closed', body.b) : null
+    const mouth = pxMouth(mouthKind || f.mouth, body.b)
+    const talk = pxMouth('talk', body.b)
+    const acc = pxAccessory(f.acc, body)
+    const colours = pxAgentColours(f.hue, f.hue2)
+    return {
+      base: pxPaths(base), scan: pxPaths(body.scan.map(v => v ? pxCode('n') : 0)),
+      eyes: pxPaths(eyes), blink: blink && pxPaths(blink), mouth: pxPaths(mouth), talk: pxPaths(talk), acc: pxPaths(acc),
+      under: pxPaths(pxUsed(base, acc).map(v => v ? pxCode('o') : 0)),
+      colours, grids: { base, eyes, mouth, acc }
+    }
+  })
+}
+
+// ===== ui/14_avatar.js ==========================================================================
+
+// ---------------------------------------------------------------------------------------------
+// people: the avatar a person builds from layers (skin, face shape, hair style and colour, eyes, brows,
+// mouth, facial hair, build, top and its colour, things worn). This file is the data model only: the
+// options, cleaning and Randomize. It travels in the face event and in settings exactly as cleaned here.
+// How it is drawn lives in ui/15_person_art.js, which can be replaced without touching the model, the
+// editor or the wire. Every option is open to everyone. It's never made up from a key: until someone
+// builds one, they show their initial.
+// ---------------------------------------------------------------------------------------------
+
+// The options. Each list starts with its default and matches ninsei_engine/engine.py (a test compares them).
+const AV_SKIN = 10   // tones 0 (lightest) to 9 (darkest)
+const AV_FACES = ['oval', 'round', 'square', 'long']
+const AV_HAIR = ['short', 'curly', 'long', 'buzz', 'bun', 'locs', 'bob', 'wavy', 'afro', 'ponytail', 'bald', 'swept']
+const AV_HAIR_COLOURS = ['darkbrown', 'black', 'brown', 'auburn', 'ginger', 'blonde', 'platinum', 'grey', 'ice']
+const AV_EYES = ['open', 'smile', 'almond', 'dot', 'sleepy']
+const AV_BROWS = ['soft', 'straight', 'arched']
+const AV_MOUTHS = ['smile', 'grin', 'laugh', 'flat', 'smirk']
+const AV_FACIAL = ['none', 'stubble', 'moustache', 'short', 'full']
+const AV_BUILDS = ['narrow', 'broad']
+const AV_TOPS = ['coat', 'hoodie', 'turtleneck', 'jacket', 'tee', 'scarf']
+const AV_TOP_COLOURS = ['navy', 'steel', 'slate', 'charcoal', 'glacier', 'teal']
+const AV_ACCS = ['round-glasses', 'square-glasses', 'earrings', 'beanie', 'headphones', 'headscarf']
+// Only one of each group can be worn; the first in the list wins.
+const AV_ACC_GROUPS = [['round-glasses', 'square-glasses'], ['beanie', 'headscarf']]
+const AV_DEFAULT = { v: 1, sk: 3, fs: 'oval', hs: 'short', hc: 'darkbrown', ey: 'open', br: 'soft', mo: 'smile', fh: 'none', bd: 'narrow', tp: 'coat', tc: 'navy', ac: [] }
+
+// A person's avatar from settings or the wire, reduced to known options (same rules as clean_avatar in the
+// engine). null when it isn't one: not an object, or a version this client doesn't know.
+function cleanAvatar(v) {
+  if (!v || typeof v !== 'object' || Array.isArray(v) || v.v !== 1) return null
+  const pick = (key, opts) => opts.includes(v[key]) ? v[key] : AV_DEFAULT[key]
+  const sk = Number.isInteger(v.sk) && v.sk >= 0 && v.sk < AV_SKIN ? v.sk : AV_DEFAULT.sk
+  const want = Array.isArray(v.ac) ? v.ac.slice(0, 16) : []
+  const ac = AV_ACCS.filter(a => want.includes(a)).filter((a, _, all) =>
+    !AV_ACC_GROUPS.some(grp => grp.includes(a) && grp.find(x => all.includes(x)) !== a))
+  return { v: 1, sk, fs: pick('fs', AV_FACES), hs: pick('hs', AV_HAIR), hc: pick('hc', AV_HAIR_COLOURS), ey: pick('ey', AV_EYES),
+    br: pick('br', AV_BROWS), mo: pick('mo', AV_MOUTHS), fh: pick('fh', AV_FACIAL), bd: pick('bd', AV_BUILDS),
+    tp: pick('tp', AV_TOPS), tc: pick('tc', AV_TOP_COLOURS), ac }
+}
+
+// A random avatar for the editor's Randomize button (never for a real person who didn't press it).
+function randomAvatar(rand) {
+  const r = rand || Math.random
+  const pick = a => a[Math.floor(r() * a.length) % a.length]
+  const ac = []
+  if (r() < 0.3) ac.push(pick(['round-glasses', 'square-glasses']))
+  if (r() < 0.25) ac.push('earrings')
+  const head = r()
+  if (head < 0.12) ac.push('beanie'); else if (head < 0.2) ac.push('headscarf'); else if (head < 0.28) ac.push('headphones')
+  return cleanAvatar({ v: 1, sk: Math.floor(r() * AV_SKIN) % AV_SKIN, fs: pick(AV_FACES), hs: pick(AV_HAIR), hc: pick(AV_HAIR_COLOURS),
+    ey: pick(AV_EYES), br: pick(AV_BROWS), mo: pick(AV_MOUTHS), fh: r() < 0.6 ? 'none' : pick(AV_FACIAL), bd: pick(AV_BUILDS),
+    tp: pick(AV_TOPS), tc: pick(AV_TOP_COLOURS), ac })
+}
+
+// ===== ui/15_person_art.js ======================================================================
+
+// ---------------------------------------------------------------------------------------------
+// people, drawn: the person renderer. It takes a clean avatar (ui/14_avatar.js) and draws a still bust.
+// The rest of the UI uses only this interface, so the part source and the grid can change here alone:
+//   PersonAvatar({ avatar, size, className, label, view })   the drawing (an <svg> in a span)
+//   AV_ART.grid                                              the grid size the art and views are in
+//   AV_ART.views.face                                        the editor's close-up crop on the face
+//   avSwatch(key, id)                                        a colour for the editor's swatches (sk, hc, tc)
+// Today: a 64 x 64 grid on the agents' renderer (ui/12_pixel.js). Hair is drawn from run-length rows
+// (converted from image drafts on one fixed template); everything else is built from shapes in code.
+// This art is a working placeholder: a later pass draws generated layers on a 96 x 96 base instead.
+// ---------------------------------------------------------------------------------------------
+
+// ---- colours: [light, base, shade, outline] per material -------------------------------------------
+const AV_SKIN_TONES = [
+  ['#fbe7da', '#f2d3c0', '#d9ae9c', '#6b4a45'], ['#f5d9c2', '#e9bf9f', '#c99a85', '#634238'],
+  ['#ecc7a4', '#ddac85', '#b88671', '#5b3a2e'], ['#e3b48c', '#cf9a6f', '#a9765f', '#523325'],
+  ['#d6a27a', '#bf8559', '#98654f', '#4a2c1f'], ['#c38d63', '#a96f45', '#85563f', '#3f2519'],
+  ['#a97650', '#8f5a36', '#6d4433', '#341d13'], ['#8c5f3f', '#744628', '#573427', '#2a170f'],
+  ['#6f4a32', '#5a361f', '#432820', '#20120b'], ['#5a3b29', '#452817', '#331e19', '#170c07']
+]
+const AV_HAIR_TONES = {
+  black: ['#3b3f4c', '#22242c', '#14151b', '#07080b'], darkbrown: ['#5a4235', '#3e2b22', '#2a1c17', '#110b09'],
+  brown: ['#8a6141', '#6a462d', '#4b3020', '#1f130c'], auburn: ['#a2503a', '#7f3a28', '#5a271d', '#26100b'],
+  ginger: ['#e39352', '#c56e33', '#94502a', '#3e1f0f'], blonde: ['#f1d996', '#d9b465', '#ad8a4c', '#4a3a1c'],
+  platinum: ['#f6f3ea', '#ddd8cb', '#b2ada3', '#4f4c47'], grey: ['#c3c7cc', '#989da4', '#70757d', '#2d3035'],
+  ice: ['#c8ecfa', '#8fc6de', '#5e93b0', '#1d3a4a']
+}
+const AV_TOP_TONES = {
+  navy: ['#3d5577', '#26384f', '#18243a', '#080d16'], steel: ['#5f7d92', '#40596b', '#2b3d49', '#0e161c'],
+  slate: ['#6c7180', '#4c5160', '#353845', '#121319'], charcoal: ['#474b52', '#2f3237', '#1f2125', '#0a0b0d'],
+  glacier: ['#b2d0de', '#7fa6ba', '#5b8196', '#1d3340'], teal: ['#3f7c86', '#275a63', '#183e45', '#07181b']
+}
+const AV_INK = { e: '#e8eef1', i: '#1b1d24', o: '#101218', w: '#ffffff', m: '#3a1820', l: '#b45e5e', p: '#d97b84',
+  G: '#15171c', g: '#cfe6f1', q: '#e6b955', Q: '#9c742a', B: '#121b23', b: '#182531', c: '#39434f', C: '#8fb3c7' }
+
+function avColours(a) {
+  const sk = AV_SKIN_TONES[a.sk] || AV_SKIN_TONES[3]
+  const hr = AV_HAIR_TONES[a.hc] || AV_HAIR_TONES.darkbrown
+  const tp = AV_TOP_TONES[a.tc] || AV_TOP_TONES.navy
+  const alt = AV_TOP_TONES[AV_TOP_COLOURS[(AV_TOP_COLOURS.indexOf(a.tc) + 4) % AV_TOP_COLOURS.length]]
+  const c = Object.assign({}, AV_INK)
+  ;['j', 'k', 'K', 'u'].forEach((s, i) => { c[s] = sk[i] })
+  ;['y', 'h', 'H', 'Y'].forEach((s, i) => { c[s] = hr[i] })
+  ;['v', 't', 'T', 'V'].forEach((s, i) => { c[s] = tp[i] })
+  ;['r', 'n', 'N', 'R'].forEach((s, i) => { c[s] = alt[i] })
+  c.l = sk[2]
+  // the night's rim light: each material's own light tone, turned towards ice
+  c.z = avMix(hr[0], AV_ICE, 0.45)
+  c.x = avMix(tp[0], AV_ICE, 0.5)
+  c.Z = avMix(alt[0], AV_ICE, 0.5)
+  return c
+}
+const AV_ICE = '#9fc3d6'
+// a + (b - a) * t, per channel, on #rrggbb colours
+function avMix(a, b, t) {
+  const ch = (h, i) => parseInt(h.slice(1 + i * 2, 3 + i * 2), 16)
+  return '#' + [0, 1, 2].map(i => Math.round(ch(a, i) + (ch(b, i) - ch(a, i)) * t).toString(16).padStart(2, '0')).join('')
+}
+
+
+// ---- the template: one cranium for everyone, four jaws, all on fixed lines ------------------------------
+// Every part is drawn against these: hair against the cranium, glasses against the eye line, and so on.
+const AV = { cy: 25, rx: 15.5, ry: 18.6, jaw: 27, eye: 30, ex: 24.5, brow: 25, nose: 34, mouth: 40, neck: [24, 39, 40], torso: 51 }
+const AV_CRANIUM = pxEllipse(PX_MID, AV.cy, AV.rx, AV.ry)
+const AV_JAW = {
+  oval: { chin: 46, hw: t => 15.5 * Math.sqrt(1 - t * t * 0.9) },
+  round: { chin: 45, hw: t => 16 * Math.sqrt(1 - t * t * t * t * 0.8) },
+  square: { chin: 46, hw: t => t < 0.58 ? 15.4 : 15.4 - (t - 0.58) * 15.5 },
+  long: { chin: 48, hw: t => 14.6 * Math.sqrt(1 - t * t * 0.94) }
+}
+function avHead(fs) {
+  const j = AV_JAW[fs] || AV_JAW.oval
+  return pxMask((x, y) => {
+    if (y <= AV.jaw) return AV_CRANIUM(x, y)
+    if (y > j.chin) return false
+    return Math.abs(x - PX_MID) <= j.hw((y - AV.jaw) / (j.chin - AV.jaw))
+  })
+}
+const AV_EARS = pxMask(pxAny(pxEllipse(15.6, 31, 2.6, 4.6), pxEllipse(47.4, 31, 2.6, 4.6)))
+
+// Paint a material: its own darkest tone on its edge, base inside.
+function avFill(g, m, base, line) {
+  const d = pxDepth(m)
+  for (let i = 0; i < m.length; i++) if (m[i]) g[i] = pxCode(d[i] <= 1 ? line : base)
+  return d
+}
+// Shade on the side away from the light (right and below), light on the near side.
+function avLight(g, m, d, shade, light, k) {
+  for (let y = 0; y < PX; y++) for (let x = 0; x < PX; x++) {
+    const i = y * PX + x
+    if (!m[i] || d[i] <= 1) continue
+    if (!pxAt(m, x + k, y + 1) || !pxAt(m, x + 1, y + k)) g[i] = pxCode(shade)
+    else if (light && !pxAt(m, x - k, y - k)) g[i] = pxCode(light)
+  }
+}
+// A cool rim of night light inside the top right edge of a material.
+function avRim(g, m, d, slot, fromX) {
+  for (let y = 0; y < PX; y++) for (let x = fromX; x < PX; x++) {
+    const i = y * PX + x
+    if (m[i] && d[i] === 2 && !pxAt(m, x + 2, y - 2)) g[i] = pxCode(slot)
+  }
+}
+
+// Skin: the head lit as a rounded form from the upper left, the far cheek and the jaw's underside in shade.
+function avSkin(g, head, chin) {
+  const skin = pxOr(head, AV_EARS)
+  const d = avFill(g, skin, 'k', 'u')
+  for (let y = 0; y < PX; y++) for (let x = 0; x < PX; x++) {
+    const i = y * PX + x
+    if (!skin[i] || d[i] <= 1) continue
+    if (!pxAt(head, x + 5, y) || !pxAt(head, x + 2, y + 3) || y >= chin - 1) g[i] = pxCode('K')
+    else if (!pxAt(head, x - 4, y - 3) && y < AV.eye) g[i] = pxCode('j')
+  }
+  // a lit forehead and cheekbone, inner ears
+  pxPaint(g, pxMask(pxAny(pxEllipse(25, 15, 5, 3.2), pxEllipse(22.5, 35, 3, 1.4))), 'j', pxMask((x, y) => g[y * PX + x] === pxCode('k')))
+  pxPaint(g, pxMask(pxAny(pxRect(15, 29, 15, 33), pxRect(48, 29, 48, 33))), 'K')
+  return skin
+}
+
+// ---- hair ------------------------------------------------------------------------------------------------
+// Drawn parts, as run-length text: "row:" then per row runs of <count><letter> ('.' is nothing), rows split by
+// '/'. Letters: y light, h base, H shade, Y line. A style is one layer, drawn over the head and shoulders; it
+// never covers the face below the brows, so it sits right on every jaw. Drafted against one fixed template head,
+// then cleaned on the grid.
+function pxRle(text) {
+  const g = pxGrid()
+  if (!text) return g
+  const cut = text.indexOf(':')
+  let y = Number(text.slice(0, cut))
+  for (const row of text.slice(cut + 1).split('/')) {
+    let x = 0
+    row.replace(/(\d*)(\D)/g, (_, n, ch) => {
+      const k = n ? Number(n) : 1
+      if (ch !== '.') for (let i = 0; i < k && x + i < PX; i++) if (y < PX) g[y * PX + x + i] = pxCode(ch)
+      x += k
+      return ''
+    })
+    y++
+  }
+  return g
+}
+const AV_HAIR_ART = {
+  short: '4:28.9Y/24.5Y6yh5Y/22.3Y6y8hH2Y/20.2Y7y8h4HY/20.Y3y9h8H3Y/18.3Y3y2h2y3h4H5h3H2Y/18.Y3y2h3y3h4H7h3H2Y/17.2Y7y3h2H8h6HY/17.Y2y2h3y12h8H2Y/16.2Yy2h2y8h2H3h4H3Y3HY/16.Y4hy4h6H3h4H6YH2Y/16.YhHhy4hH4YH3h3H4Y6HY/16.2Y2h2H2h3Y2.Y3h2H3Y.Y7HY/16.2Y2hHYh2Y3.Y2h4Y4.5Y3HY/16.2Yh2Y.2Y4.4Y10.3YH2Y/17.4Y21.6Y/17.Y2HY22.Y2HY/17.Y2HY22.Y2HY/17.YhY24.YHY/17.YhY24.YHY/17.YHY24.YHY/17.3Y24.3Y',
+  curly: '2:31.4Y/30.Y3yhY/25.2Y2.Y2y2HhY/22.3Y2y2Y2y3H8Y/21.Y7yH2hY4yhY2H2Y/17.3Y.Y2yh4H3hYy2Y3h2YHY/16.Y3y3YHh2yHYH2hH3YH2hYH5Y/15.Y2y2H6yH2yYH2hH2Y2hH3Y2H2hY/15.Yy2Yh10yH4Y3h8YhY/15.YhHY2y2H2h3y2HY2y2h5Y3h5Y/16.YHYy5H2y2HY2y3hH4YH3h3Y/14.3YyHhH4Y2hHY2yH2YHhY3H2Y3hYH4Y/13.Y4yhHY2yh2Y2HYyh4YHY3HhYH2hY4HY/12.Y2y4HYy3hH4Y2hH4YH2YHhYHh3Y2HY/12.Yh2H3yhHhH2YH2hHY2H7YH6YH4Y/12.Y2HYyHY3h2Y2y2hH4YH4YH7Y2hHYHY/13.2Y2h3YH3Y2h6Y2h2Y2.YHY.4YHYhYH2Y/12.3Y2hYH3Y2.YHY2.2Y2h3Y3.2Y2.5Yh4Y/12.4Y2hH2Y3.3Y2.YhH3Y4.2Y2.2YH7Y/11.Yy2h6Y8.YhHY9.Y4H5Y/11.Y2H2Y2H2Y10.2YHY8.Y4H2YHY/11.YH2YhH3Y12.2Y9.YHY4HY/12.YHYhH3Y12.2Y10.3Y2H3Y/12.YHY2H2Y26.5YHY/12.5Y30.4Y/12.3Y32.4Y/13.2Y34.2Y/13.2Y34.2Y/13.2Y',
+  long: '4:26.5Y2.5Y/24.2Y5y2Y5h3Y/21.3Y4y5h5H2h3Y/20.Y3y13h3H3hY/19.Y3y4h3y9h4HhY/18.Y2y4h4y12h4HY/17.Y2y3h3y10h3H3h4HY/17.Y2yh4y5h4Y4h2H3h3HY/16.Y2yh4y4h2Y4.2Y3h2H3h3HY/16.Yy2h4y3hY8.Y3h2H3h2HY/15.Yy2h4y3hY10.Y3h2H2h3HY/15.Y2h3y5hY10.Y3h3H2h2HY/15.Y2h2y5hY12.Y2h4H2hHY/14.Y2h3y4hY14.Yh4H2h2HY/14.Y2h2y5hY14.Y2h4Hh2HY/14.Y2h2y4hY16.Y2h3Hh2HY/14.Y2hy4hY18.Y2h2HY2HY/13.Y2h2y4hY18.Y3hHY3HY/13.Y2hy4hY20.Y3hY3HY/13.Y2hy4hY20.Y3h2Y2HY/13.Yhy4h2Y21.Y3hY2HY/13.Yhyh4Y22.5Y2HY/12.Y2hyY30.2Y2HY/12.Y3hY30.2Y2HY/12.Y3hY30.2Y2HY/12.Y3hY30.3YHY/12.YhHhY30.YhYHY/12.YhHhY30.YhYHY/12.YhHhY30.YhYHY/12.YhHhY30.YhYHY/12.YhHhY30.YhYHY/12.YhHh2Y28.2Yh2HY/12.YhHh2Y28.2Yh2HY/12.YhHh3Y26.3Yh2HY/12.YhHh3Y26.YHYh2HY/12.YhHh2YHY24.Y2HYh2HY/12.YhH2Y2HY24.Y2HYhYHY/12.YhH2Y3HY22.Y2Hh3YHY/11.Y2hH2Y3H2Y20.Y3Hh3YHY/11.Y2hH2Y3H3Y18.Y4Hh3YHY/11.Y2hH2Yh2HY2HY16.Y2H2hH2h2Y2HY/11.Y2hHYHh2HY2HY16.Y2H2hH2h2Y2HY/11.Y2hHY2h5HY16.Y2H2hH2h2Y2HY/11.YhYHY2h2HhYHY16.Y2H2hH2h2Y2HY/11.YhYHY2h2HhYHY16.2YH2hH2h2Y2HY/11.YhYHY2h2Hh3Y16.2YH2hH2h2Y2HY/10.YhHYHY2h2Hh3Y16.2YH2hH2h2YH2Y/10.YhHYHY2h2Hh3Y16.2YH2hH2h2YHYHY/10.YhHYHY3hHh3Y16.2YH2hH2h2YHYHY/10.YH2YHY3hHh2Y18.YH2hH2h2YHYHY/10.2Y.YhY3hHh2Y18.Yh3H2hYH2YHY/13.YhY3hHh2Y18.Yh3H2hYHY.2Y/13.YhY3hH2hY18.Yh3H2hYHY/13.YhY3hH3hY16.Y2h3Hh2YhY/13.YhY3hH3hY16.Y2h3Hh2YhY/13.3Y3hH3hY16.Y2h3Hh4Y/15.Y3h2H2hY16.Y2h3Hh2Y/15.Y3h2H2hY16.Yh4Hh2Y/15.2Y2h3HhY16.Yh4Hh2Y/16.8Y16.8Y',
+  bun: '0:30.4Y/30.4Y/28.2Yy3h2Y/27.Y4y3hHY/26.Y4y3h3HY/25.Y7h3H2Y/25.Y3h6H3Y/25.2YH10Y/26.2Yy2Hyh2H2Y/24.3Y2yH2y2hH2h3Y/23.2YH2yH2y3hH3hH2Y/22.Y2yH2yHy4hH3hH2hY/21.Y3y2Hy2H3h2H2h2H3hY/20.YH4y2Hy2H2hYHh2H3h2HY/19.Yy3H2yhHh4HY4H2h4HY/19.Y2y5H10Y3HYHhHY/18.Y2h2y2H2Y10.3YH2h2HY/17.Y2H2h3Y15.2Y3H2Y/17.YhH2Y20.2Y2HY/17.YHhY21.Y2H2Y/16.YhH2Y22.2YHY/16.Yh2HY22.Y2HY/16.YH2Y24.3Y/16.YHY25.3Y/16.YHY26.2Y/17.2Y26.2Y',
+  locs: '1:31.2Y/25.3Y2.YyhY.3Y/24.Y2yh4Y2h2Y2h2Y/21.3Y3y4hHYhHYHhHh3Y/19.2Yh2y6Y2h2YH5YHyHY/18.8Y3h2Y2H2Y3h2HY3H2Y/17.Y2y3hY2y4hHYHY2h4H6Y/15.2Y2yh2HY2yh3YHhHYhH6Y3hH3Y/15.YyhH4Yyh5Y2HYH2Y3h2YH6hY/14.YyhH2Y2h3Y2hH3YH3Y2hH2h6YHhyY/14.YhHY2h2H2Y2hH2Y2.2Y.4YH2hY2h3Y2HY/14.YHYy2hH2YyhHY10.2YH2hY2hH2Y2HY/13.4Yyh3YyhHY12.2Y2h2YH2h2YHY/12.Y2hYyhH3YyHY14.Y2h3YH2h3Y/11.YHh2YyH3YyhY15.2Y2h2YHhH4Y/11.YhHYyhH3Y2hY16.Y2h4Y2hYHY/10.YhH2YhH4Y2hY16.YHh4Y2hYhyY/10.YH3YhH3YhHY18.YH4YH2hYHY/11.2YhYh4YhHY18.YHhH3Y2HYH2Y/10.YyhH5Y2hHY18.YH2hY2H3YHhY/9.Yy2h3YHY2hHY19.YHhHY2H3YHh2Y/9.YyhH2Y2HYHhHY20.YhH2Y2h3YHhY/9.YhH2YHhHY2H2Y20.Y2h3Y2h2YHhY/9.YhHY3hY2h2Y21.YHhH2YHhy2YHY/9.Yh2Y2h6Y21.7YH2hYHY/8.YyHYhH3Y30.3YHhYHY/8.YHYyh4Y32.Y2H2Y/8.YHYyhY2.Y33.YHhY/9.2YhHY2.Y33.YHhY/9.YyhY3.Y33.2YhY/9.YyhY38.YHhY/8.Yyh2Y38.YHhY/8.Yyh2Y38.2YHY/8.Yyh2Y38.2YHY/8.Yh2YHY2.2Y28.2Y.2YhYHY/7.Yyh2YhH2YHY28.4Y2hYHhY/7.YhHY2hH2YhHY26.2YH2Y2hY2HY/7.Yh2YhH3YyhY26.YHh2YHh2YHY/8.2Y2hHYHY2hY26.Y2h2YHhHYHY/9.Y2hY2HYHhHY24.2Y2h3YHh2Y/8.Yyh2Y2H2Y2h2Y22.2Y2h2YHYHhY/8.Yyh2YhH3YhHY21.2YHhHY2HYHhY/8.YhHY2hH3YH4Y18.3YHhHY2H2Y2hY/7.2Yh2YhHY2H4YHY17.4YhH3Y2HYHhY/7.Yyh2YhHY2H4Y2HY16.YHY2hH3YHhYHhY/7.YyH2YhHY2H4Y2hY16.YHY2hHYHYHh2Y2hY/7.YhH2YhHY2h3Y2hHY16.YHY2h2YhYHh2YHhY/7.YhHYyh2Y2h2YHh2HY16.Y2HhHYHhYHh2YHhY/7.YhHYyh2YyhHYHhH2Y16.2YhH2YHh2Y2hY2HhY/6.Y2h2Yyh2Y3hY2H3Y16.2Y2h3Y2hY2h2YHhY/6.Y2h2YyhYHYyhY2H3Y16.2YhH3Y2hYHhHYHhY/6.YhH2YhHYHYyh2Y2h2Y16.2YhH3YHh2Y2hYHhY/6.Y2HYyh2YHYyH2Y2hY18.YhH3YHh2YHh2YHY/6.Y2HYyh4Yy3Y2hY18.YhH3YHh2YHh2YHY/7.3Y2hY.Yyh3YH2Y17.Y2hHYHYHy3Yh3Y/9.YhHY.Yyh5Y18.YhHY.2YHyY.YhY/9.YhHY.YhHY22.YhY2.2Y2yY.YHY/9.YhY2.YhY23.YHY2.2Yh2Y2.2Y/10.2Y2.YhY23.3Y2.2YhY/14.3Y28.2YHY/47.2Y',
+  bob: '6:27.10Y/24.3Y4y5hH2Y/21.3Y5y8h2H3Y/20.YH5y12h3HY/19.Y6y14h3HY/18.Y3yh2y11hH4h3HY/17.Y2y2h3y4hy7h2H3h3HY/17.Yy2h3y3h2y9h2H2h3HY/15.2Yy3h3yh4y9h3Hh4HY/15.Yy3h8y4hH6h4Hh2HY/15.Yy3h3y2h3y4hH6h4Hh3HY/15.Y4h2y2h3yH3h2H3hH2h4H2h2HY/15.Yhyh2y3h2yhH3h2H3hH3h4H2hHY/14.YhyhY2yhHhyh2H2h3HY2h2H3h3H2h2HY/14.YhyhYy2hYhyh2H2h3HY2h2H3hYh2Hh2HY/14.YhyhYy2hY3hYH2hY2HY2hHY3hYh2H2hHY/13.Yh2yhY3hY3hYH2hY2HY2hHY3hYh2H2h2H2Y/13.Yhy2hY3hY3hYH2hY2HY2h2Y2h2Yh3H2h2HY/12.Yh2yh2H3Y.3Y.3Y.2Y.2Y.3Y2.2Y2H2h2HY/12.Yh2yH3Y24.3Yh2H2Y/12.Yh2yY30.Y2H2Y/12.Y2yHY30.Y2H2Y/12.Y2yHY30.Y2H2Y/12.Y2yHY30.Y2H2Y/12.Yy2HY30.2YH2Y/12.Yy2HY30.2YH2Y/12.YhHhY30.2YH2Y/12.Y2HhY30.2Y2HY/12.2Y2hY30.Y2H2Y/12.2Y2hHY28.Y4HY/12.2Y2hHY28.Y3HY/13.Y2hH2Y26.2Y3HY/13.Y2hH2Y26.2Y3HY/13.Yh2HYhY24.YhY3HY/13.Yh2HYhY24.YhY2HY/14.Y2H2YhY22.YH2Y2HY/14.Y3HY2hY20.YhH3YHY/15.YhHY2h2Y18.2Yh5Y/16.7Y18.7Y',
+  wavy: '3:28.7Y/24.4Y5y2h2Y/23.Y5y7hHY/21.2Y3y5h3H3hH4Y/19.2Y4y8h3H2hYH2h2Y/18.Y6y5h2y3h2HhY2H2h2Y/17.Yh4y4h4y5h2HYH4h2Y/16.Y5y2h5y4h2YhH2Y3H3h2Y/16.Y2y4h5y4h4YHY3h4H2Y/15.Y2y4h5y4h6YH4h5HY/15.Yy4h4y6hY5.3Y3h4HY/15.Yy2h3y2hy5hY8.YH3h3HY/14.2Y8hy5hY8.YH3h4HY/13.Y4y5h2y5hY9.Y6h2HY/12.Y4y5h2y5hY10.2Y8hY/11.Y2y7h3y4hY11.2Y3H5hY/11.Yy6h4y4hY13.Yh6H2hY/11.Yy3h5y4h2Y14.Y4h4HhY/11.Y2h2y7h2Y16.YH5h3HY/10.Yh4y4h3Y19.2Y5h2HY/10.Y4y4h2Y22.2Y5hHY/9.Y2y2h4HY24.4Y4hHY/9.Y2y3H2h2Y26.4Y3hY/9.Yy3H2hY30.3Y3hY/9.Yy2H3hY30.4Y2hY/10.YH3h2Y31.3YHhY/10.YH2h2Y33.Y2HhY/10.Y2h2Y34.Y2HhY/9.Y2yh2Y34.Y2HY/9.Y2yH2Y34.Y2HY/8.Y2y3HY34.YHY/8.Y2y2Hh2Y32.Y2HY/8.Yy2H2hH2Y30.Y2H2Y/8.Yh2Hhy2h2Y28.Y3H3Y/8.Yh2Hh2y2h2Y26.2Y3H2YHY/9.Y3H3y2hY26.2Y2HhHY2HY/10.2Y2H3yhY25.4YH2hHY2HY/11.Y3H2y2hY24.4YH4hYHY/11.Y4Hy2h2Y22.YH4YH3hYHY/10.2Yh3Hy2h3Y20.Y4H3Y4h2Y/9.2Y2h2H3hH4Y18.2Y5H3Y3hY/9.Yyh2H3hH6Y16.4Y4H3Y3hY/8.Y2y2H3h4Y2H2Y16.5Y3H3Y2hHY/8.Yy2H3h4Y3H2Y16.5Y3H2Y2hHY/8.Yh2H3h3Y3H3Y16.4Y3H2Y2h2Y/8.Y3H3h2Y3H4Y16.3Y4HY2h2Y/9.Y2H3h2Y2H5Y16.2Y4H2Y2h2Y/9.YHY3h2Y3H4Y16.2Y3H3Y2hY/10.2YH3h3YH4Y16.2Y2H4Y2hY/11.2YH4h3Y2HY16.2Y2H5Y2hY/12.3Y3h5Y19.3Y.6Y/15.3Y',
+  afro: '0:26.5Y2.6Y/19.4Y.3Y3yh2Y5h8Y/18.2Y3yYH4y3hY7h2Y3h2Y/17.Y4y25hY/16.Yh3y11h4y3h2H7hY/14.3Yhy11h6y4h8H3Y/13.Y2y6h3y4h3y9h6H4hY/11.3Y3y2h7y3hy11h3H8h3Y/9.2Y12y17h4H10hY/8.2Y12y14h7H7h2H2hY/8.Y2y3h7y17h8H4h2H2h3Y/7.2Yy3h4y2hy11hH7h9H2h2H3h3Y/6.Y3y2h4y13h5H5h9H2h4H3h2Y/6.Y2y2h3y9h4H3h3YH4h17H2h2Y/6.Yy3hy10h4H4Y3.YHh19H2h3Y/5.Y2y3hy8h4H2Y8.5YH2Y13H4hY/4.Y3y13hH2Y14.3Y14H4hY/2.2Y5y10hH2Y19.Y2HY7H8hY/2.2Y2y9h4HY22.3Y5H10hY/2.2Yy6h3yh3HY25.Y9H3h2H2hY/3.YH4h4y3hHY26.3Y8H2h3HhY/2.2Y5h2y6hY28.Y13H2Y/.2YH5hy6hHY28.Y14HY/.Y7hy5hH2Y28.Y15HY/.Y5h2H5h2HY30.Y4H3Y7HY/Y5h3H4h3HY30.Y3H4Y3H2Y3HY/Y4h3H5h3HY30.13Y3HY/YH2h4H2h5H2Y32.10Y4HY/.2Yh2H3h5HY35.5Y7HY/2.Y4H2h4HY36.4Y8HY/2.2Y8H2Y36.2Y9HY/2.Y8H2Y37.2Y9HY/2.Y7H4Y36.2Y2HY5HY/2.2Y6H4Y36.5Y4H2Y/2.2Y2H2Y5HY36.5Y4HY/4.5Y5HY34.5Y3H3Y/5.5Y3H5Y28.6Y5H2Y/5.6YH7Y26.7Y6HY/5.14Y26.4Y5HY2HY/6.14Y24.6Y3H4Y/9.5YH5Y24.11Y/9.4Y3H5Y22.11Y/9.4Y5H4Y20.4Y2H6Y/11.3Y3H6Y18.4Y3H5Y/13.Y2H8Y16.5Y3H2Y/14.10Y16.9Y/18.6Y16.4Y/18.6Y16.4Y/20.3Y18.2Y',
+  ponytail: '4:30.6Y/27.3Y4yh4Y4.6Y/25.2Y4y8hY2.Y4h3Y/24.Y5y5h5H2YH2h5Y/22.2Y3yhH4hHYH6h3Y5h2Y/21.Y3yhyHhy2h2H4h5H2Y6hY/20.Y3yhyhH3h2H3h3H4hHY4H2hHY/19.Y2y4h2H3hH3h2H7hHY4H2hY/19.Y2yhH2h2H2h2H3hH4h3H2h3Y3HhY/18.Y3yh2Hh2H2h2H2hH3h8H2Y3H2hY/18.Yy3h2H2hH7Y2h2H7h3Y3HhY/17.Y2yhH2h4Y7.4Y4H3h3Y3HhY/17.Yy3h2Y15.2Y5H3Y4HY/17.Y3hY19.2Y3H3YHh2H2Y/16.YH2hY22.YH4YHh2HhY/16.YhHY24.Y2H2Y2Hh2HY/16.Y2hY24.Y2H2Y2Hh2HY/16.YHY26.YH2Y3HhHY/16.YHY26.YH2Y3HhHY/16.YHY26.YH3Y2H2hY/16.2Y28.4Y3HhY/16.2Y28.4Y3HhyY/49.Y3H2hY/49.2Y2H2hY/51.Y2HhY/51.Y2HhY/51.Y2HhY/51.Y2HhY/51.Y2H2hY/51.Y2H2hY/51.YhH2hY/50.YHh2HhY/48.3YHh2HhY/47.Y2HYHh2HhHY/47.Yh2Yy2h3HY/47.YhYHy2h2HhY/46.Y2hY2y2h2HhY/45.YHh2Hy2h4HY/45.Yh2H2y2h4HY/45.Y2H2y3hHY2HY/44.Y3H2y3hHY2HY/44.Y2H2y3h2HY2HY/44.YHhy4h2HYHY/44.YHy5h2HYHY/43.YH2y4h2HY2HY/43.Y2y4h3HY2HY/43.Yy4h4HYHY/42.Y6h3H2YHY/42.Y5hHY2HYHY/41.YH2hHh4H4Y/41.Y2hH2h4H2Y/41.Yh2Hh2HYH2Y/41.Yh2HhH2YHY/41.YHY2h4Y/41.YHY2hY.2Y/42.3YHY/44.3Y/45.2Y',
+  swept: '1:42.3Y/32.7Y2.2YhY/32.Y4y2h3Y2hY/26.6Y3y3h3Y3hY/23.4Y6y11hY/22.2Y4y10hH4hH3Y/21.Y4y10h2H4h2HYHY/19.2Y4y2h3y2h5H4h2H2YHY/18.2Y2y3h3y5H6h3H2Y2HY/18.2Yy3h2y5H7h4H2Y2HY/18.Y2y2h2y3H5h4Y4H2Y2H2Y/17.YhHy2hy3H3h5Y3H4Y3HY/17.Y2hHYh3H2h4Y4H4Y4H2Y/16.2Y3hYh6Y5H4Y4H5Y/16.Y2h2H3Y4.8Y3H6YHY/16.Yh3HY11.9Y4HY/16.2YHhY20.2Y3HY/16.2Y2HY22.Y2HY/16.2YHY23.2YHY/17.YHY24.YHY/17.YHY24.YHY/17.2Y25.YHY/17.2Y25.YHY/17.2Y26.2Y'
+}
+
+// Copy a drawn part onto the grid where `keep` allows (a hat covers what is under it).
+function avStamp(g, part, keep) {
+  for (let i = 0; i < part.length; i++) if (part[i] && (!keep || keep[i])) g[i] = part[i]
+}
+
+// ---- face features ---------------------------------------------------------------------------------------
+// Left-side drawings (mirrored for the right). o: line, e: white, i: iris, w: glint, Y: brow (the hair's line
+// colour), m: mouth, p: tongue, l: lip.
+const AV_EYE = {
+  open: ['.oooooo.', 'oeeiiwo.', '.eeiiie.'],
+  smile: ['..oooo..', '.oo..oo.', 'o......o'],
+  almond: ['...ooooo', '.ooeiiwo', 'o.eeiie.'],
+  dot: ['.ii.', 'iwii', 'iiii', '.ii.'],
+  sleepy: ['.oooooo.', 'ooeiiwo.', '..eiie..']
+}
+const AV_BROW = {
+  soft: ['..YYYYY.', '.Y.....Y'],
+  straight: ['YYYYYYYY', '.YYYYYYY'],
+  arched: ['...YYYY.', '.YY....Y', 'Y.......']
+}
+const AV_MOUTH = {
+  smile: ['o.........o', '.oo.....oo.', '...ooooo...'],
+  grin: ['oooooooooo', 'oeeeeeeeeo', '.oeeeeeeo.', '..oooooo..'],
+  laugh: ['oooooooooooo', 'oeeeeeeeeeeo', 'ommmmmmmmmmo', '.ommmppppmmo.', '..ommppmmo..', '...oooooo...'],
+  flat: ['oooooooo'],
+  smirk: ['.........oo', 'o......oo..', '.oooooo....']
+}
+
+function avFace(g, a) {
+  const mirror = (rows, cxL, y) => {
+    const w = rows[0].length
+    const x = Math.round(cxL - (w - 1) / 2)
+    pxMap(g, rows, x, y)
+    pxMap(g, rows, PX - x - w, y, true)
+  }
+  const eye = AV_EYE[a.ey] || AV_EYE.open
+  mirror(eye, AV.ex, AV.eye - 1)
+  const brow = AV_BROW[a.br] || AV_BROW.soft
+  mirror(brow, AV.ex, AV.brow - (brow.length - 2))
+  // nose: a shadow down the far side, a lit tip, nostrils
+  pxMap(g, ['..K', '..K', '..K', '.jK', 'K.K'], 30, AV.nose)
+  const mouth = AV_MOUTH[a.mo] || AV_MOUTH.smile
+  pxMap(g, mouth, Math.round(PX_MID - (mouth[0].length - 1) / 2), AV.mouth)
+  // a lower lip under closed mouths, and the shadow under it
+  if (a.mo === 'smile' || a.mo === 'flat' || a.mo === 'smirk') pxMap(g, ['lllll'], 30, AV.mouth + mouth.length)
+  pxMap(g, ['KKK'], 31, AV.mouth + mouth.length + 1)
+}
+
+function avFacial(g, a, head, chin) {
+  if (a.fh === 'none') return
+  const d = pxDepth(head)
+  const deep = a.fh === 'full' ? 9 : 3
+  const jaw = (x, y) => y >= AV.nose + 3 && (d[y * PX + x] <= deep || y >= chin - deep)
+  const side = (x, y) => y >= AV.eye && d[y * PX + x] <= 2
+  const lip = (x, y) => y >= AV.mouth - 2 && y <= AV.mouth - 1 && Math.abs(x - PX_MID) <= 6.5
+  const open = a.mo === 'grin' || a.mo === 'laugh'
+  const hole = (x, y) => y >= AV.mouth && y <= AV.mouth + (open ? 5 : 2) && Math.abs(x - PX_MID) <= (open ? 6 : 4.5)
+  const m = pxMask((x, y) => {
+    if (!head[y * PX + x]) return false
+    if (a.fh === 'moustache') return lip(x, y) || (y === AV.mouth && Math.abs(x - PX_MID) >= 5 && Math.abs(x - PX_MID) <= 7)
+    return (jaw(x, y) || lip(x, y) || side(x, y)) && !hole(x, y)
+  })
+  const keepInk = c => c === pxCode('e') || c === pxCode('m') || c === pxCode('p') || c === pxCode('o')
+  for (let i = 0; i < m.length; i++) {
+    if (!m[i] || keepInk(g[i])) continue
+    const x = i % PX, y = (i - x) / PX
+    if (a.fh === 'stubble') { if ((x + y) % 2 === 0) g[i] = pxCode('K') }
+    else g[i] = pxCode(d[i] <= 1 ? 'Y' : ((x * 5 + y * 3) % 7 === 0 ? 'y' : x > PX_MID + 5 ? 'H' : 'h'))
+  }
+}
+
+// ---- body and tops ---------------------------------------------------------------------------------------
+function avTorso(bd) {
+  const W = bd === 'broad' ? 31.5 : 26
+  return pxMask((x, y) => {
+    if (y < AV.torso) return false
+    const t = y >= 60 ? 1 : Math.sqrt(1 - ((60 - y) / 9) * ((60 - y) / 9))
+    return Math.abs(x - PX_MID) <= 8 + (W - 8) * t
+  })
+}
+
+function avTop(g, a, torso) {
+  const d = avFill(g, torso, 't', 'V')
+  avLight(g, torso, d, 'T', 'v', 3)
+  avRim(g, torso, d, 'x', 40)
+  const P = (test, slot, where) => pxPaint(g, pxMask(test), slot, where)
+  const tp = a.tp
+  const y0 = AV.torso
+  if (tp === 'tee') {
+    P(pxEllipse(PX_MID, y0, 9.4, 5.4), 'T', torso)
+    P(pxEllipse(PX_MID, y0, 7.6, 4), 'k')
+    P(pxEllipse(PX_MID, y0, 7.6, 4), 'K', pxMask((x, y) => y <= y0 + 1 || x > 34))
+  } else if (tp === 'turtleneck') {
+    const neck = pxRect(23, 44, 40, y0 + 2)
+    P(neck, 't'); P((x, y) => neck(x, y) && (x === 23 || x === 40 || y === 44), 'V')
+    P((x, y) => neck(x, y) && x > 23 && x < 40 && y > 44 && x % 2 === 0, 'T')
+    P((x, y) => torso[y * PX + x] && x % 3 === 0 && y > y0 + 2, 'T', torso)
+    P(pxRect(23, y0 + 1, 40, y0 + 2), 'T')
+  } else if (tp === 'hoodie') {
+    P(pxRing(PX_MID, y0 + 1, 16, 6.6, 3.4), 'v', torso)
+    P(pxRing(PX_MID, y0 + 1, 16, 6.6, 1), 'V', torso)
+    P(pxEllipse(PX_MID, y0 + 1, 12.6, 3.4), 'T', torso)
+    P(pxAny(pxRect(27, y0 + 5, 27, 62), pxRect(36, y0 + 5, 36, 62)), 'x', torso)
+  } else if (tp === 'jacket') {
+    P(pxTri(PX_MID, 66, 23, y0 - 1, 40, y0 - 1), 'o', torso)
+    P(pxTri(PX_MID, 64, 25, y0, 38, y0), 'N', torso)
+    P(pxAny(pxTri(22, y0 - 2, 30, 61, 15, y0 + 6), pxTri(41, y0 - 2, 33, 61, 48, y0 + 6)), 'v', torso)
+    P(pxAny(pxLine(22.5, y0 - 1, 30, 61, 1), pxLine(40.5, y0 - 1, 33, 61, 1)), 'V', torso)
+  } else if (tp === 'coat' || tp === 'scarf') {
+    // a turned-up collar behind the neck, wide lapels, a dark layer underneath
+    P(pxTri(PX_MID, 68, 22, y0 - 1, 41, y0 - 1), 'o', torso)
+    P(pxTri(PX_MID, 66, 24, y0, 39, y0), 'i', torso)
+    P(pxAny(pxTri(21, y0 - 3, 31, 66, 12, y0 + 7), pxTri(42, y0 - 3, 32, 66, 51, y0 + 7)), 'v', torso)
+    P(pxAny(pxLine(21.5, y0 - 2, 30.5, 64, 1), pxLine(41.5, y0 - 2, 32.5, 64, 1)), 'V', torso)
+    P(pxAny(pxRect(19, y0 - 7, 22, y0), pxRect(41, y0 - 7, 44, y0)), 'v')
+    P(pxAny(pxRect(18, y0 - 7, 18, y0), pxRect(45, y0 - 7, 45, y0), pxRect(18, y0 - 8, 22, y0 - 8), pxRect(41, y0 - 8, 45, y0 - 8)), 'V')
+    if (tp === 'scarf') {
+      // a chunky knit scarf, wrapped round the neck and hanging down the left
+      const sm = pxMask(pxAny(pxEllipse(PX_MID, y0 - 1, 15, 6), pxRect(20, y0, 29, 63)))
+      const sd = avFill(g, sm, 'n', 'R')
+      avLight(g, sm, sd, 'N', 'r', 2)
+      for (let i = 0; i < sm.length; i++) {
+        const x = i % PX, y = (i - x) / PX
+        if (sm[i] && sd[i] > 1 && (x + (y % 2)) % 3 === 0) g[i] = pxCode('N')
+      }
+      P(pxAny(pxRect(20, y0 + 5, 29, y0 + 5), pxRect(20, 61, 29, 61)), 'R')
+    }
+  }
+}
+
+// ---- accessories -------------------------------------------------------------------------------------------
+function avGlasses(g, kind) {
+  const ey = AV.eye, L = AV.ex, R = PX - 1 - AV.ex
+  const frame = kind === 'round-glasses'
+    ? pxAny(pxRing(L, ey, 6, 5.2, 1.3), pxRing(R, ey, 6, 5.2, 1.3))
+    : pxAny((x, y) => pxRect(L - 6, ey - 4, L + 6, ey + 3)(x, y) && !pxRect(L - 5, ey - 3, L + 5, ey + 2)(x, y),
+      (x, y) => pxRect(R - 6, ey - 4, R + 6, ey + 3)(x, y) && !pxRect(R - 5, ey - 3, R + 5, ey + 2)(x, y))
+  pxPaint(g, pxMask(pxAny(frame, pxRect(L + 6, ey - 2, R - 6, ey - 2), pxRect(13, ey - 2, L - 6, ey - 2), pxRect(R + 6, ey - 2, 50, ey - 2))), 'G')
+  pxPaint(g, pxMask(pxAny(pxLine(L - 3, ey + 1, L - 1, ey - 2, 1), pxLine(R - 3, ey + 1, R - 1, ey - 2, 1))), 'g')
+}
+
+function avEarrings(g) {
+  for (const x of [14.5, 48.5]) pxPaint(g, pxMask(pxRing(x, 38, 2.4, 2.6, 1.1)), 'q')
+  pxPaint(g, pxMask(pxAny(pxRect(13, 39, 13, 40), pxRect(50, 39, 50, 40))), 'Q')
+}
+
+const AV_BEANIE = (x, y) => y <= 22 && (pxEllipse(PX_MID, 22, 18, 17.6)(x, y) || pxRect(13.5, 16, 49.5, 22)(x, y))
+function avBeanie(g) {
+  const m = pxMask(AV_BEANIE)
+  const d = avFill(g, m, 't', 'V')
+  avLight(g, m, d, 'T', 'v', 3)
+  avRim(g, m, d, 'x', 36)
+  for (let i = 0; i < m.length; i++) {
+    const x = i % PX, y = (i - x) / PX
+    if (!m[i] || d[i] <= 1) continue
+    if (y >= 16) g[i] = pxCode(y === 16 ? 'V' : x % 2 ? 'T' : 't')
+    else if (x % 3 === 0 && g[i] !== pxCode('x')) g[i] = pxCode('T')
+  }
+}
+const AV_SCARF_HEAD = (x, y) => (pxEllipse(PX_MID, 26, 19.6, 22)(x, y) && y < 50) || (y >= 42 && Math.abs(x - PX_MID) <= 20 - (y - 42) * 0.2)
+const AV_SCARF_FACE = (x, y) => pxEllipse(PX_MID, 33, 13.6, 16.4)(x, y) && y > 19
+function avHeadscarf(g) {
+  const m = pxMask((x, y) => AV_SCARF_HEAD(x, y) && !AV_SCARF_FACE(x, y))
+  const d = avFill(g, m, 'n', 'R')
+  avLight(g, m, d, 'N', 'r', 3)
+  avRim(g, m, d, 'Z', 38)
+  for (let i = 0; i < m.length; i++) {
+    const x = i % PX, y = (i - x) / PX
+    if (m[i] && d[i] > 2 && (x * 2 - y + 64) % 11 === 0 && y > 22) g[i] = pxCode('N')
+  }
+}
+function avHeadphones(g, top) {
+  const band = pxMask((x, y) => y <= 28 && pxRing(PX_MID, 29, 19.4, 29 - top + 1, 2.6)(x, y))
+  const cups = pxMask(pxAny(pxSquircle(12.5, 31, 3.8, 7), pxSquircle(50.5, 31, 3.8, 7)))
+  pxPaint(g, pxEdge(pxOr(band, cups)), 'o')
+  pxPaint(g, band, 'c')
+  pxPaint(g, pxMask((x, y) => band[y * PX + x] && !pxAt(band, x, y - 1)), 'C')
+  pxPaint(g, cups, 'c')
+  pxPaint(g, pxMask(pxAny(pxRect(10, 27, 10, 35), pxRect(53, 27, 53, 35))), 'C')
+  pxPaint(g, pxMask(pxAny(pxRect(13, 26, 15, 36), pxRect(48, 26, 50, 36))), 'G', cups)
+}
+
+// ---- the whole bust ----------------------------------------------------------------------------------------
+const AV_CACHE = pxCache(160)
+const AV_HAIR_GRIDS = pxCache(40)
+function avHairPart(hs) { return AV_HAIR_GRIDS(hs, () => hs === 'buzz' ? avBuzz() : pxRle(AV_HAIR_ART[hs] || '')) }
+// A buzz cut follows the skull exactly, so it is drawn from the cranium: a short stipple down to the hairline.
+function avBuzz() {
+  const g = pxGrid()
+  const m = pxMask((x, y) => { const u = (x - PX_MID) / 13; return pxEllipse(PX_MID, AV.cy, AV.rx + 0.6, AV.ry + 0.6)(x, y) && y < 16 + 10 * u * u * u * u })
+  const d = avFill(g, m, 'h', 'Y')
+  for (let i = 0; i < m.length; i++) {
+    const x = i % PX, y = (i - x) / PX
+    if (m[i] && d[i] > 1) g[i] = pxCode((x + y) % 2 ? 'H' : x < 28 && y < 14 ? 'y' : 'h')
+  }
+  return g
+}
+
+function avGrid(a) {
+  const g = pxGrid()
+  const has = k => a.ac.includes(k)
+  const hat = has('beanie') ? 'beanie' : has('headscarf') ? 'headscarf' : ''
+  const head = avHead(a.fs)
+  const chin = (AV_JAW[a.fs] || AV_JAW.oval).chin
+  const hair = avHairPart(a.hs)
+  // what a beanie leaves showing: hair below its brim
+  const below = hat === 'beanie' ? pxMask((x, y) => !AV_BEANIE(x, y) && y > 20) : null
+  // neck and shoulders
+  const neck = pxMask(pxRect(AV.neck[0], AV.neck[2], AV.neck[1], 56))
+  avFill(g, neck, 'k', 'u')
+  pxPaint(g, pxMask((x, y) => neck[y * PX + x] && (y <= chin + 3 || x >= 35) && x > AV.neck[0] && x < AV.neck[1]), 'K')
+  avTop(g, a, avTorso(a.bd))
+  // the head and face
+  avSkin(g, head, chin)
+  avFace(g, a)
+  avFacial(g, a, head, chin)
+  if (has('earrings') && hat !== 'headscarf') avEarrings(g)
+  // the front of the hair, and the shadow it casts on the forehead
+  if (hat !== 'headscarf') {
+    avStamp(g, hair, below)
+    const hm = below ? pxAnd(hair, below) : hair
+    avRim(g, hm, pxDepth(hm), 'z', 36)
+    const shade = pxMask((x, y) => !hm[y * PX + x] && pxAt(hm, x, y - 1) && head[y * PX + x] &&
+      (g[y * PX + x] === pxCode('k') || g[y * PX + x] === pxCode('j')))
+    pxPaint(g, shade, 'K')
+  }
+  if (a.hs === 'bald' && !hat) pxPaint(g, pxMask(pxEllipse(25, 12, 3.4, 1.6)), 'j')
+  if (hat === 'beanie') avBeanie(g)
+  if (hat === 'headscarf') avHeadscarf(g)
+  const glasses = AV_ACC_GROUPS[0].find(k => has(k))
+  if (glasses) avGlasses(g, glasses)
+  if (has('headphones')) {
+    let top = PX
+    for (let y = 0; y < PX && top === PX; y++) for (let x = 24; x < 40; x++) if (g[y * PX + x]) { top = y; break }
+    avHeadphones(g, Math.max(2, top - 1))
+  }
+  return g
+}
+
+// The avatar as SVG layers: { paths, under, colours }. Cached by its settings.
+function avArt(a) {
+  const key = JSON.stringify(a)
+  return AV_CACHE(key, () => {
+    const g = avGrid(a)
+    return { paths: pxPaths(g), under: pxPaths(pxUsed(g).map(v => v ? pxCode('o') : 0)), colours: avColours(a) }
+  })
+}
+
+// ---- the interface -----------------------------------------------------------------------------
+const AV_ART = { grid: PX, views: { small: '7 4 50 50', face: '14 16 36 36' } }
+const AV_SWATCH = { sk: k => AV_SKIN_TONES[k], hc: k => AV_HAIR_TONES[k], tc: k => AV_TOP_TONES[k] }
+function avSwatch(key, id) {
+  const ramp = AV_SWATCH[key] && AV_SWATCH[key](id)
+  return ramp ? ramp[1] : '#808080'
+}
+
+// A person's avatar, still, on a night backdrop. `view` crops it (the builder's close-ups of the face).
+function PersonAvatar(props) {
+  const size = props.size || 28
+  const a = cleanAvatar(props.avatar) || AV_DEFAULT
+  const art = avArt(a)
+  const n = AV_ART.grid
+  return jsx('span', { className: cx('h-pav', props.className), 'aria-hidden': props.label ? undefined : true, role: props.label ? 'img' : undefined,
+    'aria-label': props.label, style: { width: size, height: size },
+    // small marks come in closer on the head, so the face still reads at 24 px
+    children: jsxs('svg', { viewBox: props.view || (size < 48 ? AV_ART.views.small : '0 0 ' + n + ' ' + n), width: size, height: size,
+      shapeRendering: !props.view && size >= 48 && pxCrisp(size, n) ? 'crispEdges' : 'auto', children: [
+      jsx('rect', { width: n, height: n, fill: AV_INK.B }),
+      jsx('rect', { width: n, height: n * 0.375, fill: AV_INK.b }),
+      jsx('g', { children: pxPathEls(art.under, { o: art.colours.u }, 'u') }),
+      jsx('g', { children: pxPathEls(art.paths, art.colours, 'p') })
+    ] }) })
 }
 
 // ===== ui/20_style.js ===========================================================================
@@ -1828,57 +2622,45 @@ button.h-link{background:none;border:0;padding:0;font:inherit;cursor:pointer;tex
 .h-statuschip{display:inline-flex;align-items:center;gap:5px;height:100%;padding:0 6px;border:0;background:transparent;color:var(--h-fg3);font-size:11px;cursor:pointer}
 .h-statuschip:hover{color:var(--h-fg);background:var(--h-hover)}
 
-/* faces */
+/* faces: pixel art (ui/12_pixel.js). Animation swaps or steps whole layers by whole cells (1px in the 64-cell
+   viewBox is one cell); the state picks the frames. Frames that wait their turn (a blink, a talking mouth) are hidden by
+   default, so with no animation (reduced motion, a still face) the face simply rests. */
 .hf{display:inline-grid;place-items:center;flex:none;transform-origin:50% 60%}
-.hf svg{overflow:visible}
-.hf-body{fill:var(--h-accent);fill:color-mix(in oklch,oklch(from var(--h-fg) l 0.15 var(--hue)) 64%,var(--h-bg))}
-.hf-shine{fill:none;stroke:color-mix(in oklch,var(--h-fg) 22%,transparent);stroke-width:1}
-.hf-eye{fill:var(--h-bg);transform-box:fill-box;transform-origin:center}
-.hf-xeyes path,.hf-line{fill:none;stroke:var(--h-bg);stroke-width:1.8;stroke-linecap:round}
-.hf-mouth{fill:var(--h-bg);transform-box:fill-box;transform-origin:center}
-.hf-clock circle{fill:var(--h-card);stroke:var(--h-fg2);stroke-width:1.2}
-.hf-clock path{stroke:var(--h-fg2);stroke-width:1.2;stroke-linecap:round}
-.hf-hand{transform-origin:33px 7px}
-.hf-head{transform-origin:20px 22px;transition:transform .5s cubic-bezier(.34,1.45,.5,1),opacity .4s linear,filter .4s linear}
-.hf[data-state=idle] .hf-eye{animation:hf-blink 4.7s infinite}
-.hf[data-state=working] .hf-eyes{animation:hf-scan 1.6s cubic-bezier(.45,.05,.4,1) infinite alternate}
-.hf[data-state=working] .hf-eye{animation:hf-blink 4.7s infinite}
-.hf[data-state=speaking] .hf-talk{animation:hf-talk .34s cubic-bezier(.3,.7,.4,1) infinite alternate}
-.hf[data-state=waiting] .hf-eye{transform:scaleY(.42)}
+.hf svg{overflow:visible;filter:drop-shadow(0 0 .7px rgba(3,8,16,.8)) drop-shadow(0 0 .7px rgba(3,8,16,.5)) drop-shadow(0 0 var(--gs,1px) var(--glow,transparent)) drop-shadow(0 0 calc(var(--gs,1px) * 3) var(--glow2,transparent))}
+.hf[data-size=s] svg{filter:drop-shadow(0 0 .5px rgba(3,8,16,.5))}
+.pf-scan{opacity:.2}
+.hf[data-size=s] .pf-scan,.hf[data-size=m] .pf-scan{display:none}
+.pf-ec,.pf-mt{opacity:0}
+.hf-clock circle{fill:var(--h-card);stroke:var(--h-fg2);stroke-width:2.2}
+.hf-clock path{stroke:var(--h-fg2);stroke-width:2.2;stroke-linecap:round}
+.hf-hand{transform-origin:54px 10px}
+.hf[data-state=idle] .pf-eo,.hf[data-state=working] .pf-eo{animation:pf-blink-o 4.7s step-end infinite}
+.hf[data-state=idle] .pf-ec,.hf[data-state=working] .pf-ec{animation:pf-blink-c 4.7s step-end infinite}
+.hf[data-state=working] .hf-eyes{animation:pf-scan 1.6s step-end infinite}
+.hf[data-state=speaking] .pf-mr{animation:pf-talk-r .36s step-end infinite}
+.hf[data-state=speaking] .pf-mt{animation:pf-talk-t .36s step-end infinite}
 .hf[data-state=waiting] .hf-hand{animation:hf-tick 6s steps(12) infinite}
-.hf[data-state=error] .hf-head{transform:rotate(-9deg)}
-.hf[data-state=absent] .hf-head{opacity:.42;filter:saturate(.2)}
-.hf[data-state=absent] .hf-eye{transform:scaleY(.14)}
-.hf[data-size=s] .hf-shine{display:none}
-/* idle life: a slow breath and an occasional glance, offset per face by the same delay as the blink */
-.hf[data-state=idle]:not([data-expr]) .hf-head{animation:hf-breathe 4.2s cubic-bezier(.45,.05,.55,.95) infinite alternate}
-.hf[data-state=idle]:not([data-expr]) .hf-eyes{animation:hf-glance 9.4s cubic-bezier(.3,.7,.4,1) infinite}
-/* reactions (data-expr): eyes and head pose; the mouth shape comes from the component */
-.hf[data-expr] .hf-eye{animation:none}
-.hf[data-expr=smug] .hf-eye{transform:scaleY(.48) translateY(.7px)}
-.hf[data-expr=smug] .hf-head{transform:rotate(8deg)}
-.hf[data-expr=caught] .hf-eye{transform:scale(1.25)}
-.hf[data-expr=caught] .hf-head{animation:hf-shake .5s cubic-bezier(.36,.07,.19,.97) 1}
-.hf[data-expr=happy] .hf-eye{transform:scaleY(.42) translateY(-.4px)}
-.hf[data-expr=happy] .hf-head{animation:hf-hop .62s cubic-bezier(.3,.7,.4,1) 2}
-.hf[data-expr=wary] .hf-eye{transform:scaleY(.36) translateX(-1.2px)}
-.hf[data-expr=wary] .hf-head{transform:rotate(-6deg)}
-.hf[data-expr=perk] .hf-eye{transform:scale(1.12)}
-.hf[data-expr=perk] .hf-head{animation:hf-hop .5s cubic-bezier(.3,.7,.4,1) 1}
-@keyframes hf-breathe{0%{transform:scale(1)}100%{transform:scale(1.022,.985) translateY(.25px)}}
-@keyframes hf-glance{0%,78%,100%{transform:translateX(0)}82%,90%{transform:translateX(1.5px)}94%{transform:translateX(-.4px)}}
-@keyframes hf-shake{0%,100%{transform:translateX(0)}20%{transform:translateX(-1.6px) rotate(-4deg)}45%{transform:translateX(1.4px) rotate(3deg)}70%{transform:translateX(-.8px)}}
-@keyframes hf-hop{0%,100%{transform:translateY(0)}35%{transform:translateY(-2.6px) scale(1.03,.97)}60%{transform:translateY(0) scale(.98,1.02)}}
-@keyframes hf-blink{0%,93%,100%{transform:scaleY(1)}95.5%{transform:scaleY(.1)}}
-@keyframes hf-scan{0%{transform:translateX(-1.6px)}100%{transform:translateX(1.6px)}}
-@keyframes hf-talk{0%{transform:scaleY(.35) scaleX(1.1)}100%{transform:scaleY(1.15) scaleX(.9)}}
+.hf[data-state=error] .hf-head{transform:translateY(2px)}
+.hf[data-state=absent] .hf-head{opacity:.45;filter:saturate(.25)}
+/* idle life: a one-cell breath and an occasional glance, offset per face by the same delay as the blink */
+.hf[data-state=idle]:not([data-expr]) .hf-head{animation:pf-bob 4.2s step-end infinite}
+.hf[data-state=idle]:not([data-expr]) .hf-eyes{animation:pf-glance 9.4s step-end infinite}
+/* reactions (data-expr): the frames come from the component; the head moves in whole cells */
+.hf[data-expr=caught] .hf-head{animation:pf-shake .5s step-end 1}
+.hf[data-expr=happy] .hf-head{animation:pf-hop .62s step-end 2}
+.hf[data-expr=perk] .hf-head{animation:pf-hop .5s step-end 1}
+.hf[data-expr=smug] .hf-head{transform:translateX(1px)}
+@keyframes pf-blink-o{0%{opacity:1}94%{opacity:0}97%{opacity:1}}
+@keyframes pf-blink-c{0%{opacity:0}94%{opacity:1}97%{opacity:0}}
+@keyframes pf-talk-r{0%{opacity:1}50%{opacity:0}}
+@keyframes pf-talk-t{0%{opacity:0}50%{opacity:1}}
+@keyframes pf-bob{0%{transform:none}50%{transform:translateY(1px)}}
+@keyframes pf-glance{0%{transform:none}80%{transform:translateX(2px)}91%{transform:translateX(-1px)}94%{transform:none}}
+@keyframes pf-scan{0%{transform:translateX(-2px)}25%{transform:translateX(0)}50%{transform:translateX(2px)}75%{transform:translateX(0)}}
+@keyframes pf-shake{0%{transform:translateX(-2px)}20%{transform:translateX(2px)}40%{transform:translateX(-1px)}60%{transform:translateX(1px)}80%{transform:none}}
+@keyframes pf-hop{0%{transform:translateY(-2px)}30%{transform:translateY(-4px)}55%{transform:translateY(-1px)}75%{transform:none}}
 @keyframes hf-tick{to{transform:rotate(360deg)}}
 @media (prefers-reduced-motion: reduce){.hf *{animation:none!important;transition:none!important}}
-.hf-acc{fill:color-mix(in oklch,oklch(from var(--h-fg) l 0.17 var(--hue2)) 80%,var(--h-bg))}
-.hf-acc-line{fill:none;stroke:color-mix(in oklch,oklch(from var(--h-fg) l 0.17 var(--hue2)) 80%,var(--h-bg));stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round}
-.hf-thick{stroke-width:2.1}
-.hf-blush{opacity:.75}
-.hf-glint{fill:color-mix(in oklch,oklch(from var(--h-fg) l 0.15 var(--hue)) 64%,var(--h-bg))}
 .hf-still *{animation:none!important}
 .h-facepick{align-items:flex-start;gap:16px}
 .h-facepart{display:flex;flex-direction:column;gap:5px}
@@ -1911,13 +2693,6 @@ button.h-link{background:none;border:0;padding:0;font:inherit;cursor:pointer;tex
 .h-idcard-crew{position:relative;width:100%;height:100%}
 .h-idcard-mate{position:absolute;aspect-ratio:1;filter:brightness(.86) saturate(.85)}
 .h-idcard-mate[data-front=true]{filter:drop-shadow(0 4px 10px oklch(0.2 0.14 var(--hue) / .55))}
-.h-idcard .hf-body{fill:oklch(0.94 0.045 var(--hue))}
-.h-idcard .hf-shine{stroke:oklch(1 0 0 / .55)}
-.h-idcard .hf-eye,.h-idcard .hf-mouth{fill:oklch(0.27 0.12 var(--hue))}
-.h-idcard .hf-line,.h-idcard .hf-xeyes path{stroke:oklch(0.27 0.12 var(--hue))}
-.h-idcard .hf-glint{fill:oklch(0.94 0.045 var(--hue))}
-.h-idcard .hf-acc{fill:oklch(0.8 0.15 var(--hue2))}
-.h-idcard .hf-acc-line{stroke:oklch(0.84 0.13 var(--hue2))}
 .h-idcard-initial{font-size:clamp(60px,30cqw,120px);font-weight:200;line-height:1;color:oklch(0.95 0.04 var(--hue));text-shadow:0 0 28px oklch(0.85 0.14 var(--hue) / .7)}
 .h-idcard-top{position:absolute;z-index:4;left:8%;top:13%;right:46%;display:flex;flex-direction:column;align-items:flex-start;gap:9px}
 .h-idcard-name{font-weight:300;font-size:clamp(16px,6.6cqw,26px);line-height:1.08;letter-spacing:.12em;text-transform:uppercase;font-stretch:condensed;overflow-wrap:anywhere;text-shadow:0 1px 14px oklch(0.2 0.12 var(--hue) / .55);
@@ -1981,13 +2756,6 @@ button.h-link{background:none;border:0;padding:0;font:inherit;cursor:pointer;tex
   background-size:var(--a) var(--w),var(--w) var(--a),var(--a) var(--w),var(--w) var(--a),var(--a) var(--w),var(--w) var(--a),var(--a) var(--w),var(--w) var(--a)}
 .h-idcard[data-warn=true] .h-scan-box::before{--w:3px}
 .h-scan-box .h-idcard-hero{inset:12%;right:12%;top:12%;width:auto;transform:none;filter:drop-shadow(0 0 1.3cqw color-mix(in oklch,var(--scan-glow) 75%,transparent))}
-.h-idcard[data-card=scanner] .hf-body{fill:oklch(0.92 0.06 205)}
-.h-idcard[data-card=scanner] .hf-shine{stroke:oklch(1 0 0 / .7)}
-.h-idcard[data-card=scanner] .hf-eye,.h-idcard[data-card=scanner] .hf-mouth{fill:oklch(0.2 0.07 250)}
-.h-idcard[data-card=scanner] .hf-line,.h-idcard[data-card=scanner] .hf-xeyes path{stroke:oklch(0.2 0.07 250)}
-.h-idcard[data-card=scanner] .hf-glint{fill:oklch(0.92 0.06 205)}
-.h-idcard[data-card=scanner] .hf-acc{fill:oklch(0.84 0.1 var(--hue2))}
-.h-idcard[data-card=scanner] .hf-acc-line{stroke:oklch(0.87 0.09 var(--hue2))}
 .h-idcard[data-card=scanner] .h-idcard-mate{filter:brightness(.78)}
 .h-idcard[data-card=scanner] .h-idcard-mate[data-front=true]{filter:drop-shadow(0 .6cqw 1cqw oklch(0.08 0.04 255 / .7))}
 .h-idcard[data-card=scanner] .h-idcard-initial{font-family:var(--h-mono,ui-monospace),ui-monospace,monospace;font-size:20cqw;font-weight:400;color:var(--scan-ink);text-shadow:0 0 1.6cqw var(--scan-glow)}
@@ -2057,9 +2825,39 @@ button.h-link{background:none;border:0;padding:0;font:inherit;cursor:pointer;tex
 .h-profile-agents .h-plain{gap:8px;padding:4px 6px;border-radius:10px}
 .h-profile-agents .h-plain:hover{background:var(--h-hover)}
 /* people's pictures and faces: a plain circle, no tint (an agent's face has its bubble and its label) */
+/* the builders (agent face, person avatar): preview and actions beside layer tabs and option grids; stacks when narrow */
+.h-bld-wrap{container-type:inline-size}
+.h-bld{display:flex;flex-wrap:wrap;gap:16px;align-items:flex-start;outline:none}
+.h-bld-side{flex:none;display:flex;flex-direction:column;align-items:center;gap:10px;width:148px}
+.h-bld-preview{width:148px;height:148px;display:grid;place-items:center;border-radius:18px;background:#0b1117;box-shadow:inset 0 0 0 1px var(--h-line)}
+.h-bld-preview .h-pav{border-radius:12px}
+.h-bld-actions{justify-content:center}
+.h-bld-main{flex:1 1 260px;min-width:0;display:flex;flex-direction:column;gap:10px}
+.h-bld-tabs{display:flex;flex-wrap:wrap;gap:4px}
+.h-bld-tabs button{flex:none;border:1px solid transparent;background:transparent;color:var(--h-fg2);border-radius:999px;padding:4px 10px;font-size:12px;cursor:pointer;white-space:nowrap}
+.h-bld-tabs button:hover{background:var(--h-hover);color:var(--h-fg)}
+.h-bld-tabs button[data-on=true]{background:var(--h-raise);color:var(--h-fg);border-color:var(--h-line2)}
+.h-bld-tabs button:focus-visible,.h-bld-opt:focus-visible{outline:2px solid var(--h-accent);outline-offset:1px}
+.h-bld-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(74px,1fr));gap:6px}
+.h-bld-swatches{grid-template-columns:repeat(auto-fill,minmax(82px,1fr))}
+.h-bld-opt{display:flex;flex-direction:column;align-items:center;gap:4px;padding:4px;border:1px solid var(--h-line);border-radius:12px;background:#0b1117;cursor:pointer;
+  transition:transform .32s cubic-bezier(.3,1.5,.5,1),border-color .15s linear,box-shadow .15s linear}
+.h-bld-swatches .h-bld-opt{background:var(--h-raise);padding:8px 4px 6px}
+.h-bld-opt:hover{border-color:var(--h-line2)}
+.h-bld-opt:active{transform:scale(.95)}
+.h-bld-opt[data-on=true]{border-color:var(--h-accent);box-shadow:0 0 0 1px var(--h-accent)}
+.h-bld-opt .h-pav{border-radius:8px}
+.h-bld-swatch{width:28px;height:28px;border-radius:50%;box-shadow:inset 0 0 0 1px oklch(0 0 0 / .25)}
+.h-bld-name{font-size:11px;color:var(--h-fg2);text-align:center;line-height:1.2}
+@media (prefers-reduced-motion: reduce){.h-bld-opt{transition:none}.h-bld-opt:active{transform:none}}
+@container (max-width: 440px){.h-bld-side{flex-direction:row;width:100%;align-items:flex-end}.h-bld-actions{flex-direction:column;align-items:flex-start}}
+.h-pav{display:inline-grid;flex:none;border-radius:50%;overflow:hidden}
+.h-pav svg{display:block}
 .h-pface,.h-photo{display:inline-grid;place-items:center;flex:none;border-radius:50%;overflow:hidden;background:var(--h-raise);box-shadow:inset 0 0 0 1px var(--h-line)}
 .h-photo img{width:100%;height:100%;object-fit:cover;display:block}
-.h-idcard-hero .h-pface,.h-idcard-hero .h-photo{width:100%!important;height:100%!important}
+.h-idcard-hero .h-pface,.h-idcard-hero .h-photo,.h-idcard-hero .h-pav{width:100%!important;height:100%!important}
+.h-idcard-hero .h-pav{border-radius:16%;box-shadow:0 0 0 1px oklch(1 0 0 / .18)}
+.h-idcard-hero .h-pav svg{width:100%;height:100%}
 .h-typingline{min-height:22px;padding:2px 6px 3px;font-size:12px;color:var(--h-fg3);display:flex;align-items:center}
 .h-typingrow{display:flex;align-items:center;gap:7px;min-width:0}
 .h-typing.h-typing-s{padding:3px 6px;gap:3px;border-radius:999px;flex:none}.h-typing-s i{width:4px;height:4px}
@@ -2254,14 +3052,7 @@ function InterestInput(props) {
   ] })
 }
 
-// The face editor: every part as a row of small faces, each showing the agent with that option.
-const FACE_PARTS = [
-  { key: 'shape', label: 'Shape', opts: SHAPES },
-  { key: 'eyes', label: 'Eyes', opts: FACE_EYES },
-  { key: 'mouth', label: 'Mouth', opts: FACE_MOUTHS },
-  { key: 'acc', label: 'Extra', opts: FACE_ACCS },
-  { key: 'pattern', label: 'Cheeks', opts: FACE_PATTERNS }
-]
+// The face editor's labels, for every option a face can have.
 const FACE_OPT_LABEL = { dot: 'Dots', round: 'Round', sleepy: 'Sleepy', wide: 'Wide', visor: 'Visor', smile: 'Smile',
   flat: 'Flat', grin: 'Grin', cat: 'Cat', o: 'Surprised', none: 'None', antenna: 'Antenna', glasses: 'Glasses',
   headphones: 'Headphones', halo: 'Halo', sprout: 'Sprout', horns: 'Horns', bow: 'Bow', blush: 'Blush', freckles: 'Freckles',
@@ -2318,43 +3109,24 @@ function useFaceEditorFocus() {
   }, [])
 }
 
+// An agent's face editor: a big live preview, a tab per part, each option a small live face (ui/33_builder.js).
+// `noCard` leaves out the card style.
 function FacePicker(props) {
   const face = faceFor(props.value, props.pk)
+  const [tab, setTab] = useState('shape')
+  const uid = (props.id || 'h-face') + '-b'
   const set = patch => props.onChange(Object.assign({}, face, patch))
-  const accent = face.acc !== 'none' || face.pattern !== 'none'
-  return jsxs('div', { className: 'h-row h-facepick', id: props.id, tabIndex: props.id ? -1 : undefined, role: props.id ? 'group' : undefined,
-    'aria-label': props.id ? 'Face editor' : undefined, children: [
-    !props.noPreview && jsx(Face, { face, pk: props.pk, state: props.previewState || 'activity: idle', size: 64, name: props.name }),
-    jsxs('div', { className: 'h-col h-grow', style: { gap: 10, minWidth: 0 }, children: [
-      !props.noCard && jsxs('div', { className: 'h-facepart', children: [
-        jsx('div', { className: 'h-faint h-tiny h-caps', children: 'Card' }),
-        jsx('div', { className: 'h-shapes', role: 'radiogroup', 'aria-label': 'Card style', children: FACE_CARDS.map(o =>
-          jsxs('button', { type: 'button', className: 'h-shape h-cardpick', role: 'radio', 'aria-checked': face.card === o, 'data-on': face.card === o,
-            onClick: () => set({ card: o }), children: [
-              jsx(CardSwatch, { card: o, hue: face.hue, hue2: face.hue2 }, 's'),
-              jsx('span', { children: CARD_STYLE_LABEL[o] }, 'l')
-            ] }, o)) })
-      ] }),
-      ...FACE_PARTS.map(part => jsxs('div', { className: 'h-facepart', children: [
-        jsx('div', { className: 'h-faint h-tiny h-caps', children: part.label }),
-        jsx('div', { className: 'h-shapes', role: 'radiogroup', 'aria-label': 'Face ' + part.label.toLowerCase(), children: part.opts.map(o =>
-          jsx('button', { type: 'button', className: 'h-shape', role: 'radio', 'aria-checked': face[part.key] === o,
-            'aria-label': FACE_OPT_LABEL[o] || o, title: FACE_OPT_LABEL[o] || o, 'data-on': face[part.key] === o,
-            onClick: () => set({ [part.key]: o }),
-            children: jsx(Face, { face: Object.assign({}, face, { [part.key]: o }), pk: props.pk, state: 'activity: idle', size: 30, className: 'hf-still' }) }, o)) })
-      ] }, part.key)),
-      jsxs('div', { className: 'h-facepart', children: [
-        jsx('div', { className: 'h-faint h-tiny h-caps', children: 'Colour' }),
-        jsx('input', { type: 'range', className: 'h-hue', min: 0, max: 359, value: face.hue, 'aria-label': 'Face colour',
-          onChange: e => set({ hue: Number(e.target.value) }) })
-      ] }),
-      accent && jsxs('div', { className: 'h-facepart', children: [
-        jsx('div', { className: 'h-faint h-tiny h-caps', children: 'Accent' }),
-        jsx('input', { type: 'range', className: 'h-hue', min: 0, max: 359, value: face.hue2, 'aria-label': 'Accent colour',
-          onChange: e => set({ hue2: Number(e.target.value) }) })
-      ] })
-    ] })
-  ] })
+  const layers = FACE_LAYERS.concat(!props.noCard ? [{ key: 'card', label: 'Card' }] : [])
+  const layer = layers.find(l => l.key === tab) || layers[0]
+  const thumb = patch => jsx(Face, { face: Object.assign({}, face, patch), pk: props.pk, state: 'activity: idle', size: 64, className: 'hf-still' })
+  const panel = layer.key === 'colour' ? jsx(FaceColours, { face, set })
+    : layer.key === 'card' ? jsx(OptionGrid, { label: 'Card style', value: face.card, swatch: true, onChange: v => set({ card: v }),
+      options: FACE_CARDS.map(o => ({ id: o, label: CARD_STYLE_LABEL[o], render: () => jsx(CardSwatch, { card: o, hue: face.hue, hue2: face.hue2 }) })) })
+    : jsx(OptionGrid, { label: 'Face ' + layer.label.toLowerCase(), value: face[layer.key], onChange: v => set({ [layer.key]: v }),
+      options: layer.opts.map(o => ({ id: o, label: FACE_OPT_LABEL[o] || o, render: () => thumb({ [layer.key]: o }) })) })
+  return jsx(BuilderShell, { id: props.id, uid, label: 'Face editor', version: JSON.stringify(face), tab, setTab, layers, panel,
+    preview: jsx(Face, { face, pk: props.pk, state: props.previewState || 'activity: idle', size: 128, name: props.name }),
+    actions: [jsx(K.Button, { variant: 'secondary', size: 'sm', onClick: () => props.onChange(randomFace(face)), children: 'Randomize' }, 'r')] })
 }
 
 function Initial(props) {
@@ -2372,8 +3144,9 @@ function PersonPhoto(props) {
     children: jsx('img', { src: props.uri, alt: '', width: size, height: size, draggable: false, decoding: 'async', referrerPolicy: 'no-referrer' }) })
 }
 
-// How a person shows up anywhere: their picture (when they set one and pictures are on), else their face, else the
-// letter. A lookalike (`flagged`) gets the letter only, so a copied picture can't make it pass for the real person.
+// How a person shows up anywhere: their picture (when they set one and pictures are on), else their pixel avatar, else
+// the face they built before avatars existed, else the letter. A lookalike (`flagged`) gets the letter only, so a
+// copied picture or avatar can't make it pass for the real person. Nothing is ever made up from the key.
 // `art` overrides the snapshot's (Settings previews a picture before it is published).
 function PersonMark(props) {
   const ctx = useContext(PeopleContext)
@@ -2383,6 +3156,7 @@ function PersonMark(props) {
   const uri = useAvatarUri(art && art.av && pics ? props.pk : '', art && art.av)
   const body = art && art.uri && pics ? art.uri : uri
   if (body) return jsx(PersonPhoto, { uri: body, size, className: props.className })
+  if (art && art.avatar && cleanAvatar(art.avatar)) return jsx(PersonAvatar, { avatar: art.avatar, size, className: props.className })
   if (art && art.face) return jsx(PersonFace, { face: art.face, pk: props.pk, size, className: props.className })
   return jsx(Initial, { name: props.name, size: props.size })
 }
@@ -2563,9 +3337,11 @@ function AvatarCropper(props) {
   ] })
 }
 
-// The editor. Props: pk, name; face (the owner's built face or null) and onFace(face|null); art ({face?, av?}: what shows now);
-// staged (a picture waiting for Save, onboarding) or null; onPicture(uri) with a data URI, or '' to take it away; hasPicture;
-// busy; stage (true in onboarding: a picture is held until setup finishes instead of being published at once).
+// How you look. The pixel avatar builder comes first; a photo is the opt-in alternative (it shows first where
+// pictures are on, and the avatar stands in where they're off). Props: pk, name; avatar (a clean avatar or null) and
+// onAvatar(avatar|null); face (an older built face, or null) and onFace(null) to drop it; art ({av?, avatar?, face?}:
+// what shows now); staged (a picture waiting for Save, onboarding) or null; onPicture(uri) with a data URI, or '' to
+// take it away; hasPicture; busy; stage (true in onboarding: a picture is held until setup finishes).
 function PersonLook(props) {
   const [file, setFile] = useState(null)
   const [note, setNote] = useState('')
@@ -2580,41 +3356,262 @@ function PersonLook(props) {
     setFile(f)
   }
   const used = uri => { setFile(null); props.onPicture(uri) }
-  const shown = props.staged ? { uri: props.staged, face: props.face || undefined } : props.art
   const has = !!(props.staged || props.hasPicture)
+  const shown = props.staged ? Object.assign({}, props.art || {}, { uri: props.staged }) : props.art
   return jsxs('div', { className: 'h-col h-look', style: { gap: 12 }, children: [
-    jsxs('div', { className: 'h-row', style: { gap: 14, alignItems: 'flex-start' }, children: [
-      jsx(PersonMark, { pk: props.pk, name: props.name || 'You', size: 72, art: shown || null }),
-      jsxs('div', { className: 'h-col', style: { gap: 8, minWidth: 0 }, children: [
-        jsxs('div', { className: 'h-actions', children: [
-          jsx(K.Button, { variant: 'secondary', size: 'sm', disabled: !!props.busy, onClick: () => input.current && input.current.click(),
-            children: has ? 'Change picture' : 'Choose a picture' }),
-          has && jsx(K.Button, { variant: 'ghost', size: 'sm', disabled: !!props.busy, onClick: () => { setFile(null); props.onPicture('') }, children: 'Remove picture' }),
-          jsx('input', { type: 'file', ref: input, accept: 'image/png,image/jpeg,image/webp,image/gif', style: { display: 'none' }, tabIndex: -1, 'aria-hidden': true, onChange: pick })
-        ] }),
-        note && jsx('div', { className: 'h-hint h-err', role: 'alert', children: note }),
-        jsx('div', { className: 'h-hint', children: props.stage
-          ? 'Optional. It is published when you finish setup.'
-          : 'Optional. Shown next to your name for people in your rooms.' })
-      ] })
-    ] }),
-    file && jsx(AvatarCropper, { file, onUse: used, onCancel: () => setFile(null), busy: props.busy,
-      useLabel: props.stage ? 'Use this picture' : 'Use and publish' }),
-    jsxs('div', { className: 'h-hint', children: [
-      'Public and permanent: your picture goes to public Nostr relays, where anyone can see it, and relays or other apps may keep old pictures forever, even after you remove it. ',
-      'Ninsei crops it to a square, shrinks it to 256 pixels and re-encodes it on this computer, which drops EXIF details such as GPS location and camera model. The original file is never uploaded. People who turn pictures off see your face or initial instead.'
+    jsx(AvatarEditor, { id: props.id, value: props.avatar, name: props.name, onChange: props.onAvatar }),
+    jsx('div', { className: 'h-hint', children: props.avatar
+      ? 'Public like your name: your avatar goes out with your face settings to public Nostr relays, and anyone in your rooms sees it.'
+      : 'Not set yet: until you change something here, people see your initial. Once set it is public like your name.' }),
+    jsxs('div', { className: 'h-actions', children: [
+      props.avatar && jsx(K.Button, { variant: 'ghost', size: 'sm', onClick: () => props.onAvatar(null), children: 'Use my initial instead' }),
+      props.face && jsx(K.Button, { variant: 'ghost', size: 'sm', onClick: () => props.onFace(null), children: 'Remove my older face' })
     ] }),
     jsxs('div', { className: 'h-col', style: { gap: 8 }, children: [
-      jsx('div', { className: 'h-label', style: { fontSize: 12, fontWeight: 600, color: 'var(--h-fg2)' }, children: 'Your face' }),
-      jsxs('div', { className: 'h-row', style: { gap: 10 }, children: [
-        jsx(Seg, { label: 'What stands in for your picture', value: props.face ? 'face' : 'letter',
-          onChange: v => props.onFace(v === 'face' ? faceFor(props.face, props.pk) : null),
-          options: [{ id: 'letter', label: 'My initial' }, { id: 'face', label: 'A face' }] }),
-        props.face && jsx(PersonFace, { face: props.face, pk: props.pk, size: 40 })
+      jsx('div', { className: 'h-label', style: { fontSize: 12, fontWeight: 600, color: 'var(--h-fg2)' }, children: 'Photo (optional)' }),
+      jsxs('div', { className: 'h-row', style: { gap: 14, alignItems: 'flex-start' }, children: [
+        has && jsx(PersonMark, { pk: props.pk, name: props.name || 'You', size: 48, art: shown || null }),
+        jsxs('div', { className: 'h-col', style: { gap: 8, minWidth: 0 }, children: [
+          jsxs('div', { className: 'h-actions', children: [
+            jsx(K.Button, { variant: 'secondary', size: 'sm', disabled: !!props.busy, onClick: () => input.current && input.current.click(),
+              children: has ? 'Change photo' : 'Use a photo instead' }),
+            has && jsx(K.Button, { variant: 'ghost', size: 'sm', disabled: !!props.busy, onClick: () => { setFile(null); props.onPicture('') }, children: 'Remove photo' }),
+            jsx('input', { type: 'file', ref: input, accept: 'image/png,image/jpeg,image/webp,image/gif', style: { display: 'none' }, tabIndex: -1, 'aria-hidden': true, onChange: pick })
+          ] }),
+          note && jsx('div', { className: 'h-hint h-err', role: 'alert', children: note }),
+          jsx('div', { className: 'h-hint', children: props.stage
+            ? 'A photo is shown instead of your avatar. It is published when you finish setup.'
+            : 'A photo is shown instead of your avatar, for people who have pictures on.' })
+        ] })
       ] }),
-      props.face && jsx(FacePicker, { value: props.face, pk: props.pk, noCard: true, noPreview: true, onChange: props.onFace }),
-      jsx('div', { className: 'h-hint', children: 'Shown when you have no picture, or when someone has pictures off. Built from the same parts as an agent’s, in a plain circle. Public like your name.' })
+      file && jsx(AvatarCropper, { file, onUse: used, onCancel: () => setFile(null), busy: props.busy,
+        useLabel: props.stage ? 'Use this picture' : 'Use and publish' }),
+      jsxs('div', { className: 'h-hint', children: [
+        'Public and permanent: your picture goes to public Nostr relays, where anyone can see it, and relays or other apps may keep old pictures forever, even after you remove it. ',
+        'Ninsei crops it to a square, shrinks it to 256 pixels and re-encodes it on this computer, which drops EXIF details such as GPS location and camera model. The original file is never uploaded. People who turn pictures off see your avatar or initial instead.'
+      ] })
     ] })
+  ] })
+}
+
+// ===== ui/33_builder.js =========================================================================
+
+// ---------------------------------------------------------------------------------------------
+// the builders: one editor shape for an agent's face and a person's avatar. A big live preview,
+// layer tabs, and each option as a small live render of the whole thing with that option applied
+// (colours as named swatches). Arrow keys move between tabs and within a layer; every option has a
+// label; Randomize (and, for a person, Reset).
+// ---------------------------------------------------------------------------------------------
+
+// Layer tabs (the ARIA tabs pattern: arrows move and select, Home/End jump).
+function LayerTabs(props) {
+  const refs = useRef([])
+  const i = Math.max(0, props.layers.findIndex(l => l.key === props.value))
+  const go = j => {
+    const n = props.layers.length
+    const k = (j + n) % n
+    props.onChange(props.layers[k].key)
+    const el = refs.current[k]
+    if (el) { el.focus(); try { el.scrollIntoView({ block: 'nearest', inline: 'nearest' }) } catch (_) { /* old engine */ } }
+  }
+  const onKey = e => {
+    if (e.key === 'ArrowRight') go(i + 1)
+    else if (e.key === 'ArrowLeft') go(i - 1)
+    else if (e.key === 'Home') go(0)
+    else if (e.key === 'End') go(props.layers.length - 1)
+    else return
+    e.preventDefault()
+  }
+  return jsx('div', { className: 'h-bld-tabs', role: 'tablist', 'aria-label': props.label, onKeyDown: onKey, children: props.layers.map((l, k) =>
+    jsx('button', { type: 'button', role: 'tab', id: props.id + '-tab-' + l.key, 'aria-controls': props.id + '-panel',
+      'aria-selected': k === i, tabIndex: k === i ? 0 : -1, 'data-on': k === i, ref: el => { refs.current[k] = el },
+      onClick: () => props.onChange(l.key), children: l.label }, l.key)) })
+}
+
+// One choice per layer: a radio group whose arrow keys move the choice (and the focus) through the options.
+function OptionGrid(props) {
+  const refs = useRef([])
+  const opts = props.options
+  // the chosen option; none (a hue picked on the slider) leaves every swatch unchecked, the first one focusable
+  const sel = opts.findIndex(o => o.id === props.value)
+  const i = Math.max(0, sel)
+  const pick = j => {
+    const k = (j + opts.length) % opts.length
+    props.onChange(opts[k].id)
+    const el = refs.current[k]
+    if (el) el.focus()
+  }
+  // how many options sit on a row, so up and down move by a row
+  const perRow = () => {
+    const a = refs.current[0], b = refs.current.find((el, k) => k > 0 && el && a && el.offsetTop > a.offsetTop + 2)
+    return b ? refs.current.indexOf(b) : opts.length
+  }
+  const onKey = e => {
+    if (e.key === 'ArrowRight') pick(sel + 1)
+    else if (e.key === 'ArrowLeft') pick((sel < 0 ? 0 : sel) - 1)
+    else if (e.key === 'ArrowDown') pick(Math.min(opts.length - 1, i + perRow()))
+    else if (e.key === 'ArrowUp') pick(Math.max(0, i - perRow()))
+    else if (e.key === 'Home') pick(0)
+    else if (e.key === 'End') pick(opts.length - 1)
+    else return
+    e.preventDefault()
+  }
+  return jsx('div', { className: cx('h-bld-grid', props.swatch && 'h-bld-swatches'), role: 'radiogroup', 'aria-label': props.label, onKeyDown: onKey,
+    children: opts.map((o, k) => jsxs('button', { type: 'button', role: 'radio', className: 'h-bld-opt', 'aria-checked': k === sel, 'data-on': k === sel,
+      tabIndex: k === i ? 0 : -1, 'aria-label': o.label, title: o.label, ref: el => { refs.current[k] = el }, onClick: () => props.onChange(o.id),
+      children: [o.render(), props.swatch && jsx('span', { className: 'h-bld-name', 'aria-hidden': true, children: o.label })] }, o.id)) })
+}
+
+// Things worn: any number, each a toggle button. Arrow keys move the focus; Space or Enter puts it on or off.
+function ToggleGrid(props) {
+  const refs = useRef([])
+  const [at, setAt] = useState(0)
+  const move = j => { const k = (j + props.options.length) % props.options.length; setAt(k); const el = refs.current[k]; if (el) el.focus() }
+  const onKey = e => {
+    if (e.key === 'ArrowRight' || e.key === 'ArrowDown') move(at + 1)
+    else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') move(at - 1)
+    else if (e.key === 'Home') move(0)
+    else if (e.key === 'End') move(props.options.length - 1)
+    else return
+    e.preventDefault()
+  }
+  return jsx('div', { className: 'h-bld-grid', role: 'group', 'aria-label': props.label, onKeyDown: onKey, children: props.options.map((o, k) =>
+    jsx('button', { type: 'button', className: 'h-bld-opt', 'aria-pressed': props.value.includes(o.id), 'data-on': props.value.includes(o.id),
+      tabIndex: k === at ? 0 : -1, 'aria-label': o.label, title: o.label, ref: el => { refs.current[k] = el }, onFocus: () => setAt(k),
+      onClick: () => props.onToggle(o.id), children: o.render() }, o.id)) })
+}
+
+// The preview pops on a spring when anything changes (nothing with reduced motion).
+function usePreviewPop(dep) {
+  const ref = useRef(null)
+  const first = useRef(true)
+  useEffect(() => {
+    if (first.current) { first.current = false; return }
+    const el = ref.current
+    if (!el || motion.reduced()) return
+    const s = motion.spring({ from: 0.94, to: 1, k: SPRING.pop.k, c: SPRING.pop.c, onUpdate: x => {
+      el.style.transform = x === 1 ? '' : 'scale(' + x.toFixed(4) + ')'
+    } })
+    return () => s.stop()
+  }, [dep])
+  return ref
+}
+
+function BuilderShell(props) {
+  const pop = usePreviewPop(props.version)
+  // the wrapper is the size container: on a narrow column the preview and its buttons sit side by side
+  return jsx('div', { className: 'h-bld-wrap', children: jsxs('div', { className: 'h-bld', id: props.id, tabIndex: props.id ? -1 : undefined, role: 'group', 'aria-label': props.label, children: [
+    jsxs('div', { className: 'h-bld-side', children: [
+      jsx('div', { className: 'h-bld-preview', ref: pop, children: props.preview }),
+      jsxs('div', { className: 'h-actions h-bld-actions', children: props.actions })
+    ] }),
+    jsxs('div', { className: 'h-bld-main', children: [
+      jsx(LayerTabs, { id: props.uid, label: props.label + ' layers', layers: props.layers, value: props.tab, onChange: props.setTab }),
+      jsx('div', { className: 'h-bld-panel', role: 'tabpanel', id: props.uid + '-panel', 'aria-labelledby': props.uid + '-tab-' + props.tab, children: props.panel })
+    ] })
+  ] }) })
+}
+
+// ---- a person's avatar ------------------------------------------------------------------------------
+const AV_LABEL = {
+  oval: 'Oval', round: 'Round', square: 'Square', long: 'Long',
+  short: 'Short', curly: 'Curly', long_hair: 'Long', buzz: 'Buzz cut', bun: 'Bun', locs: 'Locs', bob: 'Bob', wavy: 'Wavy',
+  afro: 'Afro', ponytail: 'Ponytail', bald: 'Bald', swept: 'Swept',
+  darkbrown: 'Dark brown', black: 'Black', brown: 'Brown', auburn: 'Auburn', ginger: 'Ginger', blonde: 'Blonde',
+  platinum: 'Platinum', grey: 'Grey', ice: 'Ice blue',
+  open: 'Open', smile: 'Smiling', almond: 'Almond', dot: 'Dots', sleepy: 'Sleepy',
+  soft: 'Soft', straight: 'Straight', arched: 'Arched',
+  grin: 'Grin', laugh: 'Laugh', flat: 'Straight', smirk: 'Smirk',
+  none: 'None', stubble: 'Stubble', moustache: 'Moustache', short_beard: 'Short beard', full: 'Full beard',
+  narrow: 'Narrow', broad: 'Broad',
+  coat: 'Coat', hoodie: 'Hoodie', turtleneck: 'Turtleneck', jacket: 'Jacket', tee: 'T-shirt', scarf: 'Coat and scarf',
+  navy: 'Navy', steel: 'Steel', slate: 'Slate', charcoal: 'Charcoal', glacier: 'Glacier', teal: 'Teal',
+  'round-glasses': 'Round glasses', 'square-glasses': 'Square glasses', earrings: 'Earrings', beanie: 'Beanie',
+  headphones: 'Headphones', headscarf: 'Headscarf'
+}
+function avOptLabel(key, id) {
+  if (key === 'sk') return 'Skin ' + (id + 1) + (id === 0 ? ', lightest' : id === AV_SKIN - 1 ? ', darkest' : '')
+  if (key === 'hs' && id === 'long') return 'Long'
+  if (key === 'fh' && id === 'short') return 'Short beard'
+  if (key === 'mo' && id === 'smile') return 'Smile'
+  return AV_LABEL[id] || id
+}
+// the layers that are about the face show close-ups (the renderer says where the face is)
+const AV_FACE_VIEW = AV_ART.views.face
+const AV_LAYERS = [
+  { key: 'sk', label: 'Skin', opts: Array.from({ length: AV_SKIN }, (_, i) => i), swatch: k => avSwatch('sk', k) },
+  { key: 'fs', label: 'Face', opts: AV_FACES, view: AV_FACE_VIEW },
+  { key: 'hs', label: 'Hair', opts: AV_HAIR },
+  { key: 'hc', label: 'Hair colour', opts: AV_HAIR_COLOURS, swatch: k => avSwatch('hc', k) },
+  { key: 'ey', label: 'Eyes', opts: AV_EYES, view: AV_FACE_VIEW },
+  { key: 'br', label: 'Brows', opts: AV_BROWS, view: AV_FACE_VIEW },
+  { key: 'mo', label: 'Mouth', opts: AV_MOUTHS, view: AV_FACE_VIEW },
+  { key: 'fh', label: 'Facial hair', opts: AV_FACIAL, view: AV_FACE_VIEW },
+  { key: 'bd', label: 'Build', opts: AV_BUILDS },
+  { key: 'tp', label: 'Top', opts: AV_TOPS },
+  { key: 'tc', label: 'Top colour', opts: AV_TOP_COLOURS, swatch: k => avSwatch('tc', k) },
+  { key: 'ac', label: 'Extras', opts: AV_ACCS }
+]
+
+// props: value (a clean avatar), onChange(avatar), id, name
+function AvatarEditor(props) {
+  const a = cleanAvatar(props.value) || AV_DEFAULT
+  const [tab, setTab] = useState('hs')
+  const uid = (props.id || 'h-av') + '-b'
+  const set = patch => props.onChange(cleanAvatar(Object.assign({}, a, patch)))
+  const layer = AV_LAYERS.find(l => l.key === tab) || AV_LAYERS[0]
+  const thumb = patch => jsx(PersonAvatar, { avatar: Object.assign({}, a, patch), size: 64, view: layer.view, className: 'h-bld-thumb' })
+  const panel = layer.key === 'ac'
+    ? jsx(ToggleGrid, { label: 'Extras', value: a.ac, options: layer.opts.map(o => ({ id: o, label: avOptLabel('ac', o),
+        render: () => thumb({ ac: a.ac.includes(o) ? a.ac : a.ac.concat([o]) }) })),
+      onToggle: o => set({ ac: a.ac.includes(o) ? a.ac.filter(x => x !== o)
+        : a.ac.filter(x => !AV_ACC_GROUPS.some(g => g.includes(o) && g.includes(x))).concat([o]) }) })
+    : jsx(OptionGrid, { label: layer.label, value: a[layer.key], swatch: !!layer.swatch, onChange: v => set({ [layer.key]: v }),
+        options: layer.opts.map(o => ({ id: o, label: avOptLabel(layer.key, o),
+          render: () => layer.swatch ? jsx('span', { className: 'h-bld-swatch', style: { background: layer.swatch(o) } }) : thumb({ [layer.key]: o }) })) })
+  return jsx(BuilderShell, { id: props.id, uid, label: 'Avatar builder', version: JSON.stringify(a), tab, setTab,
+    layers: AV_LAYERS, panel,
+    preview: jsx(PersonAvatar, { avatar: a, size: 128, label: (props.name ? props.name + '’s' : 'Your') + ' avatar' }),
+    actions: [
+      jsx(K.Button, { variant: 'secondary', size: 'sm', onClick: () => props.onChange(randomAvatar()), children: 'Randomize' }, 'r'),
+      jsx(K.Button, { variant: 'ghost', size: 'sm', onClick: () => props.onChange(cleanAvatar(AV_DEFAULT)), children: 'Reset' }, 's')
+    ] })
+}
+
+// ---- an agent's face --------------------------------------------------------------------------------
+const FACE_LAYERS = [
+  { key: 'shape', label: 'Shape', opts: SHAPES },
+  { key: 'eyes', label: 'Eyes', opts: FACE_EYES },
+  { key: 'mouth', label: 'Mouth', opts: FACE_MOUTHS },
+  { key: 'acc', label: 'Extra', opts: FACE_ACCS },
+  { key: 'pattern', label: 'Cheeks', opts: FACE_PATTERNS },
+  { key: 'colour', label: 'Colour' }
+]
+// a few named hues for the colour swatches; the sliders reach every other one
+const FACE_HUES = [['Ice', 215], ['Glacier', 235], ['Violet', 285], ['Rose', 340], ['Ember', 30], ['Amber', 75], ['Moss', 130], ['Teal', 180]]
+
+function randomFace(face, rand) {
+  const r = rand || Math.random
+  const pick = a => a[Math.floor(r() * a.length) % a.length]
+  return Object.assign({}, face, { hue: Math.floor(r() * 360), hue2: Math.floor(r() * 360), shape: pick(SHAPES), eyes: pick(FACE_EYES),
+    mouth: pick(FACE_MOUTHS), acc: pick(FACE_ACCS), pattern: pick(FACE_PATTERNS) })
+}
+
+function FaceColours(props) {
+  const face = props.face
+  const swatch = (key, label) => jsx(OptionGrid, { label, swatch: true, value: FACE_HUES.find(h => h[1] === face[key]) ? face[key] : null,
+    onChange: v => props.set({ [key]: v }),
+    options: FACE_HUES.map(([name, h]) => ({ id: h, label: name, render: () => jsx('span', { className: 'h-bld-swatch',
+      style: { background: oklchToHex(0.72, 0.14, h) } }) })) })
+  return jsxs('div', { className: 'h-col', style: { gap: 10 }, children: [
+    jsx('div', { className: 'h-faint h-tiny h-caps', children: 'Colour' }),
+    swatch('hue', 'Face colour'),
+    jsx('input', { type: 'range', className: 'h-hue', min: 0, max: 359, value: face.hue, 'aria-label': 'Face colour, any hue',
+      onChange: e => props.set({ hue: Number(e.target.value) }) }),
+    jsx('div', { className: 'h-faint h-tiny h-caps', children: 'Accent (extras and cheeks)' }),
+    swatch('hue2', 'Accent colour'),
+    jsx('input', { type: 'range', className: 'h-hue', min: 0, max: 359, value: face.hue2, 'aria-label': 'Accent colour, any hue',
+      onChange: e => props.set({ hue2: Number(e.target.value) }) })
   ] })
 }
 
@@ -3157,7 +4154,7 @@ function scannerSvg(o) {
       const top = Number(f.top) || 0
       const size = Number(f.size) || 100
       out.push('<svg x="' + num(bx + hpad + left / 100 * hs) + '" y="' + num(by + hpad + top / 100 * hs) + '" width="' + num(size / 100 * hs) + '" height="' + num(size / 100 * hs) +
-        '" viewBox="0 0 40 40" overflow="visible"' + (f.front ? '' : ' filter="url(#nsdim)"') + '>' + inner + '</svg>')
+        '" viewBox="' + faceBox(f.vb) + '" overflow="visible"' + (f.front ? '' : ' filter="url(#nsdim)"') + '>' + inner + '</svg>')
     }
   } else if (o.initial) {
     out.push(text(bx + bs / 2, by + bs / 2 + 26 * U * 0.36, Array.from(xmlClean(o.initial))[0] || '?', { size: 26 * U, weight: 300, anchor: 'middle', glow: false }))
@@ -3446,8 +4443,8 @@ function IdCard(props) {
   const crew = (props.agents || []).filter(a => a && a.pk).slice(0, 3)
   const idle = 'activity: idle'
 
-  // a person who set a picture or a face is shown by it (never a lookalike: the sheet passes `art` only for the real key)
-  const mark = !agent && !warn && props.art && (props.art.av || props.art.face) ? jsx(PersonHero, { pk: props.pk, art: props.art }) : null
+  // a person who set a picture, an avatar or a face is shown by it (never a lookalike: the sheet passes `art` only for the real key)
+  const mark = !agent && !warn && props.art && (props.art.av || props.art.avatar || props.art.face) ? jsx(PersonHero, { pk: props.pk, art: props.art }) : null
   const hero = agent
     // the picture is always the whole face; an away agent's status is in the corner, not a faded portrait
     ? jsx(Face, { face: props.face, pk: props.pk, state: stateWord(props.state) === 'absent' ? idle : (props.state || idle), size: 120 })
@@ -3516,11 +4513,12 @@ function IdCard(props) {
     children: jsx('div', { className: 'h-idcard-tilt', children: jsxs('div', { className: 'h-idcard-turn', ref: turn, children: [front, back] }) }) })
 }
 
-// A person's picture or face as the card's big picture. The saved card image draws a face but not a picture
-// (the picture is a stranger's file: it stays out of anything that gets exported).
+// A person's picture, avatar or face as the card's big picture. The saved card image draws an avatar or face but not a
+// picture (the picture is a stranger's file: it stays out of anything that gets exported).
 function PersonHero(props) {
   const uri = useAvatarUri(props.art.av && props.pk ? props.pk : '', props.art.av)
   if (uri) return jsx(PersonPhoto, { uri, size: 120, className: 'h-idcard-photo' })
+  if (props.art.avatar && cleanAvatar(props.art.avatar)) return jsx(PersonAvatar, { avatar: props.art.avatar, size: 120 })
   if (props.art.face) return jsx(PersonFace, { face: props.art.face, pk: props.pk, size: 120 })
   return null
 }
@@ -4011,6 +5009,12 @@ function faceMarkup(markup) {
   return m
 }
 
+// A face's own viewBox ("x y w h", plain numbers only), else the pixel grid's.
+function faceBox(vb) {
+  const n = String(vb == null ? '' : vb).trim().split(/\s+/).map(Number)
+  return n.length === 4 && n.every(Number.isFinite) && n[2] > 0 && n[3] > 0 ? n.join(' ') : '0 0 64 64'
+}
+
 function cardHue(h) {
   const n = Number(h)
   return Number.isFinite(n) ? ((n % 360) + 360) % 360 : 0
@@ -4083,7 +5087,7 @@ function cardSvg(o) {
       const top = Number(f.top) || 0
       const size = Number(f.size) || 100
       out.push('<svg x="' + num(bx + left / 100 * bs) + '" y="' + num(by + top / 100 * bs) + '" width="' + num(size / 100 * bs) + '" height="' + num(size / 100 * bs) +
-        '" viewBox="0 0 40 40" overflow="visible"' + (f.front ? '' : ' filter="url(#ncdim)"') + '>' + inner + '</svg>')
+        '" viewBox="' + faceBox(f.vb) + '" overflow="visible"' + (f.front ? '' : ' filter="url(#ncdim)"') + '>' + inner + '</svg>')
     }
   } else if (o.initial) {
     out.push(text(bx + bs / 2, by + bs / 2 + W * 0.3 * 0.36, Array.from(xmlClean(o.initial))[0] || '?', { size: W * 0.3, weight: 200, fill: hx(0.95, 0.04, hue), anchor: 'middle' }))
@@ -4178,6 +5182,8 @@ function inlineFace(svgEl) {
         const v = parseFloat(cs.getPropertyValue(key))
         if (Number.isFinite(v) && v !== 1) style.push(key + ':' + v)
       }
+      // pixel art (ui/12_pixel.js marks its paths) stays hard-edged at the picture's size
+      if (el.hasAttribute('data-px')) style.push('shape-rendering:crispEdges')
       const sw = parseFloat(cs.getPropertyValue('stroke-width'))
       if (Number.isFinite(sw)) style.push('stroke-width:' + sw)
       for (const key of ['stroke-linecap', 'stroke-linejoin']) {
@@ -4209,7 +5215,7 @@ function heroFaces(front) {
   const mates = Array.from(front.querySelectorAll('.h-idcard-mate'))
   const place = (svg, left, top, size, isFront) => {
     const inner = svg ? inlineFace(svg) : ''
-    if (inner) out.push({ inner, left, top, size, front: isFront })
+    if (inner) out.push({ inner, left, top, size, front: isFront, vb: svg.getAttribute('viewBox') })
   }
   if (mates.length) {
     mates.forEach(el => place(el.querySelector('svg'), parseFloat(el.style.left) || 0, parseFloat(el.style.top) || 0, parseFloat(el.style.width) || 100, el.getAttribute('data-front') === 'true'))
@@ -4339,7 +5345,10 @@ function Onboarding(props) {
     persona: s.persona || '', persona_source: s.persona_source || '',
     face: faceFor(s.face && s.face.shape ? s.face : null, snap.me && snap.me.agent && snap.me.agent.pk),
     interests: s.interests || [], budget_daily: BUDGET_PRESETS.includes(s.budget_daily) ? s.budget_daily : 40000,
-    person_face: s.person_face || null, avatar: ''   // your own face and picture (optional); the picture waits here until setup is finished
+    // how you look: a random avatar to start from (what the preview shows is what people will see; "Use my
+    // initial instead" clears it), and a picture that waits here until setup is finished
+    person_face: s.person_face || null, person_avatar: cleanAvatar(s.person_avatar) || (s.person_face ? null : randomAvatar()),
+    avatar: ''
   }))
   const [busy, setBusy] = useState(false)
   const [pick, setPick] = useState({ flags: [], truncated: false, open: false })   // page-only: never posted
@@ -4351,8 +5360,8 @@ function Onboarding(props) {
     if (!ready || busy) return
     setBusy(true)
     try {
-      const { avatar, person_face, ...rest } = form
-      await store.post('/settings', Object.assign({}, rest, { person_face: person_face || {}, onboarded: true }))
+      const { avatar, person_face, person_avatar, ...rest } = form
+      await store.post('/settings', Object.assign({}, rest, { person_face: person_face || {}, person_avatar: person_avatar || {}, onboarded: true }))
       // the picture is published only now: until setup is finished nothing about you has been sent anywhere
       if (avatar) { try { await store.post('/avatar', { img: avatar }) } catch (_) { /* toasted; it can be added in Settings */ } }
       nav().set('welcome')  // land on "Rooms for you", not an empty room view
@@ -4384,10 +5393,12 @@ function Onboarding(props) {
     jsx(Field, { label: 'Its face', children: jsxs('div', { className: 'h-col', style: { gap: 14 }, children: [
       jsx('div', { style: { maxWidth: 380 }, children: jsx(IdCard, { kind: 'agent', name: form.agent_name || 'Your agent', pk: agentPk, face: form.face,
         fields: [['Owner', form.display_name || 'You'], ['Status', 'New']] }) }),
-      jsx(FacePicker, { value: form.face, pk: agentPk, name: form.agent_name, noPreview: true, onChange: face => set({ face }) })
+      jsx(FacePicker, { value: form.face, pk: agentPk, name: form.agent_name, onChange: face => set({ face }) })
     ] }) }),
-    jsx(Field, { label: 'How you look (optional)', children: jsx(PersonLook, { pk: snap.me && snap.me.pk, name: form.display_name, stage: true,
-      face: form.person_face, onFace: person_face => set({ person_face }), staged: form.avatar, hasPicture: !!form.avatar, art: form.person_face ? { face: form.person_face } : null,
+    jsx(Field, { label: 'How you look (optional)', children: jsx(PersonLook, { id: 'h-on-look', pk: snap.me && snap.me.pk, name: form.display_name, stage: true,
+      avatar: form.person_avatar, onAvatar: person_avatar => set({ person_avatar }),
+      face: form.person_face, onFace: person_face => set({ person_face }), staged: form.avatar, hasPicture: !!form.avatar,
+      art: { avatar: form.person_avatar || undefined, face: form.person_face || undefined },
       onPicture: avatar => set({ avatar }) }) }),
     jsx(Field, { label: 'What are you into?', id: 'h-on-int', hint: 'Used to find rooms and people. Your interest card is published only if you choose to in the Lobby.',
       children: jsx(InterestInput, { id: 'h-on-int', value: form.interests, onChange: interests => set({ interests }) }) }),
@@ -4423,7 +5434,7 @@ function SettingsForm(props) {
   const initial = () => ({ display_name: s.display_name, line: s.line || '', agent_name: s.agent_name, vibe: s.vibe,
     persona: s.persona || '', persona_source: s.persona_source || '',
     face: faceFor(s.face, agentPk), interests: s.interests || [], budget_daily: s.budget_daily, msgs_daily: s.msgs_daily,
-    person_face: s.person_face || null, relays: (s.relays || []).join('\n') })
+    person_face: s.person_face || null, person_avatar: cleanAvatar(s.person_avatar), relays: (s.relays || []).join('\n') })
   const [form, setForm] = useState(initial)
   const [busy, setBusy] = useState(false)
   const [pick, setPick] = useState({ flags: [], truncated: false, open: false })   // page-only: never posted
@@ -4456,7 +5467,7 @@ function SettingsForm(props) {
     if (goingOffline && !confirmOffline) { setConfirmOffline(true); return }
     setConfirmOffline(false)
     setBusy(true)
-    const body = Object.assign({}, form, { relays: relayList, person_face: form.person_face || {},
+    const body = Object.assign({}, form, { relays: relayList, person_face: form.person_face || {}, person_avatar: form.person_avatar || {},
       budget_daily: parseCount(form.budget_daily), msgs_daily: parseCount(form.msgs_daily) })
     try {
       const out = await store.post('/settings', body, 'Saved')
@@ -4483,7 +5494,7 @@ function SettingsForm(props) {
         jsx('div', { style: { maxWidth: 380 }, children: jsx(IdCard, { kind: 'agent', name: form.agent_name || 'Your agent', pk: agentPk, face: form.face,
           state: snap.me.agent.state, fields: [['Owner', form.display_name || 'You'],
             s.card_details && snap.me.agent.model ? ['Model', shortModel(snap.me.agent.model)] : ['Status', STATE_LABEL[stateWord(snap.me.agent.state)]]] }) }),
-        jsx(FacePicker, { id: 'h-facepicker', value: form.face, pk: agentPk, name: form.agent_name, noPreview: true, onChange: face => set({ face }) })
+        jsx(FacePicker, { id: 'h-facepicker', value: form.face, pk: agentPk, name: form.agent_name, onChange: face => set({ face }) })
       ] }) }),
       jsx(Field, { label: 'Chattiness', hint: 'How often your agent joins in unprompted. It always answers when someone addresses it by name.',
         children: jsx(Seg, { label: 'Chattiness', value: s.chattiness, onChange: v => now({ chattiness: v }),
@@ -4535,8 +5546,10 @@ function SettingsForm(props) {
         jsx(Field, { label: 'One line about you', id: 'h-s-line', children: jsx(K.Input, { id: 'h-s-line', value: form.line, maxLength: 200, onChange: e => set({ line: e.target.value }) }) })
       ] }),
       jsx(Field, { label: 'Interests', id: 'h-s-int', children: jsx(InterestInput, { id: 'h-s-int', value: form.interests, onChange: interests => set({ interests }) }) }),
-      jsx(Field, { label: 'Your picture and face', children: jsx(PersonLook, { pk: mePk, name: form.display_name, face: form.person_face, onFace: person_face => set({ person_face }),
-        art: myArt ? Object.assign({}, myArt, form.person_face ? { face: form.person_face } : { face: undefined }) : (form.person_face ? { face: form.person_face } : null),
+      jsx(Field, { label: 'How you look', children: jsx(PersonLook, { id: 'h-s-look', pk: mePk, name: form.display_name,
+        avatar: form.person_avatar, onAvatar: person_avatar => set({ person_avatar }),
+        face: form.person_face, onFace: person_face => set({ person_face }),
+        art: Object.assign({}, myArt || {}, { avatar: form.person_avatar || undefined, face: form.person_face || undefined }),
         hasPicture: !!(myArt && myArt.av), busy: picBusy, onPicture: setPicture }) }),
       jsx(Field, { label: 'Show profile pictures', hint: 'Pictures are other people’s files, shown to you as small images. Nobody keeps only faces and initials on your screen, and Ninsei stops keeping their pictures. Your own is not affected.',
         children: jsx(Seg, { label: 'Show profile pictures', value: s.show_avatars || 'everyone', onChange: v => now({ show_avatars: v }),

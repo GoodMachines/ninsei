@@ -139,7 +139,7 @@ ART_AVATAR_D = "ninsei/avatar"   # d-tags of a person's picture and face events
 ART_FACE_D = "ninsei/face"
 ART_KINDS = {ART_AVATAR_D: "avatar", ART_FACE_D: "face"}
 ART_POW = 12               # bits of proof of work, like cards
-ART_FACE_BYTES = 1024      # content of a face event (a real one is about 120 bytes)
+ART_FACE_BYTES = 1024      # content of a face event (a face is about 120 bytes; with a pixel avatar about 350)
 ART_AUTHORS = 200          # people whose pictures and faces are asked for, newest activity first
 ART_AUTHORS_PER_FILTER = 50
 ART_OK_MAX = 20000         # people kept as "seen in a room I'm in" (a bounded LRU)
@@ -213,6 +213,54 @@ def clean_face(v) -> dict:
             "eyes": pick("eyes", FACE_EYES), "mouth": pick("mouth", FACE_MOUTHS), "acc": pick("acc", FACE_ACCS),
             "pattern": pick("pattern", FACE_PATTERNS), "hue2": hue(v.get("hue2"), (h + 150) % 360),
             "card": pick("card", FACE_CARDS)}
+
+
+# A person's pixel avatar (ui/14_avatar.js draws it): short keys, a version, every value from a fixed list. Each list
+# starts with its default, and ui/14_avatar.js keeps the same lists (a test compares them). Like a face, it is built
+# only from options, so nobody can put an image in your room through it.
+AV_SKIN = 10
+AV_FACES = ["oval", "round", "square", "long"]
+AV_HAIR = ["short", "curly", "long", "buzz", "bun", "locs", "bob", "wavy", "afro", "ponytail", "bald", "swept"]
+AV_HAIR_COLOURS = ["darkbrown", "black", "brown", "auburn", "ginger", "blonde", "platinum", "grey", "ice"]
+AV_EYES = ["open", "smile", "almond", "dot", "sleepy"]
+AV_BROWS = ["soft", "straight", "arched"]
+AV_MOUTHS = ["smile", "grin", "laugh", "flat", "smirk"]
+AV_FACIAL = ["none", "stubble", "moustache", "short", "full"]
+AV_BUILDS = ["narrow", "broad"]
+AV_TOPS = ["coat", "hoodie", "turtleneck", "jacket", "tee", "scarf"]
+AV_TOP_COLOURS = ["navy", "steel", "slate", "charcoal", "glacier", "teal"]
+AV_ACCS = ["round-glasses", "square-glasses", "earrings", "beanie", "headphones", "headscarf"]
+AV_ACC_GROUPS = [["round-glasses", "square-glasses"], ["beanie", "headscarf"]]   # one of each group; the first listed wins
+AV_PICKS = {"fs": AV_FACES, "hs": AV_HAIR, "hc": AV_HAIR_COLOURS, "ey": AV_EYES, "br": AV_BROWS, "mo": AV_MOUTHS,
+            "fh": AV_FACIAL, "bd": AV_BUILDS, "tp": AV_TOPS, "tc": AV_TOP_COLOURS}
+AV_DEFAULT_SKIN = 3
+_KEEP = object()   # "leave this field as saved"
+
+
+def clean_avatar(v) -> Optional[dict]:
+    """A person's avatar from settings or the wire, or None when it isn't one (not a dict, or not version 1).
+    Unknown keys are dropped and unknown values become the defaults; accessories keep only known ones, once each,
+    one per group, in the fixed order."""
+    if not isinstance(v, dict) or type(v.get("v")) is not int or v.get("v") != 1:
+        return None
+    sk = v.get("sk")
+    out: dict = {"v": 1, "sk": sk if type(sk) is int and 0 <= sk < AV_SKIN else AV_DEFAULT_SKIN}
+    for key, opts in AV_PICKS.items():
+        val = v.get(key)
+        out[key] = val if isinstance(val, str) and val in opts else opts[0]
+    raw = v.get("ac") if isinstance(v.get("ac"), list) else []
+    want = {a for a in raw[:16] if isinstance(a, str)}
+    ac = [a for a in AV_ACCS if a in want]
+    out["ac"] = [a for a in ac if not any(a in grp and next(x for x in grp if x in ac) != a for grp in AV_ACC_GROUPS)]
+    return out
+
+
+def _art_want(face: Optional[dict], av: Optional[dict]) -> str:
+    """What my face event says, as one comparable string ("" for nothing). Without an avatar it is the face alone,
+    as before avatars existed, so an install that upgrades doesn't republish an unchanged face."""
+    if av:
+        return json.dumps({"avatar": av, "face": face}, sort_keys=True)
+    return json.dumps(face, sort_keys=True) if face else ""
 
 
 def _model_ok(v) -> str:
@@ -850,10 +898,11 @@ class Engine:
             "budget_daily": 40000, "msgs_daily": MSGS_DAILY, "stranger_share": 0.5, "away_mode": "named",
             "status_mode": "auto", "chattiness": "normal", "offers": True, "share_budget": False,
             "card_details": False, "relays": DEFAULT_RELAYS, "card_published_at": 0,
-            "person_face": None, "show_avatars": "everyone", "room_prefs": {},
+            "person_face": None, "person_avatar": None, "show_avatars": "everyone", "room_prefs": {},
         }
         out = {**defaults, **s}
         out["person_face"] = clean_face(out["person_face"]) if isinstance(out.get("person_face"), dict) and out["person_face"] else None
+        out["person_avatar"] = clean_avatar(out.get("person_avatar"))
         out["show_avatars"] = "nobody" if out.get("show_avatars") == "nobody" else "everyone"
         out["status_mode"] = out["status_mode"] if out.get("status_mode") in STATUS_MODES else "auto"
         out["away_mode"] = out["away_mode"] if out.get("away_mode") in AWAY_MODES else "named"
@@ -872,7 +921,7 @@ class Engine:
         cur = self.settings()
         allowed = {"onboarded", "display_name", "interests", "line", "agent_name", "vibe", "face",
                    "persona", "persona_source", "budget_daily", "msgs_daily", "chattiness", "offers", "share_budget", "card_details", "relays",
-                   "person_face", "show_avatars", "status_mode", "away_mode", "stranger_share"}
+                   "person_face", "person_avatar", "show_avatars", "status_mode", "away_mode", "stranger_share"}
         before = cur["show_avatars"]
         for k, v in patch.items():
             if k not in allowed:
@@ -904,6 +953,8 @@ class Engine:
                 v = clean_face(v)
             elif k == "person_face":  # the person's own built face; an empty one means "use my initial"
                 v = clean_face(v) if isinstance(v, dict) and v else None
+            elif k == "person_avatar":  # the person's pixel avatar; an empty one (or junk) means none
+                v = clean_avatar(v)
             elif k == "show_avatars":
                 v = "nobody" if v == "nobody" else "everyone"
             elif k == "relays":
@@ -4270,7 +4321,11 @@ class Engine:
                     f = json.loads(bytes(row["data"] or b"null"))
                 except (ValueError, TypeError):
                     f = None
-                meta["face"] = clean_face(f) if isinstance(f, dict) and f else None
+                # stored as {"face": ..., "avatar": ...}; rows from before avatars hold the face alone
+                both = isinstance(f, dict) and set(f) <= {"face", "avatar"} and bool(f)
+                face = f.get("face") if both else f
+                meta["face"] = clean_face(face) if isinstance(face, dict) and face else None
+                meta["avatar"] = clean_avatar(f.get("avatar")) if both else None
             self._art.setdefault(row["pk"], {})[row["kind"]] = meta
 
     def _take_art(self, ev: dict) -> bool:
@@ -4310,8 +4365,15 @@ class Engine:
             # Any other shape that isn't a valid picture or face is junk and changes nothing.
             field = "img" if kind == "avatar" else "face"
             val = c.get(field)
-            if val in ("", None, {}) and set(c) <= {field}:
+            # a face event may also carry the person's pixel avatar (`avatar`); older clients ignore that key
+            av = clean_avatar(c.get("avatar")) if kind == "face" else None
+            # (an avatar this version doesn't know, say a later `v`, reads as no avatar rather than junk: the event is
+            # still the person's newest word, so it replaces what was there)
+            if val in ("", None, {}) and set(c) <= ({field, "avatar"} if kind == "face" else {field}):
                 meta["face"] = None
+                meta["avatar"] = av
+                if av:
+                    data = json.dumps({"face": None, "avatar": av}).encode()
             elif kind == "avatar":
                 got = avatar.check_avatar(val)
                 if got is None:
@@ -4322,7 +4384,8 @@ class Engine:
                 if not isinstance(val, dict):
                     return False
                 meta["face"] = clean_face(val)
-                data = json.dumps(meta["face"]).encode()
+                meta["avatar"] = av
+                data = json.dumps({"face": meta["face"], "avatar": av} if av else meta["face"]).encode()
             gone = self.store.art_put(pk, kind, eid, created, meta["mime"], data, time.time(),
                                       keep=self._identity()["person_pk"])
             self._art.setdefault(pk, {})[kind] = meta
@@ -4346,9 +4409,12 @@ class Engine:
         face = s["person_face"] if mine and s["person_face"] else (have.get("face") or {}).get("face")
         if face:
             out["face"] = face
-        av = have.get("avatar")
-        if av and av.get("mime") and (mine or s["show_avatars"] == "everyone"):
-            out["av"] = av["id"][:12]
+        av = s["person_avatar"] if mine and s["person_avatar"] else (have.get("face") or {}).get("avatar")
+        if av:
+            out["avatar"] = av
+        pic = have.get("avatar")
+        if pic and pic.get("mime") and (mine or s["show_avatars"] == "everyone"):
+            out["av"] = pic["id"][:12]
         return out
 
     def people_art(self, pks: Iterable[str], flagged: Iterable[str] = ()) -> dict[str, dict]:
@@ -4517,18 +4583,25 @@ class Engine:
         return ValueError(f"Slow down: you can change your picture or face a few times every ten minutes. "
                           f"Try again in {max(1, int(wait / 60 + 0.999))} min.")
 
-    async def check_face_pace(self, face: Any) -> None:
-        """Called before a settings save that carries a face: when that face would be published and the pace says
-        not yet, refuse the whole save with a clear message, so nothing is kept that never reaches anyone."""
-        if not self.settings()["onboarded"] or not self.pool:
+    async def check_face_pace(self, face: Any = _KEEP, avatar: Any = _KEEP) -> None:
+        """Called before a settings save that carries a face or a pixel avatar: when what would be published changes and
+        the pace says not yet, refuse the whole save with a clear message, so nothing is kept that never reaches anyone.
+        A field left out (_KEEP) stays as saved."""
+        s = self.settings()
+        if not s["onboarded"] or not self.pool:
             return
-        f = clean_face(face) if isinstance(face, dict) and face else None
-        want = json.dumps(f, sort_keys=True) if f else ""
+        f = s["person_face"] if face is _KEEP else (clean_face(face) if isinstance(face, dict) and face else None)
+        a = s["person_avatar"] if avatar is _KEEP else clean_avatar(avatar)
+        want = _art_want(f, a)
         if (self.store.get("face_sent") or "") == want:
             return
         wait = self._rate_wait("art", ART_PUBLISH_PER_10MIN, 600)
         if wait > 0:
             raise self._art_slow_down(wait)
+
+    async def check_looks_pace(self, looks: dict) -> None:
+        """check_face_pace for a settings patch: `person_face` and/or `person_avatar`, the other kept as saved."""
+        await self.check_face_pace(looks.get("person_face", _KEEP), looks.get("person_avatar", _KEEP))
 
     async def publish_face(self) -> dict:
         """Publish my built face ({"face": ...}, or {"face": null} to take it away) when it differs from what I last
@@ -4537,7 +4610,7 @@ class Engine:
         s = self.settings()
         if not s["onboarded"] or not self.pool:
             return {"sent": False}
-        want = json.dumps(s["person_face"], sort_keys=True) if s["person_face"] else ""
+        want = _art_want(s["person_face"], s["person_avatar"])
         if (self.store.get("face_sent") or "") == want:
             return {"sent": False, "unchanged": True}
         wait = self._rate_wait("art", ART_PUBLISH_PER_10MIN, 600)
@@ -4545,7 +4618,8 @@ class Engine:
             raise self._art_slow_down(wait or 60)
         pk = self._identity()["person_pk"]
         cur = (self._art.get(pk) or {}).get("face") or {}
-        ev = nostr.build_event(self._identity()["person_sk"], KIND_META, json.dumps({"face": s["person_face"]}),
+        body = {"face": s["person_face"], **({"avatar": s["person_avatar"]} if s["person_avatar"] else {})}
+        ev = nostr.build_event(self._identity()["person_sk"], KIND_META, json.dumps(body, separators=(",", ":")),
                                [["d", ART_FACE_D]], pow_bits=ART_POW, created_at=max(_now(), int(cur.get("created_at") or 0) + 1))
         self.store.set("face_sent", want)
         self._take_art(ev)
@@ -5518,7 +5592,7 @@ class Engine:
                              "model": self.store.get("model_last") or ""}},
             "settings": {k: s[k] for k in ("onboarded", "display_name", "interests", "line", "agent_name", "vibe",
                                            "persona", "persona_source", "face", "budget_daily", "msgs_daily", "chattiness", "offers", "share_budget", "relays",
-                                           "card_details", "card_published_at", "person_face", "show_avatars",
+                                           "card_details", "card_published_at", "person_face", "person_avatar", "show_avatars",
                                            "status_mode", "away_mode", "stranger_share")},
             "status": self.status_view(),
             "budget": self.budget_view(),

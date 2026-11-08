@@ -535,7 +535,7 @@ function scannerSvg(o) {
       const top = Number(f.top) || 0
       const size = Number(f.size) || 100
       out.push('<svg x="' + num(bx + hpad + left / 100 * hs) + '" y="' + num(by + hpad + top / 100 * hs) + '" width="' + num(size / 100 * hs) + '" height="' + num(size / 100 * hs) +
-        '" viewBox="0 0 40 40" overflow="visible"' + (f.front ? '' : ' filter="url(#nsdim)"') + '>' + inner + '</svg>')
+        '" viewBox="' + faceBox(f.vb) + '" overflow="visible"' + (f.front ? '' : ' filter="url(#nsdim)"') + '>' + inner + '</svg>')
     }
   } else if (o.initial) {
     out.push(text(bx + bs / 2, by + bs / 2 + 26 * U * 0.36, Array.from(xmlClean(o.initial))[0] || '?', { size: 26 * U, weight: 300, anchor: 'middle', glow: false }))

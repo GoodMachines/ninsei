@@ -83,9 +83,11 @@ function AvatarCropper(props) {
   ] })
 }
 
-// The editor. Props: pk, name; face (the owner's built face or null) and onFace(face|null); art ({face?, av?}: what shows now);
-// staged (a picture waiting for Save, onboarding) or null; onPicture(uri) with a data URI, or '' to take it away; hasPicture;
-// busy; stage (true in onboarding: a picture is held until setup finishes instead of being published at once).
+// How you look. The pixel avatar builder comes first; a photo is the opt-in alternative (it shows first where
+// pictures are on, and the avatar stands in where they're off). Props: pk, name; avatar (a clean avatar or null) and
+// onAvatar(avatar|null); face (an older built face, or null) and onFace(null) to drop it; art ({av?, avatar?, face?}:
+// what shows now); staged (a picture waiting for Save, onboarding) or null; onPicture(uri) with a data URI, or '' to
+// take it away; hasPicture; busy; stage (true in onboarding: a picture is held until setup finishes).
 function PersonLook(props) {
   const [file, setFile] = useState(null)
   const [note, setNote] = useState('')
@@ -100,40 +102,40 @@ function PersonLook(props) {
     setFile(f)
   }
   const used = uri => { setFile(null); props.onPicture(uri) }
-  const shown = props.staged ? { uri: props.staged, face: props.face || undefined } : props.art
   const has = !!(props.staged || props.hasPicture)
+  const shown = props.staged ? Object.assign({}, props.art || {}, { uri: props.staged }) : props.art
   return jsxs('div', { className: 'h-col h-look', style: { gap: 12 }, children: [
-    jsxs('div', { className: 'h-row', style: { gap: 14, alignItems: 'flex-start' }, children: [
-      jsx(PersonMark, { pk: props.pk, name: props.name || 'You', size: 72, art: shown || null }),
-      jsxs('div', { className: 'h-col', style: { gap: 8, minWidth: 0 }, children: [
-        jsxs('div', { className: 'h-actions', children: [
-          jsx(K.Button, { variant: 'secondary', size: 'sm', disabled: !!props.busy, onClick: () => input.current && input.current.click(),
-            children: has ? 'Change picture' : 'Choose a picture' }),
-          has && jsx(K.Button, { variant: 'ghost', size: 'sm', disabled: !!props.busy, onClick: () => { setFile(null); props.onPicture('') }, children: 'Remove picture' }),
-          jsx('input', { type: 'file', ref: input, accept: 'image/png,image/jpeg,image/webp,image/gif', style: { display: 'none' }, tabIndex: -1, 'aria-hidden': true, onChange: pick })
-        ] }),
-        note && jsx('div', { className: 'h-hint h-err', role: 'alert', children: note }),
-        jsx('div', { className: 'h-hint', children: props.stage
-          ? 'Optional. It is published when you finish setup.'
-          : 'Optional. Shown next to your name for people in your rooms.' })
-      ] })
-    ] }),
-    file && jsx(AvatarCropper, { file, onUse: used, onCancel: () => setFile(null), busy: props.busy,
-      useLabel: props.stage ? 'Use this picture' : 'Use and publish' }),
-    jsxs('div', { className: 'h-hint', children: [
-      'Public and permanent: your picture goes to public Nostr relays, where anyone can see it, and relays or other apps may keep old pictures forever, even after you remove it. ',
-      'Ninsei crops it to a square, shrinks it to 256 pixels and re-encodes it on this computer, which drops EXIF details such as GPS location and camera model. The original file is never uploaded. People who turn pictures off see your face or initial instead.'
+    jsx(AvatarEditor, { id: props.id, value: props.avatar, name: props.name, onChange: props.onAvatar }),
+    jsx('div', { className: 'h-hint', children: props.avatar
+      ? 'Public like your name: your avatar goes out with your face settings to public Nostr relays, and anyone in your rooms sees it.'
+      : 'Not set yet: until you change something here, people see your initial. Once set it is public like your name.' }),
+    jsxs('div', { className: 'h-actions', children: [
+      props.avatar && jsx(K.Button, { variant: 'ghost', size: 'sm', onClick: () => props.onAvatar(null), children: 'Use my initial instead' }),
+      props.face && jsx(K.Button, { variant: 'ghost', size: 'sm', onClick: () => props.onFace(null), children: 'Remove my older face' })
     ] }),
     jsxs('div', { className: 'h-col', style: { gap: 8 }, children: [
-      jsx('div', { className: 'h-label', style: { fontSize: 12, fontWeight: 600, color: 'var(--h-fg2)' }, children: 'Your face' }),
-      jsxs('div', { className: 'h-row', style: { gap: 10 }, children: [
-        jsx(Seg, { label: 'What stands in for your picture', value: props.face ? 'face' : 'letter',
-          onChange: v => props.onFace(v === 'face' ? faceFor(props.face, props.pk) : null),
-          options: [{ id: 'letter', label: 'My initial' }, { id: 'face', label: 'A face' }] }),
-        props.face && jsx(PersonFace, { face: props.face, pk: props.pk, size: 40 })
+      jsx('div', { className: 'h-label', style: { fontSize: 12, fontWeight: 600, color: 'var(--h-fg2)' }, children: 'Photo (optional)' }),
+      jsxs('div', { className: 'h-row', style: { gap: 14, alignItems: 'flex-start' }, children: [
+        has && jsx(PersonMark, { pk: props.pk, name: props.name || 'You', size: 48, art: shown || null }),
+        jsxs('div', { className: 'h-col', style: { gap: 8, minWidth: 0 }, children: [
+          jsxs('div', { className: 'h-actions', children: [
+            jsx(K.Button, { variant: 'secondary', size: 'sm', disabled: !!props.busy, onClick: () => input.current && input.current.click(),
+              children: has ? 'Change photo' : 'Use a photo instead' }),
+            has && jsx(K.Button, { variant: 'ghost', size: 'sm', disabled: !!props.busy, onClick: () => { setFile(null); props.onPicture('') }, children: 'Remove photo' }),
+            jsx('input', { type: 'file', ref: input, accept: 'image/png,image/jpeg,image/webp,image/gif', style: { display: 'none' }, tabIndex: -1, 'aria-hidden': true, onChange: pick })
+          ] }),
+          note && jsx('div', { className: 'h-hint h-err', role: 'alert', children: note }),
+          jsx('div', { className: 'h-hint', children: props.stage
+            ? 'A photo is shown instead of your avatar. It is published when you finish setup.'
+            : 'A photo is shown instead of your avatar, for people who have pictures on.' })
+        ] })
       ] }),
-      props.face && jsx(FacePicker, { value: props.face, pk: props.pk, noCard: true, noPreview: true, onChange: props.onFace }),
-      jsx('div', { className: 'h-hint', children: 'Shown when you have no picture, or when someone has pictures off. Built from the same parts as an agent’s, in a plain circle. Public like your name.' })
+      file && jsx(AvatarCropper, { file, onUse: used, onCancel: () => setFile(null), busy: props.busy,
+        useLabel: props.stage ? 'Use this picture' : 'Use and publish' }),
+      jsxs('div', { className: 'h-hint', children: [
+        'Public and permanent: your picture goes to public Nostr relays, where anyone can see it, and relays or other apps may keep old pictures forever, even after you remove it. ',
+        'Ninsei crops it to a square, shrinks it to 256 pixels and re-encodes it on this computer, which drops EXIF details such as GPS location and camera model. The original file is never uploaded. People who turn pictures off see your avatar or initial instead.'
+      ] })
     ] })
   ] })
 }
