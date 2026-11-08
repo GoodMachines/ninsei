@@ -137,12 +137,20 @@ def default_home() -> Path:
 
 def _yaml_value(text: str, key: str) -> str:
     """One top-level `key: value` from profile.yaml, without a YAML parser (no new packages)."""
-    m = re.search(r"^" + re.escape(key) + r"\s*:\s*(.*)$", text, re.M)
+    m = re.search(r"^" + re.escape(key) + r"[ \t]*:[ \t]*(.*)$", text, re.M)
     if not m:
         return ""
-    v = m.group(1).strip()
+    parts = [m.group(1).strip()]
+    for ln in text[m.end():].split("\n")[1:]:      # a long value wraps onto indented lines; YAML folds them to spaces
+        if not ln.strip() or ln[0] not in " \t":
+            break
+        parts.append(ln.strip())
+    v = " ".join(p for p in parts if p)
     if len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'":
+        q = v[0]
         v = v[1:-1]
+        if q == "'":
+            v = v.replace("''", "'")
     return v.strip()
 
 
@@ -156,29 +164,43 @@ def _read_small(path: Path, cap: int) -> str:
         return ""
 
 
-def _cli_profiles() -> Optional[list[dict]]:
-    """Hermes's own list, when this process can import it."""
+# Hermes's own rule for what counts as a profile folder (its profiles module `_iter_named_profile_dirs`,
+# and `named_profile_has_identity`), copied here so the plugin imports nothing private.
+_PROFILE_ID = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}")
+_IDENTITY_MARKERS = ("config.yaml", ".env", "SOUL.md", "profile.yaml", "auth.json", "state.db")
+
+
+def _has_identity(path: Path) -> bool:
+    """A folder is a profile only if it holds one of Hermes's marker files (a dangling symlink counts)."""
     try:
-        from hermes_cli.profiles import list_profiles
-        infos = list_profiles(lazy_skill_count=True)
-        return [{"name": str(i.name), "path": Path(i.path), "default": bool(getattr(i, "is_default", False)),
-                 "display_name": str(getattr(i, "display_name", "") or ""),
-                 "description": str(getattr(i, "description", "") or "")} for i in infos]
-    except Exception:
-        return None
+        return any((path / m).is_file() or (path / m).is_symlink() for m in _IDENTITY_MARKERS)
+    except OSError:
+        return False
+
+
+def _is_deleted(path: Path) -> bool:
+    """`hermes profile delete` leaves a tombstone at profiles/.deleted/<name>."""
+    try:
+        return (path.parent / ".deleted" / path.name).exists()
+    except OSError:
+        return False
 
 
 def _scanned_profiles() -> list[dict]:
+    """The profile list, read straight from the folders with Hermes's own membership rule: the default home
+    (if it exists), then each folder under `profiles/` with a valid id, an identity marker and no tombstone,
+    in sorted order. Folders without a marker (cron/log leftovers, "ghost" shells) are not profiles."""
     home = default_home()
     found = []
     if home.is_dir():
         found.append((home, "default", True))
     root = home / "profiles"
     try:
-        entries = sorted(p for p in root.iterdir() if p.is_dir() and not p.is_symlink()) if root.is_dir() else []
+        entries = sorted(p for p in root.iterdir() if p.is_dir()) if root.is_dir() else []
     except OSError:
         entries = []
-    found += [(p, p.name, False) for p in entries if re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", p.name)]
+    found += [(p, p.name, False) for p in entries
+              if p.name != "default" and _PROFILE_ID.fullmatch(p.name) and _has_identity(p) and not _is_deleted(p)]
     out = []
     for path, name, is_default in found:
         meta = _read_small(path / "profile.yaml", _PROFILE_YAML_MAX)
@@ -200,12 +222,9 @@ def _has_personality(path: Path) -> bool:
 
 
 def profile_records() -> list[dict]:
-    """Hermes's profiles with their paths (internal): from `hermes_cli` if it answers, else a scan."""
-    rows = _cli_profiles()
-    if rows is None:
-        rows = _scanned_profiles()
+    """Hermes's profiles with their paths (internal), from a read-only scan of the Hermes home."""
     seen, out = set(), []
-    for r in rows:
+    for r in _scanned_profiles():
         if r["name"] not in seen:
             seen.add(r["name"])
             out.append(r)

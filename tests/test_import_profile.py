@@ -6,8 +6,6 @@ import asyncio
 import importlib.util
 import json
 import sys
-import types
-from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
@@ -36,7 +34,7 @@ def make_profile(home: Path, name: str, soul=None, yaml: str = "", extra: dict =
 
 @pytest.fixture
 def hermes(tmp_path, monkeypatch):
-    """A fake Hermes home with three profiles; `hermes_cli` is not importable, so the scan fallback runs."""
+    """A fake Hermes home with three profiles; the scan reads it."""
     home = tmp_path / ".hermes"
     make_profile(home, "default", "You are Hermes Agent, a general helper.")
     make_profile(home, "archivist", f"You are Archie, a watchful archivist. {MARK}\nLikes lists and quiet rooms.",
@@ -45,7 +43,6 @@ def hermes(tmp_path, monkeypatch):
     make_profile(home, "empty-soul", "   \n")
     (home / "profiles" / "not a profile!").mkdir(parents=True)
     monkeypatch.setattr(persona, "default_home", lambda: home)
-    monkeypatch.setattr(persona, "_cli_profiles", lambda: None)
     return home
 
 
@@ -81,43 +78,41 @@ def test_the_profile_ninsei_runs_in_is_marked_from_the_context_or_the_data_folde
     e3.store.close()
 
 
-def test_hermes_cli_list_is_used_when_it_answers(tmp_path, monkeypatch):
-    @dataclass
-    class Info:
-        name: str
-        path: Path
-        is_default: bool
-        description: str = ""
-        display_name: str = ""
-
-    d = make_profile(tmp_path / "h", "kira", "You are Kira.")
-    calls = []
-
-    def list_profiles(**kw):
-        calls.append(kw)
-        return [Info("kira", d, False, "A helper", "Kira K")]
-    mod = types.ModuleType("hermes_cli.profiles")
-    mod.list_profiles = list_profiles
-    monkeypatch.setitem(sys.modules, "hermes_cli", types.ModuleType("hermes_cli"))
-    monkeypatch.setitem(sys.modules, "hermes_cli.profiles", mod)
-    rows = persona.list_profiles("kira")
-    assert calls == [{"lazy_skill_count": True}]
-    assert rows == [{"name": "kira", "display_name": "Kira K", "description": "A helper", "has_personality": True,
-                     "current": True, "is_default": False}]
-    assert persona.profile_records()[0]["path"] == d
+def test_the_list_follows_hermes_membership_rule_not_every_folder(hermes):
+    """Same members as `hermes profile list`: a folder with no identity marker (a ghost shell), a tombstoned
+    profile, a stray file and a bad id are skipped; `default` is the home itself, listed first; the rest sorted."""
+    profiles = hermes / "profiles"
+    (profiles / "ghost").mkdir()                                  # no marker file at all
+    (profiles / "ghost" / "logs").mkdir()
+    (profiles / "gone").mkdir()                                   # has a marker, but a tombstone says deleted
+    (profiles / "gone" / "config.yaml").write_text("x: 1\n")
+    (profiles / ".deleted").mkdir()
+    (profiles / ".deleted" / "gone").write_text("deleted\n")
+    (profiles / "Upper").mkdir()
+    (profiles / "Upper" / "config.yaml").write_text("x: 1\n")    # invalid id
+    (profiles / "default").mkdir()
+    (profiles / "default" / "config.yaml").write_text("x: 1\n")  # `default` is never a named profile
+    (profiles / "a-file").write_text("not a folder")
+    only_env = make_profile(hermes, "only-env", None)
+    (only_env / "config.yaml").unlink()
+    (only_env / ".env").write_text("")                            # any one marker is enough
+    names = [r["name"] for r in persona.profile_records()]
+    assert names == ["default", "archivist", "notes-bot", "empty-soul", "only-env"]
+    assert [r["default"] for r in persona.profile_records()] == [True, False, False, False, False]
 
 
-def test_a_hermes_cli_that_raises_falls_back_to_the_scan(hermes, monkeypatch):
-    monkeypatch.undo()   # drop the fixture's patches, keep tmp dirs
-    mod = types.ModuleType("hermes_cli.profiles")
+def test_a_description_that_wraps_onto_indented_lines_is_read_whole(hermes):
+    make_profile(hermes, "wrapper", None, "description: 'Directs films, it''s fun,\n  with wrapped lines.'\ndisplay_name: Wrap\n")
+    make_profile(hermes, "plain", None, "description: Throwaway test profile. Safe \n  to delete.\ndescription_auto: false\n")
+    rows = {r["name"]: r for r in persona.profile_records()}
+    assert rows["wrapper"]["description"] == "Directs films, it's fun, with wrapped lines."
+    assert rows["wrapper"]["display_name"] == "Wrap"
+    assert rows["plain"]["description"] == "Throwaway test profile. Safe to delete."
 
-    def boom(**kw):
-        raise RuntimeError("no")
-    mod.list_profiles = boom
-    monkeypatch.setitem(sys.modules, "hermes_cli", types.ModuleType("hermes_cli"))
-    monkeypatch.setitem(sys.modules, "hermes_cli.profiles", mod)
-    monkeypatch.setattr(persona, "default_home", lambda: hermes)
-    assert {r["name"] for r in persona.list_profiles(None)} >= {"default", "archivist"}
+
+def test_the_plugin_imports_nothing_private_from_hermes():
+    src = (ROOT / "ninsei_engine" / "persona.py").read_text()
+    assert "hermes_cli" not in src
 
 
 # ---- 2. the proposal ---------------------------------------------------------------------------------
