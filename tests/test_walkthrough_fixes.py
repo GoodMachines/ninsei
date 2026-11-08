@@ -726,13 +726,14 @@ def _reg_who(reg, me_p="sam", me_a="bo"):
     return {"ident": {"person_pk": "me", "agent_pk": "myagent"}, "reg": reg, "me_p": me_p, "me_a": me_a}
 
 
-def test_the_person_holder_for_an_agent_follows_holder_including_a_full_registry(monkeypatch):
+def test_the_person_check_for_an_agent_ignores_a_full_registry_but_keeps_my_name_and_contested(monkeypatch):
     from ninsei_engine import engine as eng_mod
     # the agent holds its own agent name; no person ever registered "Ivy", but the registry is full
     who = _reg_who({"a:ivy": "ag"})
     monkeypatch.setattr(eng_mod, "MAX_NAMES", 1)
     assert Engine._holder(who, "Ivy") == "?"                                # what a person's own badge sees
-    assert Engine._agent_lookalike(who, "ag", "Ivy", "o") == {"claimed": "Ivy", "real": None}
+    # but an agent holding its own name is not flagged just because no PERSON ever registered it
+    assert Engine._agent_lookalike(who, "ag", "Ivy", "o") is None
     monkeypatch.setattr(eng_mod, "MAX_NAMES", 2000)
     assert Engine._agent_lookalike(who, "ag", "Ivy", "o") is None           # room to spare: nobody holds it
     # a contested person name keeps main's semantics: flagged, with no real holder named
@@ -765,7 +766,7 @@ async def test_a_person_who_later_takes_an_agents_name_flags_that_agent_not_the_
     # DELIBERATE (main's rule, kept): the person namespace wins over an agent that isn't that person's own, with
     # no time ordering across persons and agents. Arrival order and CONTESTED history can be forged, so ordering
     # would let an attacker flag honest people; a false flag on an agent beats false trust in it. See
-    # implementation-notes.md (agent lookalikes, one predicate).
+    # implementation-notes.md ("Lookalikes in game labels", 2026-11-08).
     e, _ = bare(name="Sam", agent="Bo")
     eve, kit = Key("eve"), Key("kit")
     await e._on_event(eve.person({"t": "msg", "name": "Eve", "text": "hi"}), "relay")
@@ -777,3 +778,20 @@ async def test_a_person_who_later_takes_an_agents_name_flags_that_agent_not_the_
     assert people[kit.ppk]["impostor"] is False
     assert {a["pk"]: a for a in people[eve.ppk]["agents"]}[eve.apk]["impostor"] is True
     assert e._flag(who, kit.ppk, "Kit", None, "", True) is None
+
+
+async def test_a_full_registry_does_not_flag_an_honest_agent_that_holds_its_own_name(bare, monkeypatch):
+    from ninsei_engine import engine as eng_mod
+    e, _ = bare(name="Sam", agent="Bo")
+    maya = Key("maya")
+    await e._on_event(maya.person({"t": "msg", "name": "Maya", "text": "hi"}), "relay")
+    echo = maya.agent({"t": "msg", "name": "Echo", "text": "hello"})
+    await e._on_event(echo, "relay")
+    monkeypatch.setattr(eng_mod, "MAX_NAMES", len(e._names_reg(ROOM)))   # the room's registry is now full
+    who = e._who(ROOM)
+    assert who["reg"].get("a:echo") == maya.apk
+    agents = {ag["pk"]: ag for p in e.members(ROOM) for ag in p["agents"]}
+    assert agents[maya.apk]["impostor"] is False
+    assert e._uses_held_name(ROOM, echo, {"name": "Echo"}) is False
+    assert e._agent_lookalike(who, maya.apk, "Echo", maya.ppk) is None
+    assert e._reactor_name(who, maya.apk) == "Echo"

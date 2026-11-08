@@ -1785,9 +1785,12 @@ class Engine:
         holder = cls._holder(who, name, agent=True)
         if holder not in (None, pk):
             return {"claimed": name, "real": None if holder == CONTESTED else holder}
-        # the person holder by the same rule as a person's own badge: my name is mine, and a full registry
-        # answers CONTESTED for a name it couldn't record (so "?" means contested or unknown: real None either way)
-        person = cls._holder(who, name)
+        # the person holder: my name is mine, common words belong to nobody, else the registry entry as it stands.
+        # No full-registry "?" here: most agent names never get a person entry, so that rule would flag every
+        # honest agent once the room fills (only newcomers should see warnings then). CONTESTED still flags.
+        sk = skeleton(name)
+        person = (None if not sk or sk in COMMON_WORDS else who["ident"]["person_pk"] if sk == who["me_p"]
+                  else who["reg"].get("p:" + sk))
         if person not in (None, owner):
             return {"claimed": name, "real": None if person == CONTESTED else person}
         return None
