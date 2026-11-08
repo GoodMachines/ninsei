@@ -7,11 +7,13 @@ budget before it runs and settled with the provider's usage after.
 from __future__ import annotations
 
 import asyncio
+import functools
 import inspect
 import json
 import logging
 import re
 import unicodedata
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
@@ -215,6 +217,12 @@ def _maybe_billed(e: BaseException) -> bool:
     return "timeout" in type(e).__name__.lower()   # httpx.ReadTimeout, openai.APITimeoutError, ...
 
 
+MODEL_TIMEOUT_S = 120.0   # a model call that has not answered by then is given up on (billed its estimate)
+# Model calls get their own threads, so ones that hang cannot use up the default executor that private
+# messages and engine start share. Python cannot kill a thread: a hung call stays here until the provider gives up.
+_MODEL_THREADS = ThreadPoolExecutor(max_workers=8, thread_name_prefix="ninsei-model")
+
+
 class Brain:
     def __init__(self, llm_getter: Callable[[], Any], reserve: Callable[[str, int], Optional[str]],
                  settle: Callable[[str, int], None], on_model: Optional[Callable[[str], None]] = None):
@@ -239,7 +247,9 @@ class Brain:
             kwargs["task"] = AUX_TASK
         used = 0   # a call that fails before the provider answers costs nothing
         try:
-            res = await asyncio.to_thread(llm.complete, **kwargs)
+            call = asyncio.get_running_loop().run_in_executor(
+                _MODEL_THREADS, functools.partial(llm.complete, **kwargs))
+            res = await asyncio.wait_for(call, MODEL_TIMEOUT_S)
             used = est   # it ran: the provider's count if it gave one, else the reserved estimate
             u = getattr(res, "usage", None)
             total = getattr(u, "total_tokens", None) if u else None

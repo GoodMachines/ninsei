@@ -1,6 +1,7 @@
 """Ninsei engine package. One engine per Hermes process, created lazily on first UI request."""
 from __future__ import annotations
 
+import atexit
 import logging
 import threading
 import time
@@ -14,6 +15,7 @@ _engine = None
 _engine_error: Optional[str] = None
 _lock = threading.Lock()
 _last_push = [0.0]
+_exit_hooked = False
 
 
 def data_dir() -> Path:
@@ -54,7 +56,28 @@ def get_engine():
             eng = Engine(data_dir(), lambda: STATE["llm"], notify=_push, profile_name=lambda: STATE.get("profile_name"))
             eng.start()
             _engine = eng
+            _hook_exit()
         return _engine
+
+
+def _stop_at_exit() -> None:
+    """End the games I host, tell the room, and close the sockets when the process quits. Hermes has no
+    plugin shutdown hook (its hooks are per session and turn), so this is `atexit`. Runs at most once."""
+    global _engine
+    eng, _engine = _engine, None
+    if eng is None:
+        return
+    try:
+        eng.stop()
+    except Exception:
+        pass
+
+
+def _hook_exit() -> None:
+    global _exit_hooked
+    if not _exit_hooked:
+        _exit_hooked = True
+        atexit.register(_stop_at_exit)
 
 
 def peek_store():
