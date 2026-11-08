@@ -6704,7 +6704,7 @@ function DmRail(props) {
   return jsxs(Fragment, { children: [
     jsx('div', { className: 'h-navhead', children: jsx('span', { className: 'h-sec', children: 'Direct messages' }) }),
     jsxs('div', { className: 'h-nav', children: [
-      list.length === 0 && !dms.requests && jsx('div', { className: 'h-faint h-small', style: { padding: '2px 8px' }, children: 'Open someone’s card and press Add friend. Once they accept, you can message each other.' }),
+      list.length === 0 && !dms.requests && !(dms.sent || []).length && jsx('div', { className: 'h-faint h-small', style: { padding: '2px 8px' }, children: 'Open someone’s card and press Add friend. Once they accept, you can message each other.' }),
       list.map(t => jsxs('button', { type: 'button', className: 'h-navrow', 'data-on': cur === t.pk, 'aria-current': cur === t.pk ? 'page' : undefined,
         onClick: () => open(t.pk), children: [
           jsx(PersonMark, { pk: t.pk, name: t.name, size: 18, flagged: !!t.impostor }),
@@ -6713,6 +6713,13 @@ function DmRail(props) {
           t.friend !== false && jsx(StatusDot, { p: t }),
           t.unread > 0 && jsx('span', { className: 'h-dot', 'aria-label': t.unread + (t.unread === 1 ? ' unread private message' : ' unread private messages') })
         ] }, t.pk)),
+      // Requests I sent that nobody has answered. Opening one shows "You asked ... to be friends" with Cancel request.
+      (dms.sent || []).filter(t => !list.some(x => x.pk === t.pk)).map(t => jsxs('button', { type: 'button', className: 'h-navrow', 'data-on': cur === t.pk, 'aria-current': cur === t.pk ? 'page' : undefined,
+        'aria-label': t.name + ', friend request pending', onClick: () => open(t.pk), 'data-sent': true, children: [
+          jsx(PersonMark, { pk: t.pk, name: t.name, size: 18, flagged: !!t.impostor }),
+          jsx('span', { className: 'h-grow h-trunc', style: { opacity: 0.6 }, children: t.name }),
+          jsx('span', { className: 'h-faint h-small', children: 'pending' })
+        ] }, 'sent-' + t.pk)),
       dms.requests > 0 && jsxs('button', { type: 'button', className: 'h-navrow', 'data-on': cur === DM_REQUESTS, onClick: () => open(DM_REQUESTS), children: [
         jsx(K.Icon, { name: 'organization', size: 12 }),
         jsx('span', { className: 'h-grow h-trunc', children: 'Requests' }),

@@ -891,6 +891,13 @@ class Store:
                 out["requests"].append({"peer": peer, "at": at})
         return out
 
+    def sent_requests(self, limit: int = 20) -> list[dict]:
+        """Friend requests I sent that nobody has answered: [{peer, at}], newest first (`at` is when I asked)."""
+        with self._lock:
+            rows = self._db.execute("SELECT peer, mine_at FROM dm_friends WHERE mine=1 AND theirs=0 "
+                                    "ORDER BY mine_at DESC, peer LIMIT ?", (int(limit),)).fetchall()
+        return [{"peer": r[0], "at": r[1]} for r in rows]
+
     def dm_counts(self) -> dict:
         with self._lock:
             (msgs,) = self._db.execute("SELECT COUNT(*) FROM dm_messages").fetchone()

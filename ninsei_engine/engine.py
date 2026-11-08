@@ -4785,7 +4785,8 @@ class Engine:
         threads = self.store.dm_threads()
         lists = self.store.friend_lists()
         pend = lists["requests"][:FRIEND_REQUESTS]
-        book = self._dm_book({t["peer"] for t in threads} | {r["peer"] for r in pend})
+        asked = [r for r in self.store.sent_requests() if r["peer"] not in self._hidden]
+        book = self._dm_book({t["peer"] for t in threads} | {r["peer"] for r in pend} | {r["peer"] for r in asked})
         remembered = self.store.friend_names()
         statuses = self._status_map()   # a friend's status from any room we share
         rows, unread = [], 0
@@ -4807,10 +4808,15 @@ class Engine:
         for r in pend:
             info = book.get(r["peer"]) or {"name": "", "flag": None}
             pending.append({"pk": r["peer"], "name": self._dm_label(r["peer"], info), "impostor": bool(info["flag"]), "ts": r["at"]})
+        # requests I sent and nobody has answered: shown as pending, and taken back from the person's conversation view
+        sent = []
+        for r in asked:
+            info = book.get(r["peer"]) or {"name": "", "flag": None}
+            sent.append({"pk": r["peer"], "name": self._dm_label(r["peer"], info), "impostor": bool(info["flag"]), "ts": r["at"]})
         rel = {pk: "friend" for pk in lists["friends"]}
         rel.update({pk: "sent" for pk in lists["sent"]})
         rel.update({r["peer"]: "request" for r in lists["requests"]})
-        return {"threads": rows, "unread": unread, "requests": len(lists["requests"]), "pending": pending, "rel": rel,
+        return {"threads": rows, "unread": unread, "requests": len(lists["requests"]), "pending": pending, "sent": sent, "rel": rel,
                 "rev": self._dm_rev}
 
     def dm_thread(self, pk: str, read: bool = True, before: str = "") -> dict:

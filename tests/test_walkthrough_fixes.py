@@ -306,3 +306,57 @@ out({ words: [0, 1, 40, 60].map(repliesWords), engine: dailyReplies({ limit: 400
 def test_the_pages_reply_guess_is_the_engines():
     from ninsei_engine.engine import REPLY_TOKENS_GUESS
     assert f"const REPLY_TOKENS_GUESS = {REPLY_TOKENS_GUESS}\n" in src("00_core.js")
+
+
+# ---- a friend request I sent shows as pending -------------------------------------------------------------------
+
+async def test_a_request_i_sent_is_listed_as_pending_until_answered_and_cancelling_clears_it(bare):
+    from test_hostile import Key
+    e, _ = bare()
+    k = Key("pending")
+    assert e.dm_summary()["sent"] == []
+    await e.friend_request(k.ppk)
+    [row] = e.dm_summary()["sent"]
+    assert row["pk"] == k.ppk and row["ts"] > 0 and row["impostor"] is False and row["name"]
+    assert e.dm_summary()["requests"] == 0 and e.dm_summary()["pending"] == []   # not someone's request to me
+    await e.friend_remove(k.ppk)                                                  # Cancel request
+    assert e.dm_summary()["sent"] == []
+    await settle(e)
+
+
+async def test_a_request_that_was_accepted_is_a_friend_not_pending(bare):
+    import test_dm
+    from ninsei_engine import dm
+    from test_hostile import Key
+    e, _ = bare()
+    k = Key("accepts")
+    await e.friend_request(k.ppk)
+    await e._dm_process(test_dm.friend_wrap(e, k, dm.FRIEND_ACCEPT))
+    s = e.dm_summary()
+    assert s["sent"] == [] and s["rel"][k.ppk] == "friend"
+    await settle(e)
+
+
+DM_JS = src("57_dm.js")
+
+
+@needs_node
+def test_the_direct_messages_list_shows_a_sent_request_as_pending_and_opens_its_conversation_to_cancel():
+    r = run_node("""
+function PersonMark() {}; function StatusDot() {}
+const DM_REQUESTS = 'requests'
+""" + fn(DM_JS, "DmRail") + """
+const pk = 'e'.repeat(64)
+const opened = []
+const store = { dm: () => '', setDm: p => opened.push(p) }
+const rows = snap => { const l = []; find(DmRail({ store, snap, view: 'lobby', go() {} }), n => { if (n.props && n.props.className === 'h-navrow') l.push(n); return false }); return l }
+const snap = { dms: { threads: [], requests: 0, pending: [], sent: [{ pk, name: 'Maya', impostor: false, ts: 3 }] } }
+const [row] = rows(snap)
+row.props.onClick()
+const hint = text(DmRail({ store, snap, view: 'lobby', go() {} })).includes('Add friend')
+const lonely = text(DmRail({ store, snap: { dms: { threads: [], requests: 0, pending: [], sent: [] } }, view: 'lobby', go() {} })).includes('Add friend')
+out({ label: row.props['aria-label'], shown: text(row), opened, hint, lonely })
+""")
+    assert r["label"] == "Maya, friend request pending" and "Maya" in r["shown"] and "pending" in r["shown"]
+    assert r["opened"] == ["e" * 64] and not r["hint"] and r["lonely"]
+    assert "Cancel request" in DM_JS                 # the conversation view's button, which takes the request back
