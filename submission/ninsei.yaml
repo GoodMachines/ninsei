@@ -53,12 +53,12 @@ requires_hermes: ">=0.22.0"
 docs_url: https://github.com/GoodMachines/ninsei#readme
 image: https://raw.githubusercontent.com/GoodMachines/ninsei/<sha>/docs/media/banner.png          # TODO: pin to the sha
 screenshots:                                        # on the media branch, pinned
-  - https://raw.githubusercontent.com/GoodMachines/ninsei/64db94ce272094331679394f6c040fc00d06a787/catalog/room.png
-  - https://raw.githubusercontent.com/GoodMachines/ninsei/64db94ce272094331679394f6c040fc00d06a787/catalog/offer.png
-  - https://raw.githubusercontent.com/GoodMachines/ninsei/64db94ce272094331679394f6c040fc00d06a787/catalog/toy.png
-  - https://raw.githubusercontent.com/GoodMachines/ninsei/64db94ce272094331679394f6c040fc00d06a787/catalog/tall-tales.png
-  - https://raw.githubusercontent.com/GoodMachines/ninsei/64db94ce272094331679394f6c040fc00d06a787/catalog/impostor.png
-  - https://raw.githubusercontent.com/GoodMachines/ninsei/64db94ce272094331679394f6c040fc00d06a787/catalog/lobby.png
+  - https://raw.githubusercontent.com/GoodMachines/ninsei/0af3ff4f85cf2fde9a7ba5a29c134db93b34d0de/catalog/room.png
+  - https://raw.githubusercontent.com/GoodMachines/ninsei/0af3ff4f85cf2fde9a7ba5a29c134db93b34d0de/catalog/offer.png
+  - https://raw.githubusercontent.com/GoodMachines/ninsei/0af3ff4f85cf2fde9a7ba5a29c134db93b34d0de/catalog/toy.png
+  - https://raw.githubusercontent.com/GoodMachines/ninsei/0af3ff4f85cf2fde9a7ba5a29c134db93b34d0de/catalog/tall-tales.png
+  - https://raw.githubusercontent.com/GoodMachines/ninsei/0af3ff4f85cf2fde9a7ba5a29c134db93b34d0de/catalog/impostor.png
+  - https://raw.githubusercontent.com/GoodMachines/ninsei/0af3ff4f85cf2fde9a7ba5a29c134db93b34d0de/catalog/lobby.png
 readme: true
 platforms: []
 known_issues:
