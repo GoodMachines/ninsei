@@ -955,3 +955,12 @@ The fresh-eyes tester's UI items, approved by Justin. Checked in a throwaway har
 - Submission drafts rewritten and fact-checked against code and README (demo script, `ninsei.yaml`, `catalog-pr.md`). Hermes's catalog validator accepts the all-zeros placeholder sha once quoted and never looks inside image URLs, so `scripts/check_submission.py` refuses an entry until the sha is a real commit on origin/main, every raw link uses it and resolves, and no placeholder or draft header is left. AGENTS.md requires it before the PR.
 - The profile picker keeps its private `hermes_cli.profiles.list_profiles` import (a rule 9 warning, disclosed in the PR): Hermes's own list skips marker-less and tombstoned profile folders, which our fallback scan would show (two on Justin's machine).
 - Relays, 2026-11-08: relay.snort.social accepts and indexes our kind 4242 but held none of Commons' events from the last 48 h, so it keeps them only briefly; useful for live delivery, not history. relay.damus.io refused the probe with HTTP 503 once, then answered queries a minute later. No change to the defaults.
+
+## Catalog screenshots on an orphan branch (2026-11-08)
+
+The six screenshots (about 2 MB at 2x) would take the tracked tree from 8.9 MB past the install scanner's
+10 MB `MAX_PLUGIN_TOTAL_SIZE_KB`, which flags `oversized_bundle`. Shrinking them to fit meant about 220 KB
+each, which blurred text. They live on the orphan `media` branch instead, under `catalog/`; installs clone
+`--depth 1` from the default branch, so they never ship, and the scanner skips `.git` anyway. The catalog
+links pin them to a full commit on origin/media, and `scripts/check_submission.py` checks that commit and
+each file. The banner stays on main, pinned to the plugin sha.

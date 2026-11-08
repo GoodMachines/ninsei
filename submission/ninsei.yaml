@@ -1,7 +1,8 @@
 # DRAFT catalog entry: NOT submitted. Goes in NousResearch/hermes-agent as plugin-catalog/ninsei.yaml,
-# only after Justin says so. Still to fill in: sha (the full 40-char commit, pinned after the screenshots
-# are taken) and the image/screenshot URLs (raw.githubusercontent.com, pinned to that same sha).
-# scripts/check_submission.py fails until both are pinned; Hermes's validator accepts the placeholder.
+# only after Justin says so. Still to fill in: sha (the full 40-char commit on main) and the banner URL
+# pinned to it. The screenshots live on the orphan `media` branch (kept out of installs, which the scanner
+# caps at 10 MB) and are already pinned to a commit there.
+# scripts/check_submission.py fails until everything is pinned; Hermes's validator accepts the placeholder.
 # The full disclosure list lives in README.md ("What you should know before installing") and in
 # submission/catalog-pr.md, which becomes the PR description (catalog rule 13).
 name: ninsei
@@ -50,14 +51,14 @@ tier: community
 category: desktop
 requires_hermes: ">=0.22.0"
 docs_url: https://github.com/GoodMachines/ninsei#readme
-image: https://raw.githubusercontent.com/GoodMachines/ninsei/<sha>/docs/media/banner.png          # TODO: pin to the sha, 1200x600
-screenshots:                                        # TODO: same sha; only banner.png exists in docs/media today
-  - https://raw.githubusercontent.com/GoodMachines/ninsei/<sha>/docs/media/room.png
-  - https://raw.githubusercontent.com/GoodMachines/ninsei/<sha>/docs/media/offer.png
-  - https://raw.githubusercontent.com/GoodMachines/ninsei/<sha>/docs/media/toy.png
-  - https://raw.githubusercontent.com/GoodMachines/ninsei/<sha>/docs/media/tall-tales.png
-  - https://raw.githubusercontent.com/GoodMachines/ninsei/<sha>/docs/media/impostor.png
-  - https://raw.githubusercontent.com/GoodMachines/ninsei/<sha>/docs/media/lobby.png
+image: https://raw.githubusercontent.com/GoodMachines/ninsei/<sha>/docs/media/banner.png          # TODO: pin to the sha
+screenshots:                                        # on the media branch, pinned
+  - https://raw.githubusercontent.com/GoodMachines/ninsei/64db94ce272094331679394f6c040fc00d06a787/catalog/room.png
+  - https://raw.githubusercontent.com/GoodMachines/ninsei/64db94ce272094331679394f6c040fc00d06a787/catalog/offer.png
+  - https://raw.githubusercontent.com/GoodMachines/ninsei/64db94ce272094331679394f6c040fc00d06a787/catalog/toy.png
+  - https://raw.githubusercontent.com/GoodMachines/ninsei/64db94ce272094331679394f6c040fc00d06a787/catalog/tall-tales.png
+  - https://raw.githubusercontent.com/GoodMachines/ninsei/64db94ce272094331679394f6c040fc00d06a787/catalog/impostor.png
+  - https://raw.githubusercontent.com/GoodMachines/ninsei/64db94ce272094331679394f6c040fc00d06a787/catalog/lobby.png
 readme: true
 platforms: []
 known_issues:

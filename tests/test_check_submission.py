@@ -50,3 +50,17 @@ def test_a_pinned_entry_passes_and_a_missing_file_does_not():
     assert any("not a commit" in p for p in cs.problems(entry(other), pr(other)))
     draft = "<!-- DRAFT PR description. NOT submitted. -->\n" + pr(sha)
     assert any("'DRAFT'" in p for p in cs.problems(entry(sha), draft))
+
+
+def on_media() -> str:
+    return subprocess.run(["git", "-C", str(ROOT), "rev-parse", "origin/media"], capture_output=True, text=True).stdout.strip()
+
+
+def test_screenshots_pin_to_the_media_branch_not_the_plugin_sha():
+    sha, media = on_main(), on_media()
+    assert len(media) == 40, "origin/media is missing; fetch it"
+    shot = f"  - https://raw.githubusercontent.com/GoodMachines/ninsei/{media}/catalog/room.png\n"
+    assert cs.problems(entry(sha) + shot, pr(sha)) == []
+    assert any("does not exist" in p for p in cs.problems(entry(sha) + shot.replace("room.png", "nope.png"), pr(sha)))
+    assert any("not on origin/media" in p for p in cs.problems(entry(sha) + shot.replace(media, sha), pr(sha)))
+    assert any("not a full media commit" in p for p in cs.problems(entry(sha) + shot.replace(media, "media"), pr(sha)))

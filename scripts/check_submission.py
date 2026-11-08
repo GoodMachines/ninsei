@@ -6,6 +6,8 @@ Hermes's own catalog validator accepts the all-zeros placeholder sha and never l
 it says OK on a draft. This check fails until the entry is really pinned:
 - `sha` is 40 lowercase hex, not a placeholder, a commit in this repo, and already on origin/main;
 - every raw.githubusercontent.com link in both files uses that sha, and the file exists at that commit;
+  the one exception is screenshots under `catalog/`, which live on the orphan `media` branch so they never ship
+  in an install (the scanner counts the whole tree): those pin to a full commit on origin/media instead;
 - no `<sha>`, `<link>`, `TODO` or draft header is left in either file.
 Exit 0 when ready, 1 with one line per problem otherwise.
 """
@@ -42,7 +44,14 @@ def problems(yaml_text: str, pr_text: str) -> list[str]:
             if word in text:
                 out.append(f"{name} still contains {word!r}")
         for ref, path in RAW.findall(text):
-            if ref != sha:
+            if path.startswith("catalog/"):
+                if not re.fullmatch(r"[0-9a-f]{40}", ref):
+                    out.append(f"{name}: {path} is pinned to {ref!r}, not a full media commit")
+                elif git("merge-base", "--is-ancestor", ref, "origin/media").returncode:
+                    out.append(f"{name}: {path} is pinned to {ref[:12]}, which is not on origin/media")
+                elif git("cat-file", "-e", f"{ref}:{path}").returncode:
+                    out.append(f"{name}: {path} does not exist at {ref[:12]}")
+            elif ref != sha:
                 out.append(f"{name}: {path} is pinned to {ref!r}, not the sha")
             elif sha_ok and git("cat-file", "-e", f"{sha}:{path}").returncode:
                 out.append(f"{name}: {path} does not exist at {sha[:12]}")
