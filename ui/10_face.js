@@ -54,7 +54,8 @@ function Face(props) {
   return jsx('span', {
     ref, className: cx('hf', 'hf-px', props.className), 'data-state': state, 'data-expr': expr || undefined,
     'data-size': size <= 20 ? 's' : size < 48 ? 'm' : 'l',
-    style: { width: size, height: size, '--glow': col.glow + 'a6', '--glow2': col.glow + '40', '--gs': Math.max(1, Math.round(size / 20)) + 'px' },
+    // --gh: the glow's hue, for the theme-aware glow in CSS (col.glow is oklch(0.8 0.15 hue))
+    style: { width: size, height: size, '--glow': col.glow + 'a6', '--glow2': col.glow + '40', '--gh': f.hue, '--gs': Math.max(1, Math.round(size / 20)) + 'px' },
     role: 'img', 'aria-label': (props.name ? props.name + ', ' : '') + STATE_LABEL[state],
     children: jsxs('svg', { viewBox: '0 0 64 64', width: size, height: size, 'aria-hidden': true,
       shapeRendering: pxCrisp(size) ? 'crispEdges' : 'auto', children: [
@@ -117,6 +118,7 @@ function BudgetRing(props) {
   const b = props.budget || { pct: 0, used: 0, limit: 0 }
   const pct = Number(b.pct) || 0
   const tone = pct >= 1 ? 'rest' : pct >= 0.85 ? 'warn' : ''
-  const label = `${fmtTokens(b.used)} of ${fmtTokens(b.limit)} tokens today`
+  // what the tokens buy, in replies, next to the tokens themselves
+  const label = `${fmtTokens(b.used)} of ${fmtTokens(b.limit)} tokens today (${repliesWords(dailyReplies(b))})`
   return jsx(Ring, { pct, size: props.size || 18, stroke: props.stroke, tone, label, title: label, children: props.children })
 }

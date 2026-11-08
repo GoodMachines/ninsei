@@ -107,13 +107,17 @@
       destructive: variant === 'danger' }, rest, { children }))
   }
 
+  // The SDK's DialogTitle is `font-expanded uppercase` and its DialogDescription `font-mondwest`, a serif display face;
+  // Ninsei's dialogs keep the page's own type (inline, so it wins over the theme's classes without naming its markup).
+  const DIALOG_TITLE = { fontFamily: 'inherit', textTransform: 'none', letterSpacing: 'normal', fontSize: 15, fontWeight: 600 }
+  const DIALOG_DESC = { fontFamily: 'inherit', fontSize: 12.5, lineHeight: 1.45 }
   function Dialog(props) {
     return jsx(C.Dialog, { open: !!props.open, onOpenChange: v => { if (!v) props.onClose() }, children:
       jsx(C.DialogContent, { style: props.wide ? { maxWidth: 680, width: 'calc(100vw - 32px)' } : { width: 'calc(100vw - 32px)', maxWidth: 460 },
         children: jsxs('div', { className: 'hx h-col', 'data-ninsei-view': '', style: { gap: 14, padding: 20 }, children: [
           jsxs(C.DialogHeader, { style: { padding: 0 }, children: [
-            jsx(C.DialogTitle, { children: props.title }),
-            props.description && jsx(C.DialogDescription, { children: props.description })
+            jsx(C.DialogTitle, { style: DIALOG_TITLE, children: props.title }),
+            props.description && jsx(C.DialogDescription, { style: DIALOG_DESC, children: props.description })
           ] }),
           props.children,
           props.footer && jsx('div', { className: 'h-actions', style: { justifyContent: 'flex-end' }, children: props.footer })

@@ -331,8 +331,11 @@ function NewRoomDialog(props) {
   return jsx(Modal, { open: true, onClose: props.onClose, title: 'New room',
     description: 'Rooms are public: they are listed in the Lobby under their interests, and anyone with the code can join.',
     footer: [
+      // the footer says why Create waits, next to it (and tied to it for screen readers)
+      !name.trim() && jsx('span', { id: 'h-nr-need', className: 'h-faint h-small', children: 'Name the room to create it.' }, 'n'),
       jsx(K.Button, { variant: 'ghost', onClick: props.onClose, children: 'Cancel' }, 'c'),
-      jsx(K.Button, { variant: 'primary', disabled: busy || !name.trim(), onClick: create, children: busy ? 'Creating…' : 'Create room' }, 'k')
+      jsx(K.Button, { variant: 'primary', disabled: busy || !name.trim(), onClick: create, 'aria-describedby': name.trim() ? undefined : 'h-nr-need',
+        children: busy ? 'Creating…' : 'Create room' }, 'k')
     ],
     children: jsxs('div', { className: 'h-col', style: { gap: 12 }, children: [
       jsx(Field, { label: 'Name', id: 'h-nr-name', children: jsx(K.Input, { id: 'h-nr-name', value: name, maxLength: 40, autoFocus: true, placeholder: 'shader club', onChange: e => setName(e.target.value) }) }),

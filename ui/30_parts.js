@@ -7,7 +7,7 @@ function Field(props) {
     props.label && jsx('label', { htmlFor: props.id, children: props.label }),
     props.children,
     props.error && jsx('div', { className: 'h-hint h-err', id: props.id ? props.id + '-err' : undefined, role: 'alert', children: props.error }),
-    props.hint && jsx('div', { className: 'h-hint', children: props.hint })
+    props.hint && jsx('div', { className: 'h-hint', id: props.hintId, children: props.hint })
   ] })
 }
 
@@ -55,15 +55,22 @@ function hermesSub(p) {
   return p.display_name && p.display_name !== p.name ? p.name : ''
 }
 
+// `collapsible` (Settings): the list waits behind a "Re-import from a Hermes agent" button, since picking one is a
+// setup step; onboarding shows it open.
 function HermesPicker(props) {
   const [list, setList] = useState(null)
   const [busy, setBusy] = useState('')
+  const [open, setOpen] = useState(!props.collapsible)
   useEffect(() => {
     let live = true
     P.rest('/profiles/hermes').then(r => { if (live) setList((r && r.profiles) || []) }, () => { if (live) setList([]) })
     return () => { live = false }
   }, [])
   if (!list || !list.length) return null
+  if (!open) {
+    return jsx('div', { className: 'h-hermes-add', children: jsx(K.Button, { variant: 'ghost', size: 'sm', 'aria-expanded': false,
+      onClick: () => setOpen(true), children: 'Re-import from a Hermes agent' }) })
+  }
   const pick = async p => {
     if (busy) return
     setBusy(p.name)
@@ -72,7 +79,10 @@ function HermesPicker(props) {
     setBusy('')
   }
   return jsxs('div', { className: 'h-field h-hermes', role: 'group', 'aria-label': 'Your Hermes agents', children: [
-    jsx('div', { className: 'h-label', children: 'Start from one of your Hermes agents' }),
+    jsxs('div', { className: 'h-row', style: { justifyContent: 'space-between' }, children: [
+      jsx('div', { className: 'h-label', children: props.collapsible ? 'Re-import from one of your Hermes agents' : 'Start from one of your Hermes agents' }),
+      props.collapsible && jsx(K.Button, { variant: 'ghost', size: 'sm', 'aria-expanded': true, onClick: () => setOpen(false), children: 'Close' })
+    ] }),
     jsx('div', { className: 'h-hermes-list', children: list.map(p =>
       jsxs('button', { type: 'button', className: 'h-hermes-item', 'data-here': !!p.current, 'data-busy': busy === p.name, disabled: !!busy,
         title: p.description || p.name, onClick: () => pick(p), children: [
