@@ -1212,15 +1212,16 @@ function shownName(book, pk, fallback) {
   return (b.name || fallback || 'someone') + (b.impostor ? ' (not verified)' : '')
 }
 
-// Names a host's reveal or the engine's team list carry for people who left the room. They fill gaps only, and a
-// name that a key still in the book holds is a lookalike: it gets the same flag, never the real name bare.
+// Names the engine serves for people who left the room (a reveal's names, the team list). This install's engine
+// built them from its own book and already flagged what it can't vouch for, so they only fill gaps here: the UI
+// never compares names itself.
 function withHostNames(book, names) {
   const out = Object.assign({}, book)
-  const held = new Set(Object.keys(book || {}).filter(pk => book[pk].name && !book[pk].impostor).map(pk => squashName(book[pk].name)))
   Object.keys(names || {}).forEach(pk => {
     if (out[pk]) return
     const name = String(names[pk])
-    out[pk] = { name, impostor: held.has(squashName(name)) }
+    const flagged = / \(not verified\)$/.test(name)
+    out[pk] = { name: flagged ? name.slice(0, -' (not verified)'.length) : name, impostor: flagged }
   })
   return out
 }

@@ -1248,15 +1248,16 @@ function shownName(book, pk, fallback) {
   return (b.name || fallback || 'someone') + (b.impostor ? ' (not verified)' : '')
 }
 
-// Names a host's reveal or the engine's team list carry for people who left the room. They fill gaps only, and a
-// name that a key still in the book holds is a lookalike: it gets the same flag, never the real name bare.
+// Names the engine serves for people who left the room (a reveal's names, the team list). This install's engine
+// built them from its own book and already flagged what it can't vouch for, so they only fill gaps here: the UI
+// never compares names itself.
 function withHostNames(book, names) {
   const out = Object.assign({}, book)
-  const held = new Set(Object.keys(book || {}).filter(pk => book[pk].name && !book[pk].impostor).map(pk => squashName(book[pk].name)))
   Object.keys(names || {}).forEach(pk => {
     if (out[pk]) return
     const name = String(names[pk])
-    out[pk] = { name, impostor: held.has(squashName(name)) }
+    const flagged = / \(not verified\)$/.test(name)
+    out[pk] = { name: flagged ? name.slice(0, -' (not verified)'.length) : name, impostor: flagged }
   })
   return out
 }
@@ -2181,7 +2182,9 @@ button.h-link{background:none;border:0;padding:0;font:inherit;cursor:pointer;tex
 .h-opt .h-letter{width:20px;height:20px;border-radius:50%;display:grid;place-items:center;font-size:11px;font-weight:600;background:var(--h-raise);flex:none}
 .h-score{display:flex;flex-wrap:wrap;gap:6px}
 .h-team{display:inline-flex;align-items:center;gap:6px;padding:3px 9px;border-radius:999px;background:var(--h-raise);font-size:12px}
-.h-team b{font-variant-numeric:tabular-nums}
+.h-team{max-width:100%;min-width:0;border-radius:14px}
+.h-team>span{min-width:0;overflow-wrap:anywhere}
+.h-team b{font-variant-numeric:tabular-nums;flex:none}
 .h-team[data-you=true]{outline:1px solid color-mix(in oklch,var(--h-accent) 60%,transparent)}
 
 /* rings */
@@ -2821,7 +2824,7 @@ function PersonMark(props) {
   const ctx = useContext(PeopleContext)
   const size = props.size || 28
   const art = props.flagged ? null : (props.art !== undefined ? props.art : ctx.people[props.pk])
-  const pics = props.art !== undefined || ctx.show
+  const pics = props.art !== undefined || ctx.show || (!!ctx.me && ctx.me.includes(props.pk))  // your own picture always shows: the engine serves it, others see it
   const uri = useAvatarUri(art && art.av && pics ? props.pk : '', art && art.av)
   const body = art && art.uri && pics ? art.uri : uri
   if (body) return jsx(PersonPhoto, { uri: body, size, className: props.className })
@@ -7646,6 +7649,12 @@ const LETTERS = 'ABCDEFGHIJKL'
 // Who's the Agent? runs on the same rounds and panel: everyone answers a prompt about their own life,
 // agents included and trying to pass as people; people flag the answers they think an agent wrote.
 const GAME_NAME = { tales: 'Tall Tales', agent: 'Who’s the Agent?' }
+// The host's name: from the live book when its key is there (so agent and owner flags apply), else the engine's
+// own flagged host_name.
+function hostShown(book, game) {
+  return book && book[game.host] ? whoLabel(book, game.host) : (game.host_name || 'an agent')
+}
+
 function gameName(mode) { return GAME_NAME[mode] || GAME_NAME.tales }
 
 // "How to play": what each phase does, its length, the points. The numbers come from the engine's own
@@ -7737,12 +7746,12 @@ function TallTales(props) {
     ] })
   }
 
-  const hostLabel = game.you_host ? 'Your agent is hosting' : 'Hosted by ' + (game.host_name || 'an agent')
+  const hostLabel = game.you_host ? 'Your agent is hosting' : 'Hosted by ' + hostShown(book, game)
   const round = game.n ? 'Round ' + game.n + ' of ' + game.rounds : 'Getting ready'
 
   let body = null
   const who = game.mode === 'agent'
-  if (game.phase === 'starting') body = jsx('div', { className: 'h-muted', children: (game.host_name || 'The host') + (who ? ' is picking prompts…' : ' is writing questions…') })
+  if (game.phase === 'starting') body = jsx('div', { className: 'h-muted', children: (book[game.host] ? hostShown(book, game) : (game.host_name || 'The host')) + (who ? ' is picking prompts…' : ' is writing questions…') })
   else if (game.phase === 'fakes') body = jsx(FakePhase, { store, room, game, quiet: props.quiet })
   else if (game.phase === 'vote') body = who ? jsx(FlagPhase, { store, room, game }) : jsx(VotePhase, { store, room, game })
   else if (game.phase === 'reveal') body = who ? jsx(WhoRevealPhase, { game, book }) : jsx(RevealPhase, { game, book })
@@ -8515,8 +8524,9 @@ function App(props) {
   const embedded = !!props.embedded  // Desktop's room tab: the sidebar's Ninsei tab is the rail
   const snap = st.snap
   // what each person looks like, for every PersonMark below (pictures only while "Show profile pictures" is on)
-  const looks = useMemo(() => ({ people: (snap && snap.people) || {}, show: !(snap && snap.settings && snap.settings.show_avatars === 'nobody') }),
-    [snap && snap.people, snap && snap.settings && snap.settings.show_avatars])
+  const looks = useMemo(() => ({ people: (snap && snap.people) || {}, show: !(snap && snap.settings && snap.settings.show_avatars === 'nobody'),
+    me: [snap && snap.me && snap.me.pk, snap && snap.me && snap.me.agent && snap.me.agent.pk].filter(Boolean) }),
+    [snap && snap.people, snap && snap.me, snap && snap.settings && snap.settings.show_avatars])
 
   let inner
   if (!snap) {

@@ -52,7 +52,7 @@ out(row.props.children.map(c => c.props.children[0].props.children))
 
 
 HOWTO_HARNESS = (fn(TALES, "gameName") + __import__("test_audit_ui").const(TALES, "GAME_NAME") + fn(TALES, "howToLines")
-                 + fn(TALES, "HowToPlay") + fn(TALES, "TallTales") + """
+                 + fn(TALES, "HowToPlay") + fn(TALES, "hostShown") + fn(TALES, "TallTales") + """
 function FakePhase() {}; function FlagPhase() {}; function VotePhase() {}; function WhoRevealPhase() {}; function RevealPhase() {}
 function Scoreboard() {}; function Countdown() {}; function AgentStatus() {}
 const Ring = function Ring() {}
@@ -500,17 +500,20 @@ const room = { members: [
   { pk: 'sam', name: 'Sam', you: true, agents: [] }] }
 const book = nameBook(room, null)
 // team_names comes from the engine and carries the claimed name bare: the book's flag still wins
-const game = { scores: { maya: 2, fake: 1 }, players: ['maya', 'fake'], team_names: { maya: 'Maya', fake: 'Maya', gone: 'Maya', left: 'Ivy' } }
+const game = { scores: { maya: 2, fake: 1 }, players: ['maya', 'fake'], team_names: { maya: 'Maya', fake: 'Maya', gone: 'Maya (not verified)', left: 'Ivy' } }
 const row = Scoreboard({ game, room })
 out({ board: row.props.children.map(c => c.props.children[0].props.children),
   gone: teamName(game, book, 'gone'), left: teamName(game, book, 'left'),
   who: whoLabel(book, 'fake'), echo: whoLabel(book, 'echo'), real: whoLabel(book, 'maya'),
-  host: whoLabel(withHostNames(book, { x: 'Maya' }), 'x') })
+  host: whoLabel(withHostNames(book, { x: 'Maya (not verified)', y: 'Ivy' }), 'x'),
+  bare: whoLabel(withHostNames(book, { y: 'Ivy' }), 'y'), flagOnce: shownName(withHostNames(book, { z: 'Maya (not verified)' }), 'z') })
 """)
     assert r["board"] == ["Maya + Ada", "Maya (not verified) + Echo"]
     assert r["gone"] == "Maya (not verified)" and r["left"] == "Ivy"
     assert r["who"] == "Maya (not verified)" and r["echo"] == "Echo (Maya (not verified)'s agent)"
     assert r["real"] == "Maya" and r["host"] == "Maya (not verified)"
+    # the UI compares nothing: it shows the engine's strings, so a bare name stays bare and a flag is never doubled
+    assert r["bare"] == "Ivy" and r["flagOnce"] == "Maya (not verified)"
 
 
 def test_every_game_name_goes_through_the_shared_label_helpers():
@@ -525,3 +528,63 @@ def test_team_names_flag_a_lookalike_with_the_rooms_own_rule():
     eng = Engine.__new__(Engine)
     eng._holder = lambda w, n, agent=False: "a"
     assert eng._flagged_name(who, "a") == "Maya" and eng._flagged_name(who, "b") == "Maya (not verified)"
+
+
+def _book_engine(person, agent=None, reg=None):
+    from ninsei_engine.engine import Engine, skeleton
+    eng = Engine.__new__(Engine)
+    who = {"ident": {"person_pk": "me", "agent_pk": "myagent"}, "my_name": "Sam", "me_p": skeleton("Sam"), "me_a": skeleton("Bo"),
+           "person": person, "agent": agent or {}, "reg": {"p:" + skeleton(n): pk for pk, n in (reg or {}).items()}}
+    return eng, who
+
+
+def test_a_cyrillic_lookalike_host_name_for_a_departed_key_is_flagged_by_the_engine():
+    """A host sends "M\u0430ya" (Cyrillic a) as the name of a key this engine saw as Maya's lookalike."""
+    eng, who = _book_engine({"real": "Maya", "fake": "M\u0430ya"}, reg={"real": "Maya"})
+    assert eng._served_name(who, "fake", "Maya") == "M\u0430ya (not verified)"
+    assert eng._served_name(who, "real", "M\u0430ya") == "Maya"           # the book's name, not the host's text
+
+
+def test_an_unknown_key_host_name_is_flagged_and_an_honest_departed_player_is_bare():
+    eng, who = _book_engine({"gone": "Ivy"}, {"ag": "Echo"}, reg={"gone": "Ivy"})
+    assert eng._served_name(who, "stranger", "Maya") == "Maya (not verified)"      # never seen: can't be checked
+    assert eng._served_name(who, "gone", "Ivy") == "Ivy" and eng._served_name(who, "ag", "x") == "Echo"
+    assert eng._served_name(who, "myagent", "Bo") == "Bo"
+
+
+def test_the_engine_never_doubles_the_flag():
+    eng, who = _book_engine({"fake": "Maya"}, reg={"real": "Maya"})
+    assert eng._served_name(who, "nobody", "Maya (not verified)") == "Maya (not verified)"
+    assert eng._served_name(who, "fake", "Maya") == "Maya (not verified)"
+    assert eng._unverified(eng._unverified("Maya")) == "Maya (not verified)"
+
+
+async def test_the_hosted_by_line_and_reveal_names_come_from_the_engines_book(bare, monkeypatch):
+    _long(monkeypatch)
+    host, sam, eve = await _table(bare, Llm("Ada", "five"))
+    gid = (await host.start_tales(ROOM, 1))["gid"]
+    assert await wait_for(lambda: (eve.game_view(ROOM) or {}).get("phase") == "fakes")
+    assert eve.game_view(ROOM)["host_name"] == "Ada"                        # a key the book knows: its own name, bare
+    await sam.submit_fake(ROOM, gid, 1, "seven")
+    await host.submit_fake(ROOM, gid, 1, "nine")
+    assert await wait_for(lambda: (eve.game_view(ROOM) or {}).get("phase") == "vote")
+    truth = next(o["id"] for o in eve.game_view(ROOM)["options"] if o["text"] == "three")
+    await sam.submit_vote(ROOM, gid, 1, truth)
+    await host.submit_vote(ROOM, gid, 1, truth)
+    assert await wait_for(lambda: (eve.game_view(ROOM) or {}).get("phase") == "end", timeout=30)
+    await settle(host)
+
+
+def test_the_hosted_by_line_uses_the_books_label_and_a_lookalike_host_is_flagged():
+    assert "hostShown(book, game)" in TALES and "game.host_name ||" in fn(TALES, "hostShown")
+    assert "'Hosted by ' + (game.host_name" not in TALES
+    r = run_node(LABELS + fn(TALES, "hostShown") + """
+const book = { echo: { name: 'Echo', agent: true, owner: 'fake', ownerName: 'Maya', yours: false }, fake: { name: 'Maya', impostor: true } }
+out({ lookalike: hostShown(book, { host: 'echo', host_name: 'Echo' }), unknown: hostShown(book, { host: 'zz', host_name: 'Maya (not verified)' }) })
+""")
+    assert r["lookalike"] == "Echo (Maya (not verified)'s agent)" and r["unknown"] == "Maya (not verified)"
+
+
+def test_the_scoreboard_chip_wraps_a_long_flagged_name():
+    css = src("20_style.js")
+    assert ".h-team>span{min-width:0;overflow-wrap:anywhere}" in css and "max-width:100%" in css

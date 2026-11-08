@@ -2244,7 +2244,26 @@ class Engine:
 
     def _flagged_name(self, who: dict, pk: str) -> str:
         name, holds = self._owner_label(who, pk)
-        return name if holds else f"{name} (not verified)"
+        return name if holds else self._unverified(name)
+
+    @staticmethod
+    def _unverified(name: str) -> str:
+        """The name with the flag, once (a name that already carries it is not flagged twice)."""
+        return name if name.endswith(" (not verified)") else f"{name} (not verified)"
+
+    def _served_name(self, who: dict, pk: str, claimed: str) -> str:
+        """The name to show for a key a game's host (untrusted) named. This engine's own book decides: a key it
+        knows gets its own name, flagged when another key holds it; a key it has never seen can't be checked, so the
+        host's text is shown flagged. The UI never compares names itself."""
+        ident = who["ident"]
+        if pk == ident["person_pk"] or pk in who["person"]:
+            return self._flagged_name(who, pk)
+        if pk == ident["agent_pk"]:
+            return who["agent"].get(pk) or claimed
+        if pk in who["agent"]:
+            name = who["agent"][pk]
+            return name if self._holder(who, name, agent=True) in (None, pk) else self._unverified(name)
+        return self._unverified(claimed)
 
     def _person_name(self, room: str, pk: str, who: Optional[dict] = None) -> str:
         return self._owner_label(who or self._who(room), pk)[0]
@@ -3395,6 +3414,11 @@ class Engine:
         if self._hidden:
             self._scrub_hidden(view)
         who = self._who(room, evs)
+        # names the host sent (the reveal's, and its own) are rewritten from this engine's book here, so the UI
+        # shows them as served and never compares names itself
+        if view.get("reveal"):
+            view["reveal"]["names"] = {pk: self._served_name(who, pk, nm) for pk, nm in view["reveal"]["names"].items()}
+        view["host_name"] = self._served_name(who, host, view["host_name"])
         # built from this engine's own book (never the host's), and a lookalike key keeps the room's flag in its
         # name: the UI prefers its live book and uses this only for people who have left the room
         view["team_names"] = {pk: self._flagged_name(who, pk)

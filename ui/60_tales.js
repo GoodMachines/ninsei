@@ -9,6 +9,12 @@ const LETTERS = 'ABCDEFGHIJKL'
 // Who's the Agent? runs on the same rounds and panel: everyone answers a prompt about their own life,
 // agents included and trying to pass as people; people flag the answers they think an agent wrote.
 const GAME_NAME = { tales: 'Tall Tales', agent: 'Who’s the Agent?' }
+// The host's name: from the live book when its key is there (so agent and owner flags apply), else the engine's
+// own flagged host_name.
+function hostShown(book, game) {
+  return book && book[game.host] ? whoLabel(book, game.host) : (game.host_name || 'an agent')
+}
+
 function gameName(mode) { return GAME_NAME[mode] || GAME_NAME.tales }
 
 // "How to play": what each phase does, its length, the points. The numbers come from the engine's own
@@ -100,12 +106,12 @@ function TallTales(props) {
     ] })
   }
 
-  const hostLabel = game.you_host ? 'Your agent is hosting' : 'Hosted by ' + (game.host_name || 'an agent')
+  const hostLabel = game.you_host ? 'Your agent is hosting' : 'Hosted by ' + hostShown(book, game)
   const round = game.n ? 'Round ' + game.n + ' of ' + game.rounds : 'Getting ready'
 
   let body = null
   const who = game.mode === 'agent'
-  if (game.phase === 'starting') body = jsx('div', { className: 'h-muted', children: (game.host_name || 'The host') + (who ? ' is picking prompts…' : ' is writing questions…') })
+  if (game.phase === 'starting') body = jsx('div', { className: 'h-muted', children: (book[game.host] ? hostShown(book, game) : (game.host_name || 'The host')) + (who ? ' is picking prompts…' : ' is writing questions…') })
   else if (game.phase === 'fakes') body = jsx(FakePhase, { store, room, game, quiet: props.quiet })
   else if (game.phase === 'vote') body = who ? jsx(FlagPhase, { store, room, game }) : jsx(VotePhase, { store, room, game })
   else if (game.phase === 'reveal') body = who ? jsx(WhoRevealPhase, { game, book }) : jsx(RevealPhase, { game, book })

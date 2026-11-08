@@ -290,7 +290,7 @@ function PersonMark(props) {
   const ctx = useContext(PeopleContext)
   const size = props.size || 28
   const art = props.flagged ? null : (props.art !== undefined ? props.art : ctx.people[props.pk])
-  const pics = props.art !== undefined || ctx.show
+  const pics = props.art !== undefined || ctx.show || (!!ctx.me && ctx.me.includes(props.pk))  // your own picture always shows: the engine serves it, others see it
   const uri = useAvatarUri(art && art.av && pics ? props.pk : '', art && art.av)
   const body = art && art.uri && pics ? art.uri : uri
   if (body) return jsx(PersonPhoto, { uri: body, size, className: props.className })
