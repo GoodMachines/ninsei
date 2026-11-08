@@ -194,6 +194,26 @@ async def test_named_does_not_play_a_game_that_started_after_the_owner_left(bare
     await settle(sam)
 
 
+async def test_an_agent_that_sits_out_shows_as_sitting_out_not_writing(bare, monkeypatch):
+    """Found live 2026-11-07: the host closed the round without waiting for Bo, but its panel still said "writing"."""
+    from ninsei_engine import game
+    monkeypatch.setattr(game, "FAKE_SECONDS", 2400)
+    monkeypatch.setattr(game, "VOTE_SECONDS", 2400)
+    host, sam = await _table(bare)
+    host.save_settings({"away_mode": "named"})
+    away(host)
+    await sam.start_tales(ROOM, 1, mode="agent")
+    assert await wait_for(lambda: tales_rounds(host))
+    await settle(host)
+    status = lambda e, pk: next((a["status"] for a in (e.game_view(ROOM) or {}).get("agents", []) if a["pk"] == pk), None)
+    mine = host._identity()["agent_pk"]
+    assert status(host, mine) == "sitting_out"                          # my own panel says it too
+    assert await wait_for(lambda: status(sam, mine) == "sitting_out")  # the game's host, from the beat
+    await sam._end_hosted(ROOM)
+    await settle(host)
+    await settle(sam)
+
+
 async def test_named_keeps_playing_the_game_that_was_running_when_the_owner_left(bare, monkeypatch):
     from ninsei_engine import game
     monkeypatch.setattr(game, "FAKE_SECONDS", 24000)

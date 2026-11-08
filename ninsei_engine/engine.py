@@ -3146,8 +3146,9 @@ class Engine:
 
     def _game_agents(self, room: str, view: dict, fakers: set, evs: list) -> list:
         """Each agent playing this round and where it is: "answered" (its sealed answer is in: public, the room
-        sees the event), "gave_up" (it said it has none, via presence), "writing", or "none" once the answers
-        are closed. Never says what an answer is or which option is whose. People I hid are left out."""
+        sees the event), "gave_up" (it said it has none, via presence), "sitting_out" (its beat said "plays:
+        false": its owner is away and it won't take turns, so nothing will come), "writing", or "none" once the
+        answers are closed. Never says what an answer is or which option is whose. People I hid are left out."""
         ident = self._identity()
         gid, n = view["gid"], view["n"]
         now = time.time()
@@ -3158,17 +3159,19 @@ class Engine:
             if pk == ident["agent_pk"] or now - p["at"] >= ABSENT_AFTER or pk in self._hidden_agents \
                     or p["owner"] in self._hidden:
                 continue
-            out.append((pk, p["name"], p.get("gave_up")))
+            out.append((pk, p["name"], p.get("gave_up"), p.get("plays") is False))
         out.append((ident["agent_pk"], self.persona().get("name") or "Agent",
-                    self._gave_up[:2] if self._gave_up and self._gave_up[2] == room else None))
+                    self._gave_up[:2] if self._gave_up and self._gave_up[2] == room else None, not self._plays_in(room, view)))
         rows = []
-        for pk, name, gave in out[:24]:
+        for pk, name, gave, off in out[:24]:
             if self._holder(who, name, agent=True) not in (None, pk):
                 name = _short(pk)   # a lookalike never wears the real name here either
             if pk in fakers:
                 status = "answered"
             elif gave == (gid, n):
                 status = "gave_up"
+            elif off:
+                status = "sitting_out"
             elif view["phase"] == "fakes":
                 status = "writing"
             else:
@@ -3787,25 +3790,28 @@ class Engine:
         if self._away_games is not None:
             return
         since = (self._last_open_at + IDLE_OPEN) if self._last_open_at else self._born
-        games = set()
+        # Set before the loop: game_view lists my agent's turn state, which asks _plays_in, which lands back here.
+        # Seeing the record already set, that inner call returns at once; only the label in a discarded view
+        # reads the half-built set.
+        games = self._away_games = set()
         for room in self.store.rooms():
             g = self.game_view(room)
             if g and g["phase"] != "end":
                 started = self._game_started_at(room, g["gid"])
                 if started is not None and started <= since:
                     games.add(g["gid"])
-        self._away_games = games
 
-    def _plays_in(self, room: str) -> bool:
+    def _plays_in(self, room: str, view: Optional[dict] = None) -> bool:
         """Will my agent take game turns in this room right now? Only while my owner is away does it ever not:
-        "quiet" never, "named" only games already running when they left."""
+        "quiet" never, "named" only games already running when they left. `view` is the room's game view when
+        the caller is building it (game_view -> _game_agents), so this doesn't build it again."""
         if self.owner_around():
             return True
         mode = self.settings()["away_mode"]
         if mode != "named":
             return mode == "chat"
         self._note_away()
-        g = self.game_view(room)
+        g = view if view is not None else self.game_view(room)
         return not g or g["phase"] == "end" or g["gid"] in (self._away_games or ())
 
     def _plays_off(self) -> set:

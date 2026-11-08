@@ -6848,9 +6848,9 @@ function HowToPlay(props) {
   ] })
 }
 
-// One chip per agent playing the round: writing, answered, or couldn't answer. It says nothing about
+// One chip per agent playing the round: writing, answered, couldn't answer, or sitting out (its owner is away). It says nothing about
 // what an answer is or which option is whose.
-const AGENT_STATUS = { writing: 'writing…', answered: 'answered', gave_up: 'couldn’t answer', none: 'no answer' }
+const AGENT_STATUS = { writing: 'writing…', answered: 'answered', gave_up: 'couldn’t answer', sitting_out: 'sitting out', none: 'no answer' }
 function AgentStatus(props) {
   const agents = props.game.agents || []
   if (!agents.length) return null
