@@ -377,7 +377,8 @@ function StatusChip(props) {
   const w = stateWord(a.state)
   const waiting = (snap.offers || []).some(o => o.status === 'open' || o.status === 'ready') || (snap.drafts || []).length > 0
   const label = (a.name || 'Your agent') + ' · ' + STATE_LABEL[w] + (a.note ? ' (' + a.note + ')' : '') + ' · ' +
-    fmtTokens(snap.budget.used) + ' of ' + fmtTokens(snap.budget.limit) + ' tokens today' + (waiting ? ' · waiting on you' : '')
+    fmtTokens(snap.budget.used) + ' of ' + fmtTokens(snap.budget.limit) + ' tokens used today (' +
+    repliesWords(dailyReplies(snap.budget)) + ')' + (waiting ? ' · waiting on you' : '')
   return jsx(K.Tip, { label, children: jsxs('button', { type: 'button', className: 'hx h-statuschip', 'aria-label': 'Open Ninsei: ' + label, onClick: props.onOpen, children: [
     jsx(Face, { face: a.face, pk: a.pk, state: waiting ? 'system: waiting' : a.state, size: 15, name: a.name }),
     jsx('span', { children: STATE_LABEL[w] }),

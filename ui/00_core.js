@@ -68,6 +68,23 @@ function faceFor(face, pk) {
     pattern: pick('pattern', FACE_PATTERNS), hue2: h2, card: pick('card', FACE_CARDS) }
 }
 
+// A reply's cost in tokens before the engine has settled any (REPLY_TOKENS_GUESS in engine.py). The engine sends
+// the real average as budget.reply_tokens; this is for amounts that have no budget yet (the setup presets).
+const REPLY_TOKENS_GUESS = 1000
+// "about 40 replies a day" for a daily token amount; `b` is snap.budget when there is one.
+function repliesFor(tokens, b) {
+  const per = (b && b.reply_tokens) || REPLY_TOKENS_GUESS
+  return Math.max(0, Math.floor((Number(tokens) || 0) / per))
+}
+// The engine's own figure when it sends one (it knows the message limit too), else the tokens over a typical reply.
+function dailyReplies(b) {
+  const r = b && b.replies
+  return r && r.per_day != null ? r.per_day : repliesFor(b && b.limit, b)
+}
+function repliesWords(n) {
+  n = Math.max(0, Math.round(Number(n) || 0))
+  return n < 1 ? 'less than a reply a day' : 'about ' + n + (n === 1 ? ' reply' : ' replies') + ' a day'
+}
 function fmtTokens(n) {
   n = Number(n) || 0
   if (n >= 1000000) return (n / 1000000).toFixed(n % 1000000 ? 1 : 0) + 'M'

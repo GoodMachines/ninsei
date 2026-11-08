@@ -5,7 +5,7 @@ import json
 import time
 
 from ninsei_engine import game
-from test_audit_ui import ROOT, fn, needs_node, run as run_node, src
+from test_audit_ui import ROOT, const, fn, needs_node, run as run_node, src
 from test_engine import wait_for
 from test_game_agents import Llm, _long, _table
 from test_hostile import ROOM, bare, settle  # noqa: F401  (fixture re-export)
@@ -255,3 +255,54 @@ def test_the_status_picker_is_a_popover_not_an_inline_block():
     pop = [ln for ln in css.splitlines() if ln.startswith(".h-pop{")][0]
     assert "position:fixed" in pop and "min-width:280px" in pop
     assert ".h-mystatus .h-menu{position:static" not in css       # 0c9643e's inline version is gone
+
+
+# ---- budget words ----------------------------------------------------------------------------------------------
+
+def test_a_call_in_flight_is_held_not_used_so_the_shown_use_never_drops_when_it_settles(bare):
+    e, _ = bare()
+    e.save_settings({"budget_daily": 10000, "msgs_daily": 60})
+    e.store.settle(e.store.reserve("chat", 100, 10000), 100)            # 100 tokens really spent
+    ticket = e.store.reserve("chat", 1200, 10000)                       # a reply is on its way, holding 1,200
+    mid = e.budget_view()
+    assert mid["used"] == 100 and mid["held"] == 1200 and mid["by"] == {"chat": 100}
+    assert e.store.budget_used() == {"chat": 1300}                      # the limit still counts the hold
+    e.store.settle(ticket, 600)                                         # it cost less than the hold
+    after = e.budget_view()
+    assert after["used"] == 700 and after["held"] == 0 and after["used"] >= mid["used"]   # only ever goes up
+
+
+def test_replies_a_day_come_from_what_replies_really_cost_and_are_capped_by_the_message_limit(bare):
+    from ninsei_engine.engine import REPLY_TOKENS_GUESS
+    e, _ = bare()
+    e.save_settings({"budget_daily": 40000, "msgs_daily": 60})
+    first = e.budget_view()
+    assert first["reply_tokens"] == REPLY_TOKENS_GUESS and first["replies"]["per_day"] == 40   # 40,000 / 1,000
+    for used in (500, 700, 600):                                        # three settled replies, 600 on average
+        e.store.settle(e.store.reserve("chat", 1000, 40000), used)
+    v = e.budget_view()
+    assert v["reply_tokens"] == 600 and v["replies"]["per_day"] == 60   # 66 by tokens, but 60 messages a day is the cap
+    assert v["replies"]["left"] == min(60, (40000 - 1800) // 600)
+    e.save_settings({"budget_daily": 6000, "msgs_daily": 60})
+    assert e.budget_view()["replies"]["per_day"] == 10
+    assert e.store.typical_reply_tokens(1000, lo=300, hi=500) == 500    # one odd, huge call can't make it silly
+
+
+@needs_node
+def test_the_budget_card_says_replies_not_a_percent_and_the_ring_has_no_number():
+    core = src("00_core.js")
+    r = run_node(fn(core, "repliesFor") + fn(core, "dailyReplies") + fn(core, "repliesWords") + const(core, "REPLY_TOKENS_GUESS") + """
+out({ words: [0, 1, 40, 60].map(repliesWords), engine: dailyReplies({ limit: 40000, replies: { per_day: 60 } }),
+      fallback: dailyReplies({ limit: 20000 }), typical: repliesFor(40000, { reply_tokens: 500 }), preset: repliesFor(100000) })
+""")
+    assert r["words"] == ["less than a reply a day", "about 1 reply a day", "about 40 replies a day", "about 60 replies a day"]
+    assert r["engine"] == 60 and r["fallback"] == 20 and r["typical"] == 80 and r["preset"] == 100
+    card = fn(ROOM_JS, "MyAgentCard")
+    assert "Math.round((snap.budget.pct" not in card and "BudgetRing, { budget: snap.budget, size: 30, stroke: 3 })" in card
+    assert "repliesWords(dailyReplies(snap.budget))" in card and "reserved for a reply in progress" in card
+    assert "repliesWords(dailyReplies(snap.budget))" in fn(src("80_app.js"), "StatusChip")
+
+
+def test_the_pages_reply_guess_is_the_engines():
+    from ninsei_engine.engine import REPLY_TOKENS_GUESS
+    assert f"const REPLY_TOKENS_GUESS = {REPLY_TOKENS_GUESS}\n" in src("00_core.js")

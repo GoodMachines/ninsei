@@ -78,6 +78,7 @@ ROOM_STRANGER_CLAIMS = 2 * ROOM_STRANGER_CALLS  # floor claims ALL other teams t
                            # call caps alone never stop the claims)
 OFFER_TTL = 86400          # an offer nobody answered within a day expires
 MAX_OFFERS_KEPT = 200      # finished offers remembered (open, building and ready ones are always kept)
+REPLY_TOKENS_GUESS = 1000  # a reply's cost before any is settled: ~700 in (persona, vibe, transcript) + <=160 out
 MAX_PLAYERS = 24           # counted voters, and fake writers, in one round I host (clients show 24 names)
 REVEAL_MAX_BYTES = 32_000  # a reveal or game end I post stays well under the room event cap
 # Name registry keys in kv. "names2": since 2026-11-06 a bare join no longer claims a name, so registries
@@ -2248,14 +2249,24 @@ class Engine:
         return ""
 
     def budget_view(self) -> dict:
-        used = self.store.budget_used()
+        # What is shown is what has settled. A call in flight holds its estimate (larger than the real cost), and
+        # counting that as use made the number jump back down when the call settled: it is `held` instead.
+        used, held = self.store.budget_split()
         limit = int(self.settings()["budget_daily"])
         total = sum(used.values())
         pct = min(1.0, total / limit) if limit else 1.0
         share = self._share_now()
         theirs = self.store.stranger_used()
-        return {"limit": limit, "used": total, "by": used, "pct": pct,
-                "msgs": {"used": self._said_today(), "limit": int(self.settings()["msgs_daily"])},
+        msgs_limit = int(self.settings()["msgs_daily"])
+        # "About N replies a day": the day's tokens over a typical reply, never more than the message limit.
+        # The typical reply is the average of the last settled chat calls (REPLY_TOKENS_GUESS before there are any).
+        per_reply = self.store.typical_reply_tokens(REPLY_TOKENS_GUESS)
+        said = self._said_today()
+        replies = {"per_day": min(msgs_limit, limit // per_reply),
+                   "left": max(0, min(msgs_limit - said, (limit - total - held) // per_reply))}
+        return {"limit": limit, "used": total, "held": held, "by": used, "pct": pct,
+                "reply_tokens": per_reply, "replies": replies,
+                "msgs": {"used": said, "limit": msgs_limit},
                 "others": {"used": theirs, "limit": int(limit * share), "share": share, "away": self.owner_away(),
                            "msgs": self._said_strangers(), "msgs_limit": int(int(self.settings()["msgs_daily"]) * share),
                            "spent": self._strangers_spent()}}

@@ -1551,10 +1551,13 @@ function MyAgentCard(props) {
       ] })
     ] }),
     jsxs('div', { className: 'h-row', children: [
-      jsx(BudgetRing, { budget: snap.budget, size: 30, stroke: 3, children: Math.round((snap.budget.pct || 0) * 100) }),
+      // The ring fills as today's budget is used; it carries no number (the lines beside it say it in words).
+      jsx(BudgetRing, { budget: snap.budget, size: 30, stroke: 3 }),
       jsxs('div', { className: 'h-grow h-small', children: [
-        jsx('div', { children: fmtTokens(snap.budget.used) + ' / ' + fmtTokens(snap.budget.limit) }),
-        jsx('div', { className: 'h-faint', children: snap.budget.pct >= 1 ? 'resting until tomorrow' : 'tokens today' }),
+        jsx('div', { children: fmtTokens(snap.budget.used) + ' of ' + fmtTokens(snap.budget.limit) + ' tokens used today' }),
+        jsx('div', { className: 'h-faint', children: snap.budget.pct >= 1 ? 'resting until tomorrow'
+          : repliesWords(dailyReplies(snap.budget)) }),
+        snap.budget.held > 0 && jsx('div', { className: 'h-faint', children: fmtTokens(snap.budget.held) + ' reserved for a reply in progress' }),
         othersLine(snap.budget) && jsx('div', { className: 'h-faint', children: othersLine(snap.budget) })
       ] })
     ] }),

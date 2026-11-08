@@ -121,6 +121,23 @@ function faceFor(face, pk) {
     pattern: pick('pattern', FACE_PATTERNS), hue2: h2, card: pick('card', FACE_CARDS) }
 }
 
+// A reply's cost in tokens before the engine has settled any (REPLY_TOKENS_GUESS in engine.py). The engine sends
+// the real average as budget.reply_tokens; this is for amounts that have no budget yet (the setup presets).
+const REPLY_TOKENS_GUESS = 1000
+// "about 40 replies a day" for a daily token amount; `b` is snap.budget when there is one.
+function repliesFor(tokens, b) {
+  const per = (b && b.reply_tokens) || REPLY_TOKENS_GUESS
+  return Math.max(0, Math.floor((Number(tokens) || 0) / per))
+}
+// The engine's own figure when it sends one (it knows the message limit too), else the tokens over a typical reply.
+function dailyReplies(b) {
+  const r = b && b.replies
+  return r && r.per_day != null ? r.per_day : repliesFor(b && b.limit, b)
+}
+function repliesWords(n) {
+  n = Math.max(0, Math.round(Number(n) || 0))
+  return n < 1 ? 'less than a reply a day' : 'about ' + n + (n === 1 ? ' reply' : ' replies') + ' a day'
+}
 function fmtTokens(n) {
   n = Number(n) || 0
   if (n >= 1000000) return (n / 1000000).toFixed(n % 1000000 ? 1 : 0) + 'M'
@@ -6129,10 +6146,13 @@ function MyAgentCard(props) {
       ] })
     ] }),
     jsxs('div', { className: 'h-row', children: [
-      jsx(BudgetRing, { budget: snap.budget, size: 30, stroke: 3, children: Math.round((snap.budget.pct || 0) * 100) }),
+      // The ring fills as today's budget is used; it carries no number (the lines beside it say it in words).
+      jsx(BudgetRing, { budget: snap.budget, size: 30, stroke: 3 }),
       jsxs('div', { className: 'h-grow h-small', children: [
-        jsx('div', { children: fmtTokens(snap.budget.used) + ' / ' + fmtTokens(snap.budget.limit) }),
-        jsx('div', { className: 'h-faint', children: snap.budget.pct >= 1 ? 'resting until tomorrow' : 'tokens today' }),
+        jsx('div', { children: fmtTokens(snap.budget.used) + ' of ' + fmtTokens(snap.budget.limit) + ' tokens used today' }),
+        jsx('div', { className: 'h-faint', children: snap.budget.pct >= 1 ? 'resting until tomorrow'
+          : repliesWords(dailyReplies(snap.budget)) }),
+        snap.budget.held > 0 && jsx('div', { className: 'h-faint', children: fmtTokens(snap.budget.held) + ' reserved for a reply in progress' }),
         othersLine(snap.budget) && jsx('div', { className: 'h-faint', children: othersLine(snap.budget) })
       ] })
     ] }),
@@ -8009,7 +8029,8 @@ function StatusChip(props) {
   const w = stateWord(a.state)
   const waiting = (snap.offers || []).some(o => o.status === 'open' || o.status === 'ready') || (snap.drafts || []).length > 0
   const label = (a.name || 'Your agent') + ' · ' + STATE_LABEL[w] + (a.note ? ' (' + a.note + ')' : '') + ' · ' +
-    fmtTokens(snap.budget.used) + ' of ' + fmtTokens(snap.budget.limit) + ' tokens today' + (waiting ? ' · waiting on you' : '')
+    fmtTokens(snap.budget.used) + ' of ' + fmtTokens(snap.budget.limit) + ' tokens used today (' +
+    repliesWords(dailyReplies(snap.budget)) + ')' + (waiting ? ' · waiting on you' : '')
   return jsx(K.Tip, { label, children: jsxs('button', { type: 'button', className: 'hx h-statuschip', 'aria-label': 'Open Ninsei: ' + label, onClick: props.onOpen, children: [
     jsx(Face, { face: a.face, pk: a.pk, state: waiting ? 'system: waiting' : a.state, size: 15, name: a.name }),
     jsx('span', { children: STATE_LABEL[w] }),

@@ -311,6 +311,28 @@ class Store:
                 (day,)).fetchall()
         return {r[0]: int(r[1] or 0) for r in rows}
 
+    def budget_split(self, day: Optional[str] = None) -> tuple[dict[str, int], int]:
+        """(tokens settled today by category, tokens still held for calls in flight). `budget_used` adds the two,
+        which is what the limit is checked against; the display wants them apart, because a held estimate is
+        larger than what the call turns out to cost and shows as a drop in use when it settles."""
+        day = day or today()
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT category, SUM(used) FROM ledger WHERE day=? AND used IS NOT NULL GROUP BY category", (day,)).fetchall()
+            (held,) = self._db.execute(
+                "SELECT COALESCE(SUM(reserved),0) FROM ledger WHERE day=? AND used IS NULL", (day,)).fetchone()
+        return {r[0]: int(r[1] or 0) for r in rows}, int(held or 0)
+
+    def typical_reply_tokens(self, default: int, lo: int = 300, hi: int = 4000) -> int:
+        """What a room reply really costs, from the last 30 settled "chat" calls (prompt and answer together);
+        `default` until there are any. Clamped, so one odd call can't make the estimate silly."""
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT used FROM ledger WHERE category='chat' AND used > 0 ORDER BY settled_at DESC LIMIT 30").fetchall()
+        if not rows:
+            return default
+        return max(lo, min(hi, round(sum(r[0] for r in rows) / len(rows))))
+
     def reserve(self, category: str, tokens: int, limit: int, stranger_limit: Optional[int] = None) -> Optional[str]:
         """Atomically reserve `tokens` against today's limit. Returns a ticket, or None if it won't fit.
         With `stranger_limit` the call was triggered by someone other than the owner: the same transaction
