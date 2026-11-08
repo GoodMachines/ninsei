@@ -15,6 +15,7 @@ import unicodedata
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
+from .names import fold_letters, invisible, sub_folded
 from .persona import fence
 
 AUX_TASK = "ninsei"
@@ -37,8 +38,12 @@ class Line:
 # \x85 among them) and U+2028/U+2029. Each event must render as exactly one transcript line.
 _BREAKS = re.compile(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]")
 # Lookalikes of the label separator (U+00B7), for names and for spotting a faked label.
-_SEPS = "\u00b7\u2022\u2027\u2219\u22c5\u25e6\u2e31\u30fb\u0387|"
-_LABEL_WORDS = re.compile(r"owner|unverified|agent\W*of|[" + _SEPS + "]", re.I)
+_SEPS = "\u00b7\u2022\u2027\u2219\u22c5\u25e6\u2e31\u30fb\u0387\ua78f\u1427\u16eb\u2e33\u2981\u0f0b|"
+# Role words are matched against names.fold_letters (lowercase, look-alikes as Latin), so a Cyrillic "ОWNER"
+# counts; separators are not letters, so the fold leaves them as they are.
+_LABEL_WORDS = re.compile(r"owner|unverified|agent\W*of|[" + _SEPS + "]")
+_OWNER_WORDS = re.compile(r"your\W*owner")
+_NAME_LABEL = re.compile(r"your\W*owner|agent\W+of|[<>()" + _SEPS + "]")
 
 
 def _brackets(ch: str) -> str:
@@ -61,7 +66,8 @@ def _strip_markers(text: str) -> str:
     # the bare word.
     text = re.sub(r"room[\W_]*transcript|game[\W_]*question", "", text, flags=re.I)
     # A bracketed run that carries a label word or a separator lookalike is a faked label: drop it whole.
-    text = re.sub(r"\([^()]{0,80}\)", lambda m: "" if _LABEL_WORDS.search(m.group(0)) else m.group(0), text)
+    text = re.sub(r"\([^()]{0,80}\)", lambda m: "" if _LABEL_WORDS.search(fold_letters(m.group(0))) else m.group(0),
+                  text)
     # Anything that looks like a fence (<<<, >>>, ROOM QUOTES ... END) goes too, so a quote can't close a block.
     return re.sub(r"<{2,}|>{2,}|ROOM\s*QUOTES\w*", "", text, flags=re.I)
 
@@ -74,18 +80,18 @@ def _clean(text: str, limit: int = 600) -> str:
     bracketed run that still looks like a label is dropped. The fence word goes in any spelling."""
     text = text if isinstance(text, str) else ("" if text is None else str(text))
     text = unicodedata.normalize("NFKC", text[:limit * 4])   # fullwidth ［＜ and friends become [ <
-    text = "".join(_brackets(ch) for ch in text if unicodedata.category(ch) != "Cf")  # zero-width, bidi
-    text = _BREAKS.sub(" ", text)
+    text = _BREAKS.sub(" ", text)   # before the invisible characters go, so a break still splits two words
+    text = "".join(_brackets(ch) for ch in text if not invisible(ch))  # zero-width, bidi, Hangul fillers
     text = _until_stable(_strip_markers, text)
-    # The label is written in capitals; the same words typed by someone are lowered so they never match it.
-    text = re.sub(r"YOUR\W*OWNER", lambda m: m.group(0).lower(), text)
+    # The label is written in capitals; the same words typed by someone (in any look-alike letters) are lowered
+    # so they never match it.
+    text = sub_folded(_OWNER_WORDS, str.lower, text)
     return re.sub(r"\s+", " ", text).strip()[:limit]
 
 
 def _name(text: str) -> str:
     """A display name for a label: no brackets, separators or role words, so it can't fake one."""
-    text = _until_stable(lambda t: re.sub(r"your\W*owner|agent\W+of|[<>()" + _SEPS + "]", "", t, flags=re.I),
-                         _clean(text, 80))
+    text = _until_stable(lambda t: sub_folded(_NAME_LABEL, lambda _: "", t), _clean(text, 80))
     return re.sub(r"\s+", " ", text).strip()[:40] or "someone"
 
 
