@@ -215,44 +215,26 @@ def clean_face(v) -> dict:
             "card": pick("card", FACE_CARDS)}
 
 
-# A person's pixel avatar (ui/14_avatar.js draws it): short keys, a version, every value from a fixed list. Each list
-# starts with its default, and ui/14_avatar.js keeps the same lists (a test compares them). Like a face, it is built
-# only from options, so nobody can put an image in your room through it.
-AV_SKIN = 10
-AV_FACES = ["oval", "round", "square", "long"]
-AV_HAIR = ["short", "curly", "long", "buzz", "bun", "locs", "bob", "wavy", "afro", "ponytail", "bald", "swept"]
-AV_HAIR_COLOURS = ["darkbrown", "black", "brown", "auburn", "ginger", "blonde", "platinum", "grey", "ice"]
-AV_EYES = ["open", "smile", "almond", "dot", "sleepy"]
-AV_BROWS = ["soft", "straight", "arched"]
-AV_MOUTHS = ["smile", "grin", "laugh", "flat", "smirk"]
-AV_FACIAL = ["none", "stubble", "moustache", "short", "full"]
-AV_BUILDS = ["narrow", "broad"]
-AV_TOPS = ["coat", "hoodie", "turtleneck", "jacket", "tee", "scarf"]
-AV_TOP_COLOURS = ["navy", "steel", "slate", "charcoal", "glacier", "teal"]
-AV_ACCS = ["round-glasses", "square-glasses", "earrings", "beanie", "headphones", "headscarf"]
-AV_ACC_GROUPS = [["round-glasses", "square-glasses"], ["beanie", "headscarf"]]   # one of each group; the first listed wins
-AV_PICKS = {"fs": AV_FACES, "hs": AV_HAIR, "hc": AV_HAIR_COLOURS, "ey": AV_EYES, "br": AV_BROWS, "mo": AV_MOUTHS,
-            "fh": AV_FACIAL, "bd": AV_BUILDS, "tp": AV_TOPS, "tc": AV_TOP_COLOURS}
-AV_DEFAULT_SKIN = 3
+# A person's avatar: the id of one premade portrait (ui/05_media.js PERSON_PRESETS, from docs/media/src/presets/). The
+# engine can't read ui/ files once installed, so it keeps the ids here, and a test compares them with presets.json.
+# An id it doesn't know is no avatar (the initial shows): nobody gets a face picked for them.
+AV_PRESETS = (
+    "p01", "p02", "p03", "p04", "p05", "p06", "p07", "p08",
+    "p09", "p10", "p11", "p12", "p13", "p14", "p15", "p16",
+    "p17", "p18", "p19", "p20", "p21", "p22", "p23", "p24",
+    "p25", "p26", "p27", "p28", "p29", "p30", "p31", "p32",
+    "p33", "p34",
+)
 _KEEP = object()   # "leave this field as saved"
 
 
 def clean_avatar(v) -> Optional[dict]:
-    """A person's avatar from settings or the wire, or None when it isn't one (not a dict, or not version 1).
-    Unknown keys are dropped and unknown values become the defaults; accessories keep only known ones, once each,
-    one per group, in the fixed order."""
+    """A person's avatar from settings or the wire: {"v": 1, "p": <preset id>}, or None when it isn't exactly that
+    (not a dict, not version 1, or a preset id this version doesn't know). Other keys are dropped."""
     if not isinstance(v, dict) or type(v.get("v")) is not int or v.get("v") != 1:
         return None
-    sk = v.get("sk")
-    out: dict = {"v": 1, "sk": sk if type(sk) is int and 0 <= sk < AV_SKIN else AV_DEFAULT_SKIN}
-    for key, opts in AV_PICKS.items():
-        val = v.get(key)
-        out[key] = val if isinstance(val, str) and val in opts else opts[0]
-    raw = v.get("ac") if isinstance(v.get("ac"), list) else []
-    want = {a for a in raw[:16] if isinstance(a, str)}
-    ac = [a for a in AV_ACCS if a in want]
-    out["ac"] = [a for a in ac if not any(a in grp and next(x for x in grp if x in ac) != a for grp in AV_ACC_GROUPS)]
-    return out
+    p = v.get("p")
+    return {"v": 1, "p": p} if isinstance(p, str) and p in AV_PRESETS else None
 
 
 def _art_want(face: Optional[dict], av: Optional[dict]) -> str:

@@ -146,7 +146,8 @@ def test_the_full_key_can_be_copied_from_the_sheet():
 IMAGE = (ROOT / "ui" / "36_cardimage.js").read_text()
 # the whole image file runs in node: it only declares functions and constants (the page's DOM is touched
 # only when a function is called); nameSize comes from the card file
-IMAGE_JS = _fn(CARD, "nameSize") + IMAGE
+MEDIA = (ROOT / "ui" / "05_media.js").read_text() + (ROOT / "ui" / "14_avatar.js").read_text()   # the portraits and presetById
+IMAGE_JS = _fn(CARD, "nameSize") + MEDIA + IMAGE
 
 HOSTILE = "</text><script>alert(1)</script>&\"'"
 SVG_NS = "{http://www.w3.org/2000/svg}"
@@ -342,8 +343,25 @@ def test_card_image_code_stays_inside_the_lint_and_the_rules():
     for path in ("ui/36_cardimage.js", "ui/35_card.js", "desktop/plugin.js", "dashboard/dist/index.js"):
         assert banned not in (ROOT / path).read_text().lower(), path
     # no network, no foreign objects and no external references anywhere in the picture code
-    for needle in ("fetch(", "XMLHttpRequest", "foreignObject", "innerHTML", "<image", "xlink:href"):
+    for needle in ("fetch(", "XMLHttpRequest", "foreignObject", "innerHTML", "xlink:href"):
         assert needle not in IMAGE, needle
+    # the one <image> is a person's premade portrait, and only ever from our own table by id (never a src the card carries)
+    assert IMAGE.count("<image") == 1 and "<image" in _fn(IMAGE, "heroParts") and "preset.src" in _fn(IMAGE, "heroParts")
+    assert "presetById(f && f.preset)" in _fn(IMAGE, "heroParts") and "f.src" not in IMAGE and "f.img" not in IMAGE
     assert IMAGE.count("http") == 1 and "http://www.w3.org/2000/svg" in IMAGE  # the SVG namespace, nothing else
     # the picture is built from the same model the card renders from
     assert "cardModel(props)" in _fn(CARD, "IdCard") and "cardModel(props)" in _fn(IMAGE, "cardImage")
+
+
+@needs_node
+def test_card_image_embeds_a_portrait_by_id_and_nothing_a_card_carries():
+    webp = _run(IMAGE_JS + "console.log(JSON.stringify([PERSON_PRESETS[11].src, PERSON_PRESETS[0].src]))")
+    svg = _svg("{ hue: 10, name: 'Maya', tag: 'Person', faces: [{ preset: 'p12', left: 5, top: 5, size: 90, front: true }, "
+               "{ preset: 'p99', src: 'https://example.com/x.png', left: 0, top: 0, size: 100 }, { img: 'data:image/webp;base64,EVIL', left: 0, top: 0, size: 100 }] }")
+    root = ET.fromstring(svg)
+    images = list(root.iter(SVG_NS + "image"))
+    assert [im.get("href") for im in images] == [webp[0]]                              # one portrait, from our own table
+    assert "example.com" not in svg and "EVIL" not in svg
+    assert images[0].get("clip-path") == "url(#hpclip)" and root.find(".//" + SVG_NS + "clipPath[@id='hpclip']") is not None
+    # no portrait and no face: the initial is drawn instead
+    assert "<image" not in _svg("{ hue: 10, name: 'Maya', tag: 'Person', initial: 'M', faces: [{ preset: 'p99' }] }")

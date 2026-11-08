@@ -1,71 +1,61 @@
-"""Pixel faces for agents and pixel avatars for people, run under node with the shared hooks harness: the renderer's
-determinism and bounds, the avatar model's cleaning (the same as the engine's), who shows what (picture, avatar,
-older face, initial), the builders' keyboard and Randomize/Reset, and the card export's view box."""
+"""Pixel faces for agents and premade portraits for people, run under node with the shared hooks harness: the pixel
+renderer's determinism and bounds, the portrait list the page ships (the same ids as the engine's), the avatar model's
+cleaning (the same as the engine's), who shows what (picture, portrait, older face, initial), the portrait picker's
+keyboard and labels, Surprise me, the agent builder's keys, and the card export."""
 import json
 import random
+import pathlib
 import re
 
 from ninsei_engine import engine
 from ninsei_engine.engine import clean_avatar
-from test_audit_ui import PARTS, STYLE, fn, needs_node, run, src
+from test_audit_ui import PARTS, STYLE, const, fn, needs_node, run, src
 
-PIXEL, MODEL, PERSON_ART, BUILDER, FACE, CARDIMG, LOOK, SETUP = (
-    src(n) for n in ("12_pixel.js", "14_avatar.js", "15_person_art.js", "33_builder.js", "10_face.js", "36_cardimage.js",
+UI = pathlib.Path(__file__).resolve().parents[1] / "ui"
+PRESETS_JSON = pathlib.Path(__file__).resolve().parents[1] / "docs/media/src/presets/presets.json"
+
+PIXEL, MEDIA, MODEL, BUILDER, FACE, CARDIMG, LOOK, SETUP = (
+    src(n) for n in ("12_pixel.js", "05_media.js", "14_avatar.js", "33_builder.js", "10_face.js", "36_cardimage.js",
                      "32_look.js", "40_setup.js"))
 
-# everything the renderers need, and nothing else: the colour maths from the card export, then the two modules
+# everything the renderers need, and nothing else: the colour maths from the card export, then the modules
 ART = ("const cx = (...a) => a.filter(Boolean).join(' ')\n" + "".join(fn(CARDIMG, n) for n in ("rgbHex", "clamp01", "oklabToRgb", "oklchToHex"))
-       + PIXEL + MODEL + PERSON_ART)
+       + PIXEL + MEDIA + MODEL)
 SHAPES = engine.FACE_SHAPES
-
-
-def js_list(text, name):
-    return json.loads(re.search(r"^const " + name + r" = (\[.*\])$", text, re.M).group(1).replace("'", '"'))
 
 
 # --- the model: the page and the engine agree ---------------------------------------------------------------------------
 
-def test_the_avatar_options_are_the_same_lists_on_the_page_and_in_the_engine():
-    for name in ("AV_FACES", "AV_HAIR", "AV_HAIR_COLOURS", "AV_EYES", "AV_BROWS", "AV_MOUTHS", "AV_FACIAL", "AV_BUILDS", "AV_TOPS",
-                 "AV_TOP_COLOURS", "AV_ACCS"):
-        assert js_list(MODEL, name) == getattr(engine, name), name
-    assert "const AV_SKIN = 10 " in MODEL and engine.AV_SKIN == 10
-    assert "const AV_ACC_GROUPS = [['round-glasses', 'square-glasses'], ['beanie', 'headscarf']]" in MODEL
-    assert engine.AV_ACC_GROUPS == [["round-glasses", "square-glasses"], ["beanie", "headscarf"]]
+@needs_node
+def test_the_page_ships_exactly_the_portraits_the_engine_knows():
+    rows = json.loads(PRESETS_JSON.read_text())
+    got = run(ART + "out(PERSON_PRESETS.map(p => [p.id, p.alt, p.src.slice(0, 23), p.src.length]))")
+    assert [g[0] for g in got] == [r["id"] for r in rows] == list(engine.AV_PRESETS)       # same ids in the same order
+    assert [g[1] for g in got] == [r["alt"] for r in rows] and all(g[1].strip() for g in got)
+    assert all(g[2] == "data:image/webp;base64," and g[3] < 12000 for g in got)            # a small inline WebP each
 
 
 @needs_node
 def test_the_page_cleans_an_avatar_exactly_as_the_engine_does():
     rng = random.Random(7)
-    pool = {"sk": [0, 3, 9, 10, -1, 2.5, True, "3", None], "v": [1, 1, 1, 1, 2, "1", True, None, 0]}
-    for key, opts in engine.AV_PICKS.items():
-        pool[key] = opts + ["", "nope", 5, None, opts[0].upper()]
-    accs = engine.AV_ACCS + ["cape", 3, None]
-    cases = [None, [], "x", 5, {}, {"v": 1}, {"v": 2, "hs": "bun"}]
-    for _ in range(300):
-        c = {k: rng.choice(v) for k, v in pool.items() if rng.random() < 0.8}
-        r = rng.random()
-        c["ac"] = rng.sample(accs, rng.randint(0, 5)) if r < 0.7 else ("beanie" if r < 0.8 else accs * 3)
-        if rng.random() < 0.2:
-            c["extra"] = {"img": "data:"}
-        cases.append(c)
+    ids = list(engine.AV_PRESETS)
+    junk = [None, "x", 5, [], {}, {"v": 1}, {"v": 2, "p": "p01"}, {"v": "1", "p": "p01"}, {"v": True, "p": "p01"}, {"v": 1, "p": "p99"},
+            {"v": 1, "p": None}, {"v": 1, "p": ["p01"]}, {"v": 1, "p": "P01"}, {"v": 1, "p": " p01"}, {"v": 1, "sk": 3, "hs": "bun"}]
+    cases = junk + [{"v": 1, "p": rng.choice(ids), "extra": rng.random()} for _ in range(40)]
     got = run(ART + "out(" + json.dumps(cases) + ".map(cleanAvatar))")
     assert got == [clean_avatar(c) for c in cases]
-    assert run(ART + "out(AV_DEFAULT)") == clean_avatar({"v": 1})
+    assert sum(1 for g in got if g) == 40                                                     # the junk is all refused, nothing stands in
 
 
 @needs_node
-def test_randomize_only_makes_clean_avatars_and_uses_every_option():
+def test_surprise_me_picks_another_known_portrait_and_can_reach_them_all():
     r = run(ART + """
-let seed = 1; const rand = () => { seed = (seed * 16807) % 2147483647; return seed / 2147483647 }
-const all = Array.from({ length: 400 }, () => randomAvatar(rand))
-out({ all, clean: all.every(a => JSON.stringify(cleanAvatar(a)) === JSON.stringify(a)) })
+let seed = 5; const rand = () => { seed = (seed * 16807) % 2147483647; return seed / 2147483647 }
+const ids = PERSON_PRESETS.map(p => p.id)
+const picks = Array.from({ length: 3000 }, () => surprisePreset('p03', rand))
+out({ never: picks.includes('p03'), seen: new Set(picks).size, known: picks.every(x => ids.includes(x)), from_none: ids.includes(surprisePreset('', rand)) })
 """)
-    assert r["clean"]
-    assert all(clean_avatar(a) == a for a in r["all"])
-    seen = {k: {a[k] for a in r["all"]} for k in engine.AV_PICKS}
-    assert all(seen[k] == set(v) for k, v in engine.AV_PICKS.items())
-    assert {a["sk"] for a in r["all"]} == set(range(10))
+    assert r["never"] is False and r["known"] and r["from_none"] and r["seen"] == len(engine.AV_PRESETS) - 1
 
 
 # --- the renderer -------------------------------------------------------------------------------------------------------
@@ -75,15 +65,13 @@ const faces = []
 for (const shape of %s) for (const acc of %s) for (const pattern of %s) faces.push({ shape, acc, pattern, eyes: 'round', mouth: 'smile', hue: 200, hue2: 30 })
 for (const shape of %s) for (const eyes of %s) for (const mouth of %s) faces.push({ shape, eyes, mouth, acc: 'none', pattern: 'none', hue: 120, hue2: 300 })
 const agents = faces.map(f => { const a = pxAgent(f, 'open'); return [a.base, a.eyes, a.blink, a.mouth, a.talk, a.acc, a.under] })
-let seed = 3; const rand = () => { seed = (seed * 16807) %% 2147483647; return seed / 2147483647 }
-const people = Array.from({ length: 60 }, () => avArt(randomAvatar(rand)).paths)
 """ % (json.dumps(SHAPES), json.dumps(engine.FACE_ACCS), json.dumps(engine.FACE_PATTERNS), json.dumps(SHAPES),
        json.dumps(engine.FACE_EYES), json.dumps(engine.FACE_MOUTHS))
 
 
 @needs_node
 def test_the_same_settings_always_draw_the_same_pixels():
-    js = DRAW_ALL + "out({ agents: require('crypto').createHash('sha256').update(JSON.stringify([agents, people])).digest('hex'), n: agents.length })"
+    js = DRAW_ALL + "out({ agents: require('crypto').createHash('sha256').update(JSON.stringify(agents)).digest('hex'), n: agents.length })"
     one, two = run(js), run(js)
     assert one == two and one["n"] == len(SHAPES) * (len(engine.FACE_ACCS) * len(engine.FACE_PATTERNS) + len(engine.FACE_EYES) * len(engine.FACE_MOUTHS))
     # and different settings draw different pixels: every agent option changes the drawing
@@ -119,26 +107,10 @@ def test_stamped_parts_are_clipped_at_the_edge_never_wrapped_onto_the_next_row()
 const g = pxGrid()
 pxMap(g, ['aaaa', 'bbbb'], 62, 0)          // two cells hang off the right edge
 pxMap(g, ['cc'], -1, 5)                    // one off the left
-const rle = pxRle('10:70a/3b')             // a row longer than the grid
 const at = (grid, x, y) => grid[y * 64 + x] ? String.fromCharCode(grid[y * 64 + x]) : ''
-out({ right: [at(g, 62, 0), at(g, 63, 0), at(g, 0, 1), at(g, 1, 1), at(g, 62, 1)], left: [at(g, 0, 5), at(g, 63, 4)],
-      rle: [at(rle, 63, 10), at(rle, 0, 11), at(rle, 2, 11), at(rle, 3, 11)], count: g.filter(Boolean).length })
+out({ right: [at(g, 62, 0), at(g, 63, 0), at(g, 0, 1), at(g, 1, 1), at(g, 62, 1)], left: [at(g, 0, 5), at(g, 63, 4)], count: g.filter(Boolean).length })
 """)
     assert r["right"] == ["a", "a", "", "", "b"] and r["left"] == ["c", ""] and r["count"] == 5
-    assert r["rle"] == ["a", "b", "b", ""]
-
-
-def test_every_stored_hair_drawing_fits_the_grid_without_clipping():
-    art = re.search(r"const AV_HAIR_ART = \{(.*?)\n\}", PERSON_ART, re.S).group(1)
-    rows = dict(re.findall(r"^\s*'?([a-z]+)'?: '([^']*)',?$", art, re.M))
-    assert set(rows) == set(engine.AV_HAIR) - {"buzz", "bald"}                    # buzz is drawn in code; bald has none
-    for name, text in rows.items():
-        top, body = text.split(":", 1)
-        lines = body.split("/")
-        assert int(top) >= 0 and int(top) + len(lines) <= 64, name
-        for line in lines:
-            assert sum(int(n or 1) for n, _ in re.findall(r"(\d*)(\D)", line)) <= 64, name
-        assert re.fullmatch(r"[0-9.A-Za-z/]*", body), name                         # plain text: run lengths and slot letters
 
 
 @needs_node
@@ -160,17 +132,18 @@ const shown = (ctx, props) => { globalThis.CTX = ctx; return kind(PersonMark(pro
 
 
 @needs_node
-def test_a_picture_comes_first_then_the_pixel_avatar_then_an_older_face_then_the_initial():
+def test_a_picture_comes_first_then_the_portrait_then_an_older_face_then_the_initial():
     r = run(PERSON_MARK + """
 globalThis.URIS = { ['p1:v1']: 'data:image/webp;base64,AAAA' }
-const MINE = { v: 1, hs: 'bun' }, FACE = { hue: 10 }
+const MINE = { v: 1, p: 'p05' }, FACE = { hue: 10 }
 const people = { p1: { av: 'v1', avatar: MINE, face: FACE }, p2: { avatar: MINE, face: FACE }, p3: { face: FACE }, p4: {},
-  p5: { avatar: { v: 2, hs: 'bun' }, face: FACE }, p6: { avatar: 'junk' } }
+  p5: { avatar: { v: 2, p: 'p05' }, face: FACE }, p6: { avatar: 'junk' }, p7: { avatar: { v: 1, p: 'p99' } }, p8: { avatar: { v: 1, p: 'p99' }, face: FACE } }
 const on = { show: true, people }, off = { show: false, people }
 out({
   all: shown(on, { pk: 'p1', name: 'A' }), picsOff: shown(off, { pk: 'p1', name: 'A' }), avatar: shown(on, { pk: 'p2', name: 'B' }),
   face: shown(on, { pk: 'p3', name: 'C' }), letter: shown(on, { pk: 'p4', name: 'D' }),
   newerVersion: shown(on, { pk: 'p5', name: 'E' }), junk: shown(on, { pk: 'p6', name: 'F' }),
+  unknownId: shown(on, { pk: 'p7', name: 'G' }), unknownIdThenFace: shown(on, { pk: 'p8', name: 'H' }),
   lookalike: shown(on, { pk: 'p1', name: 'A', flagged: true }), lookalikeAvatar: shown(on, { pk: 'p2', name: 'B', flagged: true }),
   preview: shown(off, { pk: 'me', name: 'Me', art: { avatar: MINE } })
 })
@@ -178,35 +151,45 @@ out({
     assert r["all"] == "photo" and r["picsOff"] == "avatar" and r["avatar"] == "avatar"
     assert r["face"] == "face" and r["letter"] == "letter"
     assert r["newerVersion"] == "face" and r["junk"] == "letter"       # an avatar this page can't read is skipped
-    assert r["lookalike"] == r["lookalikeAvatar"] == "letter"          # a lookalike never wears someone's avatar
+    assert r["unknownId"] == "letter" and r["unknownIdThenFace"] == "face"   # an id this page lacks is never swapped for another portrait
+    assert r["lookalike"] == r["lookalikeAvatar"] == "letter"          # a lookalike never wears someone's portrait
     assert r["preview"] == "avatar"
 
 
 @needs_node
-def test_the_avatar_drawing_is_labelled_only_when_asked_and_comes_closer_when_small():
+def test_the_portrait_is_an_image_that_is_described_only_when_asked():
     r = run(ART + """
-const svg = n => n.props.children
-const small = PersonAvatar({ avatar: { v: 1 }, size: 24 }), big = PersonAvatar({ avatar: { v: 1 }, size: 128, label: 'Maya’s avatar' })
-const crop = PersonAvatar({ avatar: { v: 1 }, size: 64, view: AV_ART.views.face })
-out({ small: [svg(small).props.viewBox, small.props['aria-hidden'], small.props.role], big: [svg(big).props.viewBox, big.props['aria-label'], big.props.role],
-      crop: svg(crop).props.viewBox, none: svg(PersonAvatar({ avatar: null, size: 128 })).props.children.length })
+const img = n => n.props.children
+const plain = PersonAvatar({ avatar: { v: 1, p: 'p03' }, size: 24 }), told = PersonAvatar({ avatar: { v: 1, p: 'p03' }, size: 128, describe: true })
+out({ plain: [plain.props.className, plain.props.style, img(plain).type, img(plain).props.alt, img(plain).props.src === PERSON_PRESETS[2].src],
+      told: [img(told).props.alt, told.props['aria-hidden'], told.props.role], none: PersonAvatar({ avatar: { v: 1, p: 'p99' } }), none2: PersonAvatar({ avatar: null }) })
 """)
-    assert r["small"] == ["7 4 50 50", True, None] and r["big"] == ["0 0 64 64", "Maya’s avatar", "img"]
-    assert r["crop"] == "14 16 36 36" and r["none"] == 4
+    assert r["plain"] == ["h-pav", {"width": 24, "height": 24}, "img", "", True]       # beside a name: decoration, empty alt
+    assert r["told"][0].startswith("Smiling woman with long black hair") and r["told"][1:] == [None, None]
+    assert r["none"] is None and r["none2"] is None
 
 
-def test_the_person_renderer_is_one_module_behind_a_small_interface():
-    # the editor reaches the drawing only through PersonAvatar, AV_ART and avSwatch, so the art can be replaced
-    for name in ("AV_SKIN_TONES", "AV_HAIR_TONES", "AV_TOP_TONES", "avGrid", "avArt", "AV_HAIR_ART", "AV_INK"):
-        assert name not in BUILDER and name not in PARTS and name not in LOOK and name not in SETUP, name
-        assert name not in MODEL, name
-    assert "AV_ART.views.face" in BUILDER and "avSwatch('sk', k)" in BUILDER
-    assert "function PersonAvatar(" in PERSON_ART and "function cleanAvatar(" in MODEL and "function cleanAvatar(" not in PERSON_ART
+def test_portraits_are_clipped_to_the_same_circle_as_other_avatars():
+    assert ".h-pav{display:inline-grid;flex:none;border-radius:50%;overflow:hidden}" in STYLE
+    assert ".h-pav img{display:block;width:100%;height:100%;object-fit:cover" in STYLE
+    assert "jsx(PersonAvatar, { avatar: art.avatar, size, className: props.className })" in PARTS
+    assert "jsx(PersonAvatar, { avatar: props.art.avatar, size: 120 })" in src("35_card.js")
+
+
+def test_the_layered_person_builder_is_gone():
+
+
+    assert not (UI / "15_person_art.js").exists()
+    text = "".join(f.read_text() for f in UI.glob("*.js") if f.name != "05_media.js")
+    for gone in ("AvatarEditor", "randomAvatar", "avSwatch", "AV_SKIN", "AV_HAIR", "AV_ART", "ToggleGrid", "avArt("):
+        assert gone not in text, gone
+    for gone in ("AV_SKIN", "AV_HAIR", "AV_ACCS", "AV_PICKS", "AV_DEFAULT"):
+        assert not hasattr(engine, gone), gone
 
 
 # --- the builders ------------------------------------------------------------------------------------------------------
 
-BUILDER_JS = ART + fn(BUILDER, "OptionGrid") + fn(BUILDER, "ToggleGrid") + fn(BUILDER, "LayerTabs") + """
+BUILDER_JS = ART + fn(BUILDER, "OptionGrid") + fn(BUILDER, "LayerTabs") + """
 // call a component once, outside a mounted tree (its hooks get a fresh slot each time)
 const call = (C, p) => { cur = { hooks: [], i: 0, effects: [], schedule() {} }; return C(p) }
 const keyDown = (node, key) => { let stopped = false; node.props.onKeyDown({ key, preventDefault() { stopped = true } }); return stopped }
@@ -248,44 +231,78 @@ out({ got, role: t.props.role, tabs: t.props.children.map(b => [b.props.role, b.
     assert r["tabs"][1] == ["tab", "x-tab-hs", "x-panel", True, 0] and r["tabs"][0][3:] == [False, -1]
 
 
+PICKER_JS = BUILDER_JS + fn(BUILDER, "PresetPicker") + fn(BUILDER, "usePreviewPop") + """
+function Initial() {}
+"""
+
+
 @needs_node
-def test_extras_are_toggles_and_one_of_a_kind_replaces_the_other():
-    r = run(BUILDER_JS + fn(BUILDER, "AvatarEditor") + fn(BUILDER, "avOptLabel") + fn(BUILDER, "BuilderShell") + fn(BUILDER, "usePreviewPop") + """
-const AV_FACE_VIEW = AV_ART.views.face
-""" + re.search(r"^const AV_LABEL = \{.*?^\}\n", BUILDER, re.S | re.M).group(0) + re.search(r"^const AV_LAYERS = \[.*?^\]\n", BUILDER, re.S | re.M).group(0) + """
-let tabSet = null
-function useState(v) { return ['ac', x => { tabSet = x }] }
+def test_the_picker_is_one_radio_group_of_every_portrait_labelled_from_its_alt_text():
+    r = run(PICKER_JS + """
 const changes = []
-const ed = AvatarEditor({ value: { v: 1, ac: ['headscarf', 'earrings'] }, onChange: a => changes.push(a), name: 'Maya' })
-const shell = ed.props
-const toggles = shell.panel
-toggles.props.onToggle('beanie'); toggles.props.onToggle('earrings'); toggles.props.onToggle('round-glasses')
-const pressed = toggles.props.value
-shell.actions[1].props.onClick()
-out({ changes, pressed, kinds: [toggles.type === ToggleGrid, shell.layers.map(l => l.label)], labels: toggles.props.options.map(o => o.label) })
+const pick = (value, extra) => call(PresetPicker, Object.assign({ value, name: 'Maya', onChange: a => changes.push(a) }, extra || {}))
+const walk = (n, test, acc = []) => { if (n && typeof n === "object") { if (test(n)) acc.push(n); [].concat(n.props ? n.props.children : []).forEach(c => walk(c, test, acc)) } return acc }
+const picker = pick({ v: 1, p: 'p09' })
+const grid = walk(picker, n => n.type === OptionGrid)[0]
+const radios = call(OptionGrid, grid.props)
+const opts = radios.props.children
+keyDown(radios, 'ArrowRight'); keyDown(radios, 'ArrowLeft'); keyDown(radios, 'Home'); keyDown(radios, 'End')
+const unset = call(OptionGrid, walk(pick(null), n => n.type === OptionGrid)[0].props)
+keyDown(unset, 'ArrowRight')
+out({ n: opts.length, role: radios.props.role, label: radios.props['aria-label'], labels: opts.map(b => b.props['aria-label']), checked: opts.map(b => b.props['aria-checked']).indexOf(true),
+      tab: opts.map(b => b.props.tabIndex).indexOf(0), changes,
+      unsetChecked: unset.props.children.some(b => b.props['aria-checked']), unsetFocus: unset.props.children.map(b => b.props.tabIndex).indexOf(0) })
 """)
-    beanie, earrings_off, glasses, reset = r["changes"]
-    assert beanie["ac"] == ["earrings", "beanie"]            # the headscarf comes off when the beanie goes on
-    assert earrings_off["ac"] == ["headscarf"] and glasses["ac"] == ["round-glasses", "earrings", "headscarf"]
-    assert reset == clean_avatar({"v": 1}) and r["pressed"] == ["earrings", "headscarf"]
-    assert r["kinds"][0] and "Facial hair" in r["kinds"][1] and "Round glasses" in r["labels"]
+    assert r["n"] == len(engine.AV_PRESETS) and r["role"] == "radiogroup" and r["label"] == "Portraits"
+    alts = [x["alt"] for x in json.loads(PRESETS_JSON.read_text())]
+    assert r["labels"] == alts                                                         # every option named by its alt text
+    assert r["checked"] == 8 and r["tab"] == 8                                          # p09 is chosen and holds the tab stop
+    assert r["changes"] == [{"v": 1, "p": "p10"}, {"v": 1, "p": "p08"}, {"v": 1, "p": "p01"}, {"v": 1, "p": engine.AV_PRESETS[-1]}, {"v": 1, "p": "p01"}]
+    assert r["unsetChecked"] is False and r["unsetFocus"] == 0                          # with none chosen nothing is checked; the first is reachable
 
 
-def test_onboarding_starts_from_a_random_avatar_that_is_saved_and_settings_never_makes_one_up():
+@needs_node
+def test_the_picker_shows_the_initial_until_someone_picks_and_surprise_me_is_a_button_press():
+    r = run(PICKER_JS + """
+const walk = (n, test, acc = []) => { if (n && typeof n === "object") { if (test(n)) acc.push(n); [].concat(n.props ? n.props.children : []).forEach(c => walk(c, test, acc)) } return acc }
+const changes = []
+const none = call(PresetPicker, { value: null, name: 'Maya', onChange: a => changes.push(a) })
+const set = call(PresetPicker, { value: { v: 1, p: 'p20' }, name: 'Maya', onChange: a => changes.push(a) })
+const preview = t => walk(t, n => n.props && n.props.className === 'h-pp-preview')[0].props.children
+const caption = t => walk(t, n => n.props && n.props.className && String(n.props.className).includes('h-pp-cap'))[0].props
+const surprise = walk(set, n => n.props && n.props.children === 'Surprise me')[0]
+const before = changes.length
+surprise.props.onClick()
+out({ noneChild: preview(none).props.children.type === Initial, noneCaption: caption(none).children, setPreview: preview(set).props.describe,
+      setCaption: caption(set).children, silent: before === 0, changed: changes, live: caption(set)['aria-live'] })
+""")
+    assert r["noneChild"] and r["noneCaption"] == "No portrait chosen" and r["silent"]            # nothing is assigned by rendering
+    assert r["setPreview"] is True and r["setCaption"].startswith("Smiling man with locs") and r["live"] == "polite"
+    assert len(r["changed"]) == 1 and r["changed"][0]["v"] == 1 and r["changed"][0]["p"] in engine.AV_PRESETS and r["changed"][0]["p"] != "p20"
+
+
+def test_onboarding_assigns_no_portrait_and_both_forms_use_the_picker():
     ob, st = fn(SETUP, "Onboarding"), fn(SETUP, "SettingsForm")
-    assert "person_avatar: cleanAvatar(s.person_avatar) || (s.person_face ? null : randomAvatar())" in ob
-    assert "person_avatar: person_avatar || {}" in ob                      # what the preview showed is what goes out
-    assert "randomAvatar" not in st and "person_avatar: cleanAvatar(s.person_avatar)," in st
-    assert "onAvatar(null)" in fn(LOOK, "PersonLook") and "Use my initial instead" in fn(LOOK, "PersonLook")
-    assert "Use a photo instead" in fn(LOOK, "PersonLook")
+    assert "person_avatar: cleanAvatar(s.person_avatar)," in ob and "randomPreset" not in ob and "surprisePreset" not in ob
+    assert "person_avatar: person_avatar || {}" in ob                      # what the preview showed is what goes out; none clears it
+    assert "person_avatar: cleanAvatar(s.person_avatar)," in st
+    look = fn(LOOK, "PersonLook")
+    assert "jsx(PresetPicker," in look and "onAvatar(null)" in look and "Use my initial instead" in look and "Use a photo instead" in look
+    assert "Surprise me" in fn(BUILDER, "PresetPicker")
 
 
-def test_the_builders_wrap_their_tabs_and_respect_reduced_motion():
+def test_the_picker_wraps_on_narrow_pages_and_respects_reduced_motion():
+    assert ".h-pp{display:flex;flex-wrap:wrap;" in STYLE and ".h-pp-grid{flex:1 1 260px;min-width:0;grid-template-columns:repeat(auto-fill,minmax(60px,1fr))" in STYLE
+    assert ".h-pp-grid .h-bld-opt[data-on=true]{box-shadow:0 0 0 2px var(--h-accent)}" in STYLE
+    assert "@container (max-width: 440px){.h-pp-side{flex-direction:row;" in STYLE
+    assert ".h-bld-tabs button:focus-visible,.h-bld-opt:focus-visible{outline:2px solid var(--h-accent)" in STYLE      # focus is visible on every option
+    assert "@media (prefers-reduced-motion: reduce){.h-bld-opt{transition:none}" in STYLE
+    assert "if (!el || motion.reduced()) return" in fn(BUILDER, "usePreviewPop") and "usePreviewPop(" in fn(BUILDER, "PresetPicker")
+
+
+def test_the_agent_builder_still_wraps_its_tabs():
     assert ".h-bld-tabs{display:flex;flex-wrap:wrap;" in STYLE
     assert ".h-bld-wrap{container-type:inline-size}" in STYLE and "@container (max-width: 440px)" in STYLE
-    assert "@media (prefers-reduced-motion: reduce){.h-bld-opt{transition:none}" in STYLE
-    assert "if (!el || motion.reduced()) return" in fn(BUILDER, "usePreviewPop")
-    assert ".h-bld-tabs button:focus-visible,.h-bld-opt:focus-visible{outline:2px solid var(--h-accent)" in STYLE
 
 
 # --- agent faces: still the same component ---------------------------------------------------------------------------------
@@ -313,4 +330,27 @@ def test_a_states_frames_pick_the_eyes_and_mouth_it_shows():
 def test_the_card_export_uses_the_faces_own_view_box_and_refuses_anything_else():
     r = run(fn(CARDIMG, "faceBox") + "out(['0 0 64 64', '7 4 50 50', ' 14  16 36 36 ', '0 0 0 64', '0 0 64', 'a b c d', null, '0 0 64 64\"/><script>', '1e3 0 -5 5'].map(faceBox))")
     assert r == ["0 0 64 64", "7 4 50 50", "14 16 36 36", "0 0 64 64", "0 0 64 64", "0 0 64 64", "0 0 64 64", "0 0 64 64", "0 0 64 64"]
-    assert "faceBox(f.vb)" in CARDIMG and "faceBox(f.vb)" in src("34_scanner.js") and 'viewBox="0 0 40 40"' not in CARDIMG
+    assert "faceBox(f.vb)" in CARDIMG and "heroParts(o.faces" in CARDIMG and "heroParts(o.faces" in src("34_scanner.js") and 'viewBox="0 0 40 40"' not in CARDIMG
+
+
+@needs_node
+def test_the_card_export_embeds_a_portrait_by_id_only_and_keeps_photos_and_foreign_images_out():
+    r = run(ART + const(CARDIMG, "FACE_SHAPES") + "".join(fn(CARDIMG, n) for n in ("faceMarkup", "faceBox", "heroParts")) + """
+const HERO_CLIP = ''
+const evil = 'data:image/webp;base64,EVIL'
+const parts = heroParts([
+  { preset: 'p05', left: 5, top: 5, size: 90, front: true },
+  { preset: 'p99', left: 0, top: 0, size: 100, front: true },                        // an id the page doesn't ship
+  { preset: 'p01', src: evil, inner: '<image href="' + evil + '"/>', left: 0, top: 0, size: 100 },   // a src or markup the card carries is never read
+  { img: evil, left: 0, top: 0, size: 100 },
+  { inner: '<path d="M0 0"/>', vb: '0 0 64 64', left: 0, top: 0, size: 100, front: true }
+], 100, 200, 300, 'dim')
+out({ n: parts.length, parts: parts.map(p => p.replace(/href="[^"]*"/, 'href=…')), href: parts.map(p => (p.match(/href="([^"]*)"/) || [])[1]),
+      src: [PERSON_PRESETS[4].src, PERSON_PRESETS[0].src], none: heroParts([{ img: evil }], 0, 0, 100, 'd').length })
+""")
+    assert r["n"] == 3 and r["none"] == 0                                              # unknown id and a bare image drop out
+    assert r["href"][2] == r["src"][0] and r["href"][1] == r["src"][1]                  # p05 (drawn last: first in the list is on top), p01 from the table
+    assert not any("EVIL" in (h or "") for h in r["href"])                             # the card never gets a src it carried itself
+    assert r["parts"][2].startswith('<image x="115" y="215" width="270" height="270"') and 'clip-path="url(#hpclip)"' in r["parts"][2]
+    assert 'filter="url(#dim)"' in r["parts"][1] and 'filter="url(#dim)"' not in r["parts"][2]    # only the ones behind the front are dimmed
+    assert "img[data-preset]" in CARDIMG and "HERO_CLIP" in src("34_scanner.js")

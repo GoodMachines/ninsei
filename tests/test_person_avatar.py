@@ -1,50 +1,49 @@
-"""A person's pixel avatar on the engine side: clean_avatar's strict cleaning, settings, the avatar riding in the face
+"""A person's avatar (the id of a premade portrait) on the engine side: clean_avatar's strict cleaning, settings, the avatar riding in the face
 event (size, round trip, what an older client sees, taking it away), what the UI is told (never for a lookalike),
 pacing, and the stored form surviving a restart."""
 import json
 import time
+from pathlib import Path
 
 import pytest
 
 from ninsei_engine import nostr
-from ninsei_engine.engine import (ART_FACE_BYTES, ART_FACE_D, AV_ACCS, AV_PICKS, KIND_META, _art_want, clean_avatar,
-                                  clean_face)
+from ninsei_engine.engine import ART_FACE_BYTES, ART_FACE_D, AV_PRESETS, KIND_META, _art_want, clean_avatar, clean_face
 from test_hostile import Key, ROOM, bare, settle  # noqa: F401  (fixture re-export)
 from test_pictures import art, meet, out
 
-FULL = {"v": 1, "sk": 9, "fs": "square", "hs": "ponytail", "hc": "platinum", "ey": "almond", "br": "arched", "mo": "smirk",
-        "fh": "moustache", "bd": "broad", "tp": "turtleneck", "tc": "charcoal",
-        "ac": ["square-glasses", "earrings", "headscarf", "headphones"]}
+ROOT = Path(__file__).resolve().parents[1]
+FULL = {"v": 1, "p": "p12"}
 
 
 # --- clean_avatar -------------------------------------------------------------------------------------------------------
 
-def test_only_a_version_one_object_is_an_avatar():
-    for junk in (None, "x", 5, [], [{"v": 1}], {}, {"hs": "bun"}, {"v": 2}, {"v": "1"}, {"v": True}, {"v": 1.0}, {"v": 0}):
+def test_only_a_version_one_object_naming_a_known_preset_is_an_avatar():
+    for junk in (None, "x", 5, [], [{"v": 1}], {}, {"p": "p01"}, {"v": 2, "p": "p01"}, {"v": "1", "p": "p01"}, {"v": True, "p": "p01"},
+                 {"v": 1.0, "p": "p01"}, {"v": 0, "p": "p01"}):
         assert clean_avatar(junk) is None, junk
 
 
-def test_unknown_keys_are_dropped_and_unknown_values_become_the_defaults():
-    got = clean_avatar({"v": 1, "sk": 42, "fs": "<b>", "hs": "mohawk", "hc": 3, "ey": None, "br": ["soft"], "mo": "SMILE",
-                        "fh": "", "bd": {"x": 1}, "tp": "cape", "tc": "red", "img": "data:image/png;base64,AAAA", "name": "x"})
-    assert got == {"v": 1, "sk": 3, "fs": "oval", "hs": "short", "hc": "darkbrown", "ey": "open", "br": "soft", "mo": "smile",
-                   "fh": "none", "bd": "narrow", "tp": "coat", "tc": "navy", "ac": []}
-    assert list(got) == ["v", "sk"] + list(AV_PICKS) + ["ac"]                          # short keys only, in one order
-    for sk in (-1, 10, True, 2.0, "4"):
-        assert clean_avatar({"v": 1, "sk": sk})["sk"] == 3, sk
-    assert clean_avatar({"v": 1, "sk": 0})["sk"] == 0 and clean_avatar({"v": 1, "sk": 9})["sk"] == 9
-    assert clean_avatar(FULL) == FULL | {"ac": ["square-glasses", "earrings", "headphones", "headscarf"]}
-    assert clean_avatar(clean_avatar(FULL)) == clean_avatar(FULL)                      # cleaning is idempotent
+def test_an_unknown_preset_is_no_avatar_never_a_default_portrait():
+    for p in (None, 1, True, ["p01"], {"p": "p01"}, "", "P01", " p01", "p01 ", "p1", "p00", "p35", "p999", "../p01", "<b>", "p01\u200b", "sk"):
+        assert clean_avatar({"v": 1, "p": p}) is None, p
+    assert clean_avatar({"v": 1}) is None and clean_avatar({"v": 1, "sk": 3, "hs": "bun"}) is None   # phase 1's layers are gone
+    assert clean_avatar({"v": 1, "p": "p01"}) == {"v": 1, "p": "p01"} and clean_avatar(FULL) == FULL
 
 
-def test_accessories_are_known_once_each_one_per_group_in_a_fixed_order():
-    ac = lambda v: clean_avatar({"v": 1, "ac": v})["ac"]   # noqa: E731
-    assert ac(["headphones", "earrings", "earrings", "cape", 7, None]) == ["earrings", "headphones"]
-    assert ac(["square-glasses", "round-glasses"]) == ["round-glasses"]                # one pair of glasses: the first listed
-    assert ac(["headscarf", "beanie"]) == ["beanie"]                                   # one thing on the head
-    assert ac("beanie") == [] and ac({"beanie": 1}) == [] and ac(None) == []
-    assert ac(["cape"] * 16 + ["beanie"]) == []                                        # only the first 16 entries are read
-    assert ac(AV_ACCS * 40) == ["round-glasses", "earrings", "beanie", "headphones"]
+def test_other_keys_are_dropped_and_cleaning_is_idempotent():
+    got = clean_avatar({"v": 1, "p": "p07", "img": "data:image/png;base64,AAAA", "name": "x", "sk": 3})
+    assert got == {"v": 1, "p": "p07"} and list(got) == ["v", "p"]
+    assert clean_avatar(got) == got
+    assert all(clean_avatar({"v": 1, "p": p}) == {"v": 1, "p": p} for p in AV_PRESETS)
+
+
+def test_the_engines_preset_ids_are_exactly_the_portraits_the_page_ships():
+    rows = json.loads((ROOT / "docs/media/src/presets/presets.json").read_text())
+    assert list(AV_PRESETS) == [r["id"] for r in rows]                                  # same ids, same order
+    assert len(set(AV_PRESETS)) == len(AV_PRESETS) >= 32
+    for r in rows:
+        assert (ROOT / "docs/media/src/presets" / (r["id"] + ".png")).is_file() and r["alt"].strip()
 
 
 # --- settings ------------------------------------------------------------------------------------------------------------
@@ -52,9 +51,9 @@ def test_accessories_are_known_once_each_one_per_group_in_a_fixed_order():
 async def test_settings_keep_a_clean_avatar_and_anything_else_clears_it(bare):
     e, _ = bare()
     assert e.settings()["person_avatar"] is None                                       # never made up: nothing until built
-    e.save_settings({"person_avatar": dict(FULL, junk=1, hs="nope")})
-    assert e.settings()["person_avatar"] == clean_avatar(dict(FULL, hs="nope")) and "junk" not in e.settings()["person_avatar"]
-    for clear in ({}, None, "x", {"v": 2}):
+    e.save_settings({"person_avatar": dict(FULL, junk=1)})
+    assert e.settings()["person_avatar"] == FULL and "junk" not in e.settings()["person_avatar"]
+    for clear in ({}, None, "x", {"v": 2}, {"v": 1, "p": "nope"}):
         e.save_settings({"person_avatar": FULL})
         e.save_settings({"person_avatar": clear})
         assert e.settings()["person_avatar"] is None, clear
@@ -73,7 +72,7 @@ async def test_the_avatar_rides_in_the_face_event_and_reads_back_the_same_on_ano
     assert res["sent"] and ev["kind"] == KIND_META and nostr.tag_values(ev, "d") == [ART_FACE_D]
     body = json.loads(ev["content"])
     assert body == {"face": face, "avatar": clean_avatar(FULL)}
-    assert len(ev["content"]) < ART_FACE_BYTES / 2                                      # the largest avatar plus a face: well under
+    assert len(ev["content"]) < ART_FACE_BYTES / 2                                      # a preset id plus a face: well under
     assert " " not in ev["content"]                                                      # compact
     # another install, meeting me in a room, takes the same event content and shows the same avatar
     other, _ = bare("Sam", "Bo")
@@ -125,6 +124,10 @@ async def test_junk_avatars_never_show_and_a_later_version_reads_as_none(bare):
     face = {"hue": 40}
     assert e._take_art(art(mal, "face", {"face": face, "avatar": "x"}, created_at=t))   # a good face with a junk avatar
     assert e._art_view(mal.ppk) == {"face": clean_face(face)}
+    odd = Key("odd")
+    await meet(e, odd, "Odd")
+    assert e._take_art(art(odd, "face", {"face": face, "avatar": {"v": 1, "p": "p99"}}, created_at=t))     # unknown preset: no avatar, no stand-in
+    assert e._art_view(odd.ppk) == {"face": clean_face(face)}
     assert e._take_art(art(mal, "face", {"face": face, "avatar": FULL}, created_at=t + 1))
     assert e._art_view(mal.ppk)["avatar"] == clean_avatar(FULL)
     # a newer client's avatar this version can't read: their newest word still replaces what was shown
@@ -169,12 +172,12 @@ async def test_the_stored_avatar_survives_a_restart_and_old_rows_still_load(bare
 async def test_changing_only_the_avatar_is_paced_like_a_face(bare):
     e, _ = bare()
     for i in range(5):
-        e.save_settings({"person_avatar": dict(FULL, sk=i)})
+        e.save_settings({"person_avatar": dict(FULL, p=AV_PRESETS[i])})
         await e.publish_face()
-    e.save_settings({"person_avatar": dict(FULL, sk=0)})
-    await e.check_looks_pace({"person_avatar": dict(FULL, sk=4)})                         # what was last sent: no change, no refusal
+    e.save_settings({"person_avatar": dict(FULL, p=AV_PRESETS[0])})
+    await e.check_looks_pace({"person_avatar": dict(FULL, p=AV_PRESETS[4])})                         # what was last sent: no change, no refusal
     with pytest.raises(ValueError, match="Slow down"):
-        await e.check_looks_pace({"person_avatar": dict(FULL, sk=8)})
+        await e.check_looks_pace({"person_avatar": dict(FULL, p=AV_PRESETS[8])})
     with pytest.raises(ValueError, match="Slow down"):
         await e.check_looks_pace({"person_face": {"hue": 9}})                             # the face rides in the same event
-    assert e.settings()["person_avatar"]["sk"] == 0                                      # a refused check changes nothing saved
+    assert e.settings()["person_avatar"]["p"] == AV_PRESETS[0]                                      # a refused check changes nothing saved

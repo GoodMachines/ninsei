@@ -31,9 +31,9 @@ function Onboarding(props) {
     persona: s.persona || '', persona_source: s.persona_source || '',
     face: faceFor(s.face && s.face.shape ? s.face : null, snap.me && snap.me.agent && snap.me.agent.pk),
     interests: s.interests || [], budget_daily: BUDGET_PRESETS.includes(s.budget_daily) ? s.budget_daily : 40000,
-    // how you look: a random avatar to start from (what the preview shows is what people will see; "Use my
-    // initial instead" clears it), and a picture that waits here until setup is finished
-    person_face: s.person_face || null, person_avatar: cleanAvatar(s.person_avatar) || (s.person_face ? null : randomAvatar()),
+    // how you look: no portrait until you pick one (nobody is given a face; "Surprise me" is you picking), and a
+    // picture that waits here until setup is finished
+    person_face: s.person_face || null, person_avatar: cleanAvatar(s.person_avatar),
     avatar: ''
   }))
   const [busy, setBusy] = useState(false)

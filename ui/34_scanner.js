@@ -472,6 +472,7 @@ function scannerSvg(o) {
 
   const defs = []
   const out = []
+  defs.push(HERO_CLIP)
   defs.push('<clipPath id="nscard"><rect width="' + W + '" height="' + H + '" rx="' + R + '"/></clipPath>')
   defs.push('<pattern id="nsscan" width="8" height="5" patternUnits="userSpaceOnUse"><rect y="3" width="8" height="2" fill="#000" fill-opacity="0.26"/></pattern>')
   const cell = 1.55 * U
@@ -526,17 +527,10 @@ function scannerSvg(o) {
     '" stroke="' + ui + '" stroke-width="' + (warn ? 6 : 4.5) + '" fill="none" filter="url(#nsglow)"/>')
   const hpad = bs * 0.12
   const hs = bs - 2 * hpad
-  const faces = (Array.isArray(o.faces) ? o.faces : []).map(f => ({ f, inner: faceMarkup(f && f.inner) })).filter(x => x.inner).slice(0, 3)
+  const faces = heroParts(o.faces, bx + hpad, by + hpad, hs, 'nsdim')
   out.push('<g filter="url(#nsface)">')
   if (faces.length) {
-    for (let i = faces.length - 1; i >= 0; i--) {
-      const { f, inner } = faces[i]
-      const left = Number(f.left) || 0
-      const top = Number(f.top) || 0
-      const size = Number(f.size) || 100
-      out.push('<svg x="' + num(bx + hpad + left / 100 * hs) + '" y="' + num(by + hpad + top / 100 * hs) + '" width="' + num(size / 100 * hs) + '" height="' + num(size / 100 * hs) +
-        '" viewBox="' + faceBox(f.vb) + '" overflow="visible"' + (f.front ? '' : ' filter="url(#nsdim)"') + '>' + inner + '</svg>')
-    }
+    faces.forEach(s => out.push(s))
   } else if (o.initial) {
     out.push(text(bx + bs / 2, by + bs / 2 + 26 * U * 0.36, Array.from(xmlClean(o.initial))[0] || '?', { size: 26 * U, weight: 300, anchor: 'middle', glow: false }))
   }

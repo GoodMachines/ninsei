@@ -83,8 +83,8 @@ function AvatarCropper(props) {
   ] })
 }
 
-// How you look. The pixel avatar builder comes first; a photo is the opt-in alternative (it shows first where
-// pictures are on, and the avatar stands in where they're off). Props: pk, name; avatar (a clean avatar or null) and
+// How you look. The portrait picker comes first; a photo is the opt-in alternative (it shows first where
+// pictures are on, and the portrait stands in where they're off). Props: pk, name; avatar (a clean avatar or null) and
 // onAvatar(avatar|null); face (an older built face, or null) and onFace(null) to drop it; art ({av?, avatar?, face?}:
 // what shows now); staged (a picture waiting for Save, onboarding) or null; onPicture(uri) with a data URI, or '' to
 // take it away; hasPicture; busy; stage (true in onboarding: a picture is held until setup finishes).
@@ -105,10 +105,10 @@ function PersonLook(props) {
   const has = !!(props.staged || props.hasPicture)
   const shown = props.staged ? Object.assign({}, props.art || {}, { uri: props.staged }) : props.art
   return jsxs('div', { className: 'h-col h-look', style: { gap: 12 }, children: [
-    jsx(AvatarEditor, { id: props.id, value: props.avatar, name: props.name, onChange: props.onAvatar }),
+    jsx(PresetPicker, { id: props.id, value: props.avatar, name: props.name, onChange: props.onAvatar }),
     jsx('div', { className: 'h-hint', children: props.avatar
-      ? 'Public like your name: your avatar goes out with your face settings to public Nostr relays, and anyone in your rooms sees it.'
-      : 'Not set yet: until you change something here, people see your initial. Once set it is public like your name.' }),
+      ? 'Public like your name: which portrait you picked goes out with your face settings to public Nostr relays, and anyone in your rooms sees it.'
+      : 'Not set yet: until you pick one, people see your initial. Once picked it is public like your name.' }),
     jsxs('div', { className: 'h-actions', children: [
       props.avatar && jsx(K.Button, { variant: 'ghost', size: 'sm', onClick: () => props.onAvatar(null), children: 'Use my initial instead' }),
       props.face && jsx(K.Button, { variant: 'ghost', size: 'sm', onClick: () => props.onFace(null), children: 'Remove my older face' })

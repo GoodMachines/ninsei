@@ -25,6 +25,7 @@ CORE = (ROOT / "ui" / "00_core.js").read_text()
 SCANNER = (ROOT / "ui" / "34_scanner.js").read_text()
 CARD = (ROOT / "ui" / "35_card.js").read_text()
 IMAGE = (ROOT / "ui" / "36_cardimage.js").read_text()
+MEDIA = (ROOT / "ui" / "05_media.js").read_text() + (ROOT / "ui" / "14_avatar.js").read_text()   # the portraits and presetById
 SVG_NS = "{http://www.w3.org/2000/svg}"
 HOSTILE = "</text><script>alert(1)</script>&\"'"
 
@@ -42,7 +43,7 @@ def _js_list(src: str, name: str) -> list:
 # the core's option lists and faceFor, the card's nameSize, then the whole scanner and image files: they only
 # declare functions and constants, so they run in node (the DOM is touched only when a function is called)
 JS = (CORE[CORE.index("const SHAPES"):CORE.index("const BUDGET_PRESETS")] + _fn(CORE, "clamp") + _fn(CORE, "stateWord") + _fn(CORE, "faceFor")
-      + _fn(CARD, "nameSize") + SCANNER + IMAGE)
+      + _fn(CARD, "nameSize") + MEDIA + SCANNER + IMAGE)
 
 
 def _run(js: str):
@@ -363,8 +364,10 @@ def test_the_scanner_code_stays_inside_the_lint_and_the_rules():
     assert SCANNER.count("http") == 1 and "http://www.w3.org/2000/svg" in SCANNER
     # the one <image is the nebula, behind the data-URL check
     assert SCANNER.count("<image") == 1 and "if (scanPngOk(o.nebula))" in _fn(SCANNER, "scannerSvg")
-    # the image file itself still never draws an <image>; it hands Scanner cards to scannerSvg
-    assert "<image" not in IMAGE and "scannerSvg(" in _fn(IMAGE, "cardImage")
+    # the image file draws an <image> only in heroParts, for a portrait looked up by id in our own table; it hands Scanner cards to scannerSvg
+    assert IMAGE.count("<image") == 1 and "<image" in _fn(IMAGE, "heroParts") and "preset.src" in _fn(IMAGE, "heroParts")
+    assert "presetById(f && f.preset)" in _fn(IMAGE, "heroParts") and "scannerSvg(" in _fn(IMAGE, "cardImage")
+    assert "heroParts(o.faces" in _fn(SCANNER, "scannerSvg")
 
 
 # ---- legibility ------------------------------------------------------------------------------------
@@ -533,3 +536,17 @@ def test_labels_and_the_card_number_have_backing_on_the_screen():
     assert svg.index("nsscrim)") < svg.index("const bs =")  # the scrims go down before the box and the text
     assert "opacity: 0.85" not in svg  # field labels are full strength
     assert svg.index("fill-opacity=\"0.72\"") < svg.index("idText, {")  # the pill goes down before the number
+
+
+@needs_node
+def test_scanner_image_embeds_a_portrait_by_id_and_nothing_a_card_carries():
+    webp = _run("console.log(JSON.stringify([PERSON_PRESETS[11].src, PERSON_PRESETS[0].src]))")
+    svg = _scanner_svg("{ hue: 255, hue2: 40, pk: %s, led: 'green', nebula: %s, name: 'Maya', tag: 'Person', serial: '3F2A', fields: [['Agents', 'None']], "
+                       "faces: [{ preset: 'p12', left: 5, top: 5, size: 90, front: true }, { preset: 'p99', src: 'https://example.com/x.png', left: 0, top: 0, size: 100 }, "
+                       "{ img: 'data:image/png;base64,AAAA', left: 0, top: 0, size: 100 }] }" % (json.dumps("ab" * 32), json.dumps(_png())))
+    root = ET.fromstring(svg)
+    images = [im for im in root.iter(SVG_NS + "image")]
+    hrefs = [im.get("href") for im in images]
+    assert len(images) == 2 and hrefs[0] == _png() and hrefs[1] == webp[0]               # the nebula, then the portrait from our own table
+    assert "example.com" not in svg and "data:image/png;base64,AAAA" not in svg
+    assert images[1].get("clip-path") == "url(#hpclip)" and root.find(".//" + SVG_NS + "clipPath[@id='hpclip']") is not None

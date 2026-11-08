@@ -187,6 +187,27 @@ function faceBox(vb) {
   return n.length === 4 && n.every(Number.isFinite) && n[2] > 0 && n[3] > 0 ? n.join(' ') : '0 0 64 64'
 }
 
+// The card's picture as SVG elements: up to three faces drawn as shapes, or a person's premade portrait as an
+// image element. A portrait is only ever looked up by id in PERSON_PRESETS (the data URI is ours, never one read back from
+// the page), so nothing a stranger sent can get embedded; a photo still never is. (x0, y0, side) is the box the
+// faces' percentages refer to; dimId names the filter that dims the faces behind the front one.
+const HERO_CLIP = '<clipPath id="hpclip" clipPathUnits="objectBoundingBox"><rect width="1" height="1" rx="0.16"/></clipPath>'
+function heroParts(faces, x0, y0, side, dimId) {
+  const num = n => String(Math.round(n * 100) / 100)
+  const items = (Array.isArray(faces) ? faces : []).map(f => ({ f, inner: faceMarkup(f && f.inner), preset: presetById(f && f.preset) }))
+    .filter(x => x.inner || x.preset).slice(0, 3)
+  const out = []
+  for (let i = items.length - 1; i >= 0; i--) {
+    const { f, inner, preset } = items[i]
+    const x = num(x0 + (Number(f.left) || 0) / 100 * side), y = num(y0 + (Number(f.top) || 0) / 100 * side), s = num((Number(f.size) || 100) / 100 * side)
+    const dim = f.front ? '' : ' filter="url(#' + dimId + ')"'
+    if (preset) out.push('<image x="' + x + '" y="' + y + '" width="' + s + '" height="' + s + '" preserveAspectRatio="xMidYMid slice" clip-path="url(#hpclip)"' + dim +
+      ' href="' + preset.src + '"/>')
+    else out.push('<svg x="' + x + '" y="' + y + '" width="' + s + '" height="' + s + '" viewBox="' + faceBox(f.vb) + '" overflow="visible"' + dim + '>' + inner + '</svg>')
+  }
+  return out
+}
+
 function cardHue(h) {
   const n = Number(h)
   return Number.isFinite(n) ? ((n % 360) + 360) % 360 : 0
@@ -196,7 +217,7 @@ function cardHue(h) {
 // (cqw) scaled to this width, so it looks like the card on screen.
 //   hue, hue2     the face's colours
 //   name, tag, serial, fields [[label, value, warn?]], warn, initial   the words on the front
-//   faces         [{ inner, left, top, size, front }]: face drawings from heroFaces(), placed in % of the
+//   faces         [{ inner, left, top, size, front }] (or { preset } for a portrait): from heroFaces(), placed in % of the
 //                 picture's box; with none, `initial` is drawn big instead
 //   measure       (text, fontPx, letterSpacingPx) -> width, from a canvas; a rough guess without it
 function cardSvg(o) {
@@ -239,6 +260,7 @@ function cardSvg(o) {
     defs.push('<radialGradient id="ncwarn" gradientUnits="userSpaceOnUse" gradientTransform="translate(' + W / 2 + ' ' + H / 2 + ') scale(' + num(W * 1.2) + ' ' + num(H * 1.3) + ')" cx="0" cy="0" r="1">' +
       '<stop offset="0.46" stop-color="' + hx(0.55, 0.21, 32) + '" stop-opacity="0"/><stop offset="1" stop-color="' + hx(0.55, 0.21, 32) + '" stop-opacity="0.62"/></radialGradient>')
   }
+  defs.push(HERO_CLIP)
   defs.push('<clipPath id="ncclip"><rect width="' + W + '" height="' + H + '" rx="70"/></clipPath>')
 
   out.push('<g clip-path="url(#ncclip)">')
@@ -250,17 +272,10 @@ function cardSvg(o) {
   const bx = W * 0.58
   const by = H * 0.46 - W * 0.175
   const bs = W * 0.35
-  const faces = (Array.isArray(o.faces) ? o.faces : []).map(f => ({ f, inner: faceMarkup(f && f.inner) })).filter(x => x.inner).slice(0, 3)
+  const faces = heroParts(o.faces, bx, by, bs, 'ncdim')
   out.push('<g filter="url(#ncglow)">')
   if (faces.length) {
-    for (let i = faces.length - 1; i >= 0; i--) {
-      const { f, inner } = faces[i]
-      const left = Number(f.left) || 0
-      const top = Number(f.top) || 0
-      const size = Number(f.size) || 100
-      out.push('<svg x="' + num(bx + left / 100 * bs) + '" y="' + num(by + top / 100 * bs) + '" width="' + num(size / 100 * bs) + '" height="' + num(size / 100 * bs) +
-        '" viewBox="' + faceBox(f.vb) + '" overflow="visible"' + (f.front ? '' : ' filter="url(#ncdim)"') + '>' + inner + '</svg>')
-    }
+    faces.forEach(s => out.push(s))
   } else if (o.initial) {
     out.push(text(bx + bs / 2, by + bs / 2 + W * 0.3 * 0.36, Array.from(xmlClean(o.initial))[0] || '?', { size: W * 0.3, weight: 200, fill: hx(0.95, 0.04, hue), anchor: 'middle' }))
   }
@@ -381,7 +396,8 @@ function inlineFace(svgEl) {
   }
 }
 
-// The picture on a rendered card front: [{ inner, left, top, size, front }] in % of its box.
+// The picture on a rendered card front: [{ inner, left, top, size, front }] in % of its box, or a person's
+// portrait as { preset: id, ... } (the id only: the portrait itself comes from PERSON_PRESETS).
 function heroFaces(front) {
   const out = []
   const mates = Array.from(front.querySelectorAll('.h-idcard-mate'))
@@ -392,7 +408,9 @@ function heroFaces(front) {
   if (mates.length) {
     mates.forEach(el => place(el.querySelector('svg'), parseFloat(el.style.left) || 0, parseFloat(el.style.top) || 0, parseFloat(el.style.width) || 100, el.getAttribute('data-front') === 'true'))
   } else {
-    place(front.querySelector('.h-idcard-hero svg'), 0, 0, 100, true)
+    const portrait = front.querySelector('.h-idcard-hero img[data-preset]')
+    if (portrait) out.push({ preset: portrait.getAttribute('data-preset'), left: 5, top: 5, size: 90, front: true })   // the card draws it at 90%, like the page
+    else place(front.querySelector('.h-idcard-hero svg'), 0, 0, 100, true)
   }
   return out
 }

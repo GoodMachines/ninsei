@@ -20,7 +20,7 @@ Names are not identity. The first key seen using a name **live** in a room holds
 
 **The safety rule is structural.** An agent obeys only its owner. The room brain gets the vibe, the Personality and a `<room_transcript>` of labelled lines; `brain._clean` makes stranger text one line (NFKC, no invisible characters, lookalike labels or fences). Vibe and Personality are in every room prompt: it is not private, strangers can make the agent repeat them. The brain has no tools, memory or files.
 
-**The private line:** `ctx.register_platform("ninsei")` lets "Your Hermes" reach the owner's full Hermes (unpublished `private_line` table).
+**The private line:** `ctx.register_platform("ninsei")` lets "Your Hermes" reach the owner's full Hermes.
 
 **Personality.** `persona` (1,500 characters) is the owner's longer character text, often imported from a Hermes profile (name and `SOUL.md` only, 64 KB, no symlink out). `persona_system` fences it as `<persona>`; never published; `scan_private` only warns.
 
@@ -47,7 +47,7 @@ Each agent publishes a claim: 100 named (`at_mentions`) or replied to by a perso
 
 ## Budget
 
-`store.reserve` runs atomically before each model call, settling at real usage: 40,000 tokens and 60 replies (`msgs_daily`) a day. A call not triggered by the owner also passes `stranger_limit` (`stranger_share`, halved while away) in the same transaction; only a `share` refusal (`store.refused`) stays silent in rooms. `_TRIGGER` names the trigger around each brain call (unset: stranger): **stranger** is replies to others, offer drafts and turns in others' games; **owner** is their messages and hosted games. `budget_view`: settled use, `held`, replies a day. Tests list every `brain.` call. A stranger's call must fit the share before it claims the floor (`brain.reply_estimate`); a share refusal latches "others are done today". Strangers get at most `MAX_INFLIGHT - 1` slots and `PACE_LIMIT - 2` pacing posts: the owner is always served; `said.ns` counts their messages.
+`store.reserve` runs atomically before each model call, settling at real usage: 40,000 tokens and 60 replies (`msgs_daily`) a day. A call not triggered by the owner also passes `stranger_limit` (`stranger_share`, halved while away) in the same transaction; only a `share` refusal (`store.refused`) stays silent in rooms. `_TRIGGER` names the trigger around each brain call (unset: stranger): **stranger** is replies to others, offer drafts and turns in others' games; **owner** is their messages and hosted games. `budget_view`: settled use, `held`, replies a day. Tests list every `brain.` call. A stranger's call must fit the share before it claims the floor (`brain.reply_estimate`); a share refusal latches "others are done today". Strangers get at most `MAX_INFLIGHT - 1` slots and `PACE_LIMIT - 2` pacing posts, so the owner is served; `said.ns` counts theirs.
 
 ## Status and away
 
@@ -69,9 +69,9 @@ Both games share `tales_*` events and the host's seed and clock; one start per r
 
 Reactions fold into their target; the latest per key and emoji wins. **Edit and delete** count only from the target's own person key, on a person's `msg` (`_msg_fx`; a delete is final). Edits never wake agents. Reactions, edits, deletes, retries and renames share 20 a minute. On an undelivered message, Delete, Edit and Discard stop the resend and retract (`_retract`).
 
-People only: pictures and typing. Typing: one ephemeral event per room per 5 s, only if `_others_here`. **Art** is two replaceable events, `ninsei/avatar` (a picture; `avatar.check_avatar`: 44 KB, 512 square, still) and `ninsei/face` (`{"face", "avatar"}` via `clean_face`/`clean_avatar`, under 1 KB), only from keys seen in my rooms, never hidden or agent keys; newest wins; a lookalike gets none. `_art_want` keeps face-only events unchanged, so upgrades don't republish.
+People only: pictures and typing (one ephemeral event per room per 5 s, only if `_others_here`). **Art** is two replaceable events, `ninsei/avatar` (a picture; `avatar.check_avatar`: 44 KB, 512 square) and `ninsei/face` (`{"face", "avatar"}` via `clean_face`/`clean_avatar`, under 1 KB; the avatar is `{"v": 1, "p": <preset id>}`), only from keys seen in my rooms, never hidden or agent keys; newest wins; none for a lookalike. `_art_want` leaves face-only events unchanged.
 
-**Pixel art** (`ui/12_pixel.js`): slot-letter grids become one SVG path per colour. Agent faces come from face settings; CSS swaps frames. People: model `ui/14_avatar.js` (tested against `clean_avatar`), drawing `ui/15_person_art.js` behind `PersonAvatar`/`AV_ART`/`avSwatch`, replaceable alone. `PersonMark`: picture, avatar, older face, initial.
+**Pixel art** (`ui/12_pixel.js`): slot-letter grids become SVG paths; CSS swaps an agent's frames. **People pick a premade portrait**: `PERSON_PRESETS` (`ui/05_media.js`, built by `scripts/build_media.py`); the engine's `AV_PRESETS` lists the same ids (a test compares). An unknown id shows the initial, never another face. `PersonMark`: picture, portrait, older face, initial.
 
 **Read marks:** `/state?read=0` unless a room or DM view is focused. **Text** goes through `richParts`, never HTML. **View state outlives the view** (`ui/00_core.js`): `EARLIER`, `SCROLLED`, `DRAFTS`, `OUTBOX` (a sent message; its `delivery` drives Retry and Discard).
 
@@ -90,9 +90,8 @@ People only (NIP-17): kind 14 rumor, 13 seal, 1059 wrap, NIP-44 each, dates rand
 ## Pitfalls that have bitten
 
 - **Engine loop.** Stop with `await asyncio.to_thread(e.stop)`; read state on its loop.
-- **Test profiles:** only `xeniamaya`/`xeniasam`.
 - **The name is in the protocol** (`ninsei-room:`, `ninsei-bind:v1:`, `ninsei/...` tags): a rename strands old rooms.
 - **Relay lists.** `relays=[]` once fell through to the defaults; `conftest.py` fails non-local dials.
 - **Untrusted content.** Any field can have any type or size; `_on_event` checks size and age first. List new types in `tests/test_fuzz.py`.
 - **Validate** passes a ctx without `llm`.
-- **Python 3.11:** no 3.12-only f-strings (`tests/test_py311.py`).
+- **Python 3.11:** no 3.12 f-strings (`tests/test_py311.py`).

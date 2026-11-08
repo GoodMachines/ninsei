@@ -1,8 +1,7 @@
 // ---------------------------------------------------------------------------------------------
-// the builders: one editor shape for an agent's face and a person's avatar. A big live preview,
-// layer tabs, and each option as a small live render of the whole thing with that option applied
-// (colours as named swatches). Arrow keys move between tabs and within a layer; every option has a
-// label; Randomize (and, for a person, Reset).
+// the builders: the agent's face editor (a big live preview, layer tabs, each option a small live render, colours as
+// named swatches; arrow keys move between tabs and within a layer; every option has a label; Randomize) and the
+// person's PresetPicker (a preview and a grid of premade portraits).
 // ---------------------------------------------------------------------------------------------
 
 // Layer tabs (the ARIA tabs pattern: arrows move and select, Home/End jump).
@@ -58,29 +57,10 @@ function OptionGrid(props) {
     else return
     e.preventDefault()
   }
-  return jsx('div', { className: cx('h-bld-grid', props.swatch && 'h-bld-swatches'), role: 'radiogroup', 'aria-label': props.label, onKeyDown: onKey,
+  return jsx('div', { className: cx('h-bld-grid', props.swatch && 'h-bld-swatches', props.className), role: 'radiogroup', 'aria-label': props.label, onKeyDown: onKey,
     children: opts.map((o, k) => jsxs('button', { type: 'button', role: 'radio', className: 'h-bld-opt', 'aria-checked': k === sel, 'data-on': k === sel,
       tabIndex: k === i ? 0 : -1, 'aria-label': o.label, title: o.label, ref: el => { refs.current[k] = el }, onClick: () => props.onChange(o.id),
       children: [o.render(), props.swatch && jsx('span', { className: 'h-bld-name', 'aria-hidden': true, children: o.label })] }, o.id)) })
-}
-
-// Things worn: any number, each a toggle button. Arrow keys move the focus; Space or Enter puts it on or off.
-function ToggleGrid(props) {
-  const refs = useRef([])
-  const [at, setAt] = useState(0)
-  const move = j => { const k = (j + props.options.length) % props.options.length; setAt(k); const el = refs.current[k]; if (el) el.focus() }
-  const onKey = e => {
-    if (e.key === 'ArrowRight' || e.key === 'ArrowDown') move(at + 1)
-    else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') move(at - 1)
-    else if (e.key === 'Home') move(0)
-    else if (e.key === 'End') move(props.options.length - 1)
-    else return
-    e.preventDefault()
-  }
-  return jsx('div', { className: 'h-bld-grid', role: 'group', 'aria-label': props.label, onKeyDown: onKey, children: props.options.map((o, k) =>
-    jsx('button', { type: 'button', className: 'h-bld-opt', 'aria-pressed': props.value.includes(o.id), 'data-on': props.value.includes(o.id),
-      tabIndex: k === at ? 0 : -1, 'aria-label': o.label, title: o.label, ref: el => { refs.current[k] = el }, onFocus: () => setAt(k),
-      onClick: () => props.onToggle(o.id), children: o.render() }, o.id)) })
 }
 
 // The preview pops on a spring when anything changes (nothing with reduced motion).
@@ -114,70 +94,27 @@ function BuilderShell(props) {
   ] }) })
 }
 
-// ---- a person's avatar ------------------------------------------------------------------------------
-const AV_LABEL = {
-  oval: 'Oval', round: 'Round', square: 'Square', long: 'Long',
-  short: 'Short', curly: 'Curly', long_hair: 'Long', buzz: 'Buzz cut', bun: 'Bun', locs: 'Locs', bob: 'Bob', wavy: 'Wavy',
-  afro: 'Afro', ponytail: 'Ponytail', bald: 'Bald', swept: 'Swept',
-  darkbrown: 'Dark brown', black: 'Black', brown: 'Brown', auburn: 'Auburn', ginger: 'Ginger', blonde: 'Blonde',
-  platinum: 'Platinum', grey: 'Grey', ice: 'Ice blue',
-  open: 'Open', smile: 'Smiling', almond: 'Almond', dot: 'Dots', sleepy: 'Sleepy',
-  soft: 'Soft', straight: 'Straight', arched: 'Arched',
-  grin: 'Grin', laugh: 'Laugh', flat: 'Straight', smirk: 'Smirk',
-  none: 'None', stubble: 'Stubble', moustache: 'Moustache', short_beard: 'Short beard', full: 'Full beard',
-  narrow: 'Narrow', broad: 'Broad',
-  coat: 'Coat', hoodie: 'Hoodie', turtleneck: 'Turtleneck', jacket: 'Jacket', tee: 'T-shirt', scarf: 'Coat and scarf',
-  navy: 'Navy', steel: 'Steel', slate: 'Slate', charcoal: 'Charcoal', glacier: 'Glacier', teal: 'Teal',
-  'round-glasses': 'Round glasses', 'square-glasses': 'Square glasses', earrings: 'Earrings', beanie: 'Beanie',
-  headphones: 'Headphones', headscarf: 'Headscarf'
-}
-function avOptLabel(key, id) {
-  if (key === 'sk') return 'Skin ' + (id + 1) + (id === 0 ? ', lightest' : id === AV_SKIN - 1 ? ', darkest' : '')
-  if (key === 'hs' && id === 'long') return 'Long'
-  if (key === 'fh' && id === 'short') return 'Short beard'
-  if (key === 'mo' && id === 'smile') return 'Smile'
-  return AV_LABEL[id] || id
-}
-// the layers that are about the face show close-ups (the renderer says where the face is)
-const AV_FACE_VIEW = AV_ART.views.face
-const AV_LAYERS = [
-  { key: 'sk', label: 'Skin', opts: Array.from({ length: AV_SKIN }, (_, i) => i), swatch: k => avSwatch('sk', k) },
-  { key: 'fs', label: 'Face', opts: AV_FACES, view: AV_FACE_VIEW },
-  { key: 'hs', label: 'Hair', opts: AV_HAIR },
-  { key: 'hc', label: 'Hair colour', opts: AV_HAIR_COLOURS, swatch: k => avSwatch('hc', k) },
-  { key: 'ey', label: 'Eyes', opts: AV_EYES, view: AV_FACE_VIEW },
-  { key: 'br', label: 'Brows', opts: AV_BROWS, view: AV_FACE_VIEW },
-  { key: 'mo', label: 'Mouth', opts: AV_MOUTHS, view: AV_FACE_VIEW },
-  { key: 'fh', label: 'Facial hair', opts: AV_FACIAL, view: AV_FACE_VIEW },
-  { key: 'bd', label: 'Build', opts: AV_BUILDS },
-  { key: 'tp', label: 'Top', opts: AV_TOPS },
-  { key: 'tc', label: 'Top colour', opts: AV_TOP_COLOURS, swatch: k => avSwatch('tc', k) },
-  { key: 'ac', label: 'Extras', opts: AV_ACCS }
-]
-
-// props: value (a clean avatar), onChange(avatar), id, name
-function AvatarEditor(props) {
-  const a = cleanAvatar(props.value) || AV_DEFAULT
-  const [tab, setTab] = useState('hs')
-  const uid = (props.id || 'h-av') + '-b'
-  const set = patch => props.onChange(cleanAvatar(Object.assign({}, a, patch)))
-  const layer = AV_LAYERS.find(l => l.key === tab) || AV_LAYERS[0]
-  const thumb = patch => jsx(PersonAvatar, { avatar: Object.assign({}, a, patch), size: 64, view: layer.view, className: 'h-bld-thumb' })
-  const panel = layer.key === 'ac'
-    ? jsx(ToggleGrid, { label: 'Extras', value: a.ac, options: layer.opts.map(o => ({ id: o, label: avOptLabel('ac', o),
-        render: () => thumb({ ac: a.ac.includes(o) ? a.ac : a.ac.concat([o]) }) })),
-      onToggle: o => set({ ac: a.ac.includes(o) ? a.ac.filter(x => x !== o)
-        : a.ac.filter(x => !AV_ACC_GROUPS.some(g => g.includes(o) && g.includes(x))).concat([o]) }) })
-    : jsx(OptionGrid, { label: layer.label, value: a[layer.key], swatch: !!layer.swatch, onChange: v => set({ [layer.key]: v }),
-        options: layer.opts.map(o => ({ id: o, label: avOptLabel(layer.key, o),
-          render: () => layer.swatch ? jsx('span', { className: 'h-bld-swatch', style: { background: layer.swatch(o) } }) : thumb({ [layer.key]: o }) })) })
-  return jsx(BuilderShell, { id: props.id, uid, label: 'Avatar builder', version: JSON.stringify(a), tab, setTab,
-    layers: AV_LAYERS, panel,
-    preview: jsx(PersonAvatar, { avatar: a, size: 128, label: (props.name ? props.name + '’s' : 'Your') + ' avatar' }),
-    actions: [
-      jsx(K.Button, { variant: 'secondary', size: 'sm', onClick: () => props.onChange(randomAvatar()), children: 'Randomize' }, 'r'),
-      jsx(K.Button, { variant: 'ghost', size: 'sm', onClick: () => props.onChange(cleanAvatar(AV_DEFAULT)), children: 'Reset' }, 's')
-    ] })
+// ---- a person's portrait ----------------------------------------------------------------------------
+// props: value (a clean avatar or null), onChange(avatar), id, name. Nothing is chosen for anyone: until they pick
+// (or press Surprise me, which is them picking) the preview shows their initial and no portrait is set. The grid is
+// one radio group over PERSON_PRESETS; each option is labelled from its portrait's alt text.
+function PresetPicker(props) {
+  const a = cleanAvatar(props.value)
+  const preset = a && presetById(a.p)
+  const pop = usePreviewPop(a ? a.p : '')
+  const choose = id => props.onChange({ v: 1, p: id })
+  const options = PERSON_PRESETS.map(p => ({ id: p.id, label: p.alt,
+    render: () => jsx(PersonAvatar, { avatar: { v: 1, p: p.id }, size: 56, className: 'h-pp-thumb' }) }))
+  return jsx('div', { className: 'h-bld-wrap', children: jsxs('div', { className: 'h-pp', id: props.id, tabIndex: props.id ? -1 : undefined, role: 'group', 'aria-label': 'Choose your portrait', children: [
+    jsxs('div', { className: 'h-pp-side', children: [
+      jsx('div', { className: 'h-pp-preview', ref: pop, children: preset
+        ? jsx(PersonAvatar, { avatar: a, size: 128, describe: true })
+        : jsx('span', { className: 'h-pp-none', children: jsx(Initial, { name: props.name, size: 128 }) }) }),
+      jsx('div', { className: 'h-faint h-tiny h-pp-cap', 'aria-live': 'polite', children: preset ? preset.alt : 'No portrait chosen' }),
+      jsx(K.Button, { variant: 'secondary', size: 'sm', onClick: () => choose(surprisePreset(a ? a.p : '')), children: 'Surprise me' })
+    ] }),
+    jsx(OptionGrid, { label: 'Portraits', className: 'h-pp-grid', value: a ? a.p : null, options, onChange: choose })
+  ] }) })
 }
 
 // ---- an agent's face --------------------------------------------------------------------------------
