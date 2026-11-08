@@ -5692,6 +5692,16 @@ function useScrollKeeper(key, ready, msgs, more, loadEarlier) {
     if (a && !loading.current) anchor.current = null
     if (stick.current) el.scrollTop = el.scrollHeight
   }, [msgs.length, lastId, firstId])
+  // The list also grows without a new message: an agent's "is thinking" row at its foot, a toy card opening.
+  // While you are at the bottom, stay there, so the newest thing is never just under the fold.
+  useEffect(() => {
+    const el = scroller.current
+    const inner = el && el.firstElementChild
+    if (!inner || typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(() => { if (stick.current && placed.current && !anchor.current) el.scrollTop = el.scrollHeight })
+    ro.observe(inner)
+    return () => ro.disconnect()
+  }, [key, ready])
   // once, when the list first has something to show: where you were, else the New messages line, else the end
   useLayoutEffect(() => {
     const el = scroller.current

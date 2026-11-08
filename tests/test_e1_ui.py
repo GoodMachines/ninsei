@@ -508,3 +508,28 @@ def test_the_private_view_shares_the_scroll_and_day_line_pieces_with_rooms():
     for piece in ("useEarlier(", "useScrollKeeper(", "outboxSend(", "EarlierButton", "'/dm/retry'", "'/dm/discard'"):
         assert piece in dmv, piece
     assert "DayLine" in fn(DM, "DmItem") and "groupItems(msgs, 0)" in dmv
+
+
+@needs_node
+def test_at_the_bottom_the_list_stays_at_the_bottom_when_its_foot_grows_without_a_new_message():
+    # Found filming the demo (2026-11-08): "Ada is thinking" rendered at the foot of the list, just under the
+    # fold, because the list only re-pinned to the bottom when a message arrived.
+    r = run(fn(ROOM, "useScrollKeeper") + """
+const useLayoutEffect = useEffect
+const SCROLLED = new Map()
+const watchers = []
+globalThis.ResizeObserver = class { constructor(cb) { this.cb = cb; watchers.push(this) } observe(n) { this.n = n } disconnect() { this.off = true } }
+function Probe(props) { return { k: useScrollKeeper(props.k, true, props.msgs, false, null) } }
+const inner = {}
+const el = { scrollHeight: 2000, scrollTop: 0, clientHeight: 500, firstElementChild: inner, querySelector: () => null, getBoundingClientRect: () => ({ top: 0 }) }
+const root = mount(Probe, { k: 'start', msgs: [{ id: 'a' }] })
+root.tree.k.scroller.current = el
+root.update({ k: 'room', msgs: [{ id: 'a' }] }); await settle()
+const live = watchers.filter(w => !w.off)
+el.scrollHeight = 2040; live.forEach(w => w.cb())                      // the thinking row appears
+const pinned = el.scrollTop
+el.scrollTop = 900; root.tree.k.onScroll()                              // you scroll up to read
+el.scrollHeight = 2080; live.forEach(w => w.cb())
+out({ observes: live.length === 1 && live[0].n === inner, pinned, readingLeftAlone: el.scrollTop })
+""")
+    assert r == {"observes": True, "pinned": 2040, "readingLeftAlone": 900}
