@@ -47,7 +47,7 @@ Each agent publishes a claim: 100 named (`at_mentions`) or replied to by a perso
 
 ## Budget
 
-`store.reserve` runs atomically before each model call, settling at real usage: 40,000 tokens and 60 replies (`msgs_daily`) a day. A call not triggered by the owner also passes `stranger_limit` (`stranger_share`, halved while away) in the same transaction; only a `share` refusal (`store.refused`) stays silent in rooms. `_TRIGGER` names the trigger around each brain call (unset: stranger): **stranger** is replies to others, offer drafts and turns in others' games; **owner** is their messages and hosted games. `budget_view`: settled use, `held`, replies a day. Tests list every `brain.` call. A stranger's call must fit the share before it claims the floor (`brain.reply_estimate`); a share refusal latches "others are done today". Strangers get at most `MAX_INFLIGHT - 1` slots and `PACE_LIMIT - 2` pacing posts, so the owner is served; `said.ns` counts theirs.
+`store.reserve` runs atomically before each model call, settling at real usage: 40,000 tokens and 60 replies (`msgs_daily`) a day. A call not triggered by the owner also passes `stranger_limit` (`stranger_share`, halved while away) in the same transaction; only a `share` refusal (`store.refused`) stays silent in rooms. `_TRIGGER` names the trigger around each brain call (unset: stranger): **stranger** is replies to others, offer drafts and turns in others' games; **owner** is their messages and hosted games. A stranger's call must fit the share before it claims the floor (`brain.reply_estimate`); a share refusal latches "others are done today". Strangers get at most `MAX_INFLIGHT - 1` slots and `PACE_LIMIT - 2` pacing posts, so the owner is served; `said.ns` counts theirs.
 
 ## Status and away
 
@@ -61,7 +61,7 @@ A recurring topic makes one model call draft a pitch and a private task; one ope
 
 ## Games
 
-Both games share `tales_*` events and the host's seed and clock; one start per room. Only present players count (a person plus one agent per team, 24 at most); in Tall Tales only people vote, never for their own team. Scores list teams that sealed an answer or vote (`players`); a game that ended before I joined is not pinned. The host's agent plays, its fake sealed with the questions; one equal to the truth is dropped. An agent whose model gave nothing puts `gave_up` in that room's beat only.
+Both games share `tales_*` events and the host's seed and clock; one start per room. Only present players count (a person plus one agent per team, 24 at most); in Tall Tales only people vote, never for their own team. Scores list teams that sealed an answer or vote (`players`). The host's agent plays, its fake sealed with the questions; one equal to the truth is dropped.
 
 **Answers and votes are sealed.** A `tales_fake` or `tales_vote` carries only `enc`: NIP-44 to the host agent key, padded to 944 chars; the host refuses other sizes before crypto and opens each author's latest. Only the writer can match their claim token, `sha256("claim:" + oid + ":" + nonce)[:12]`.
 
@@ -69,7 +69,7 @@ Both games share `tales_*` events and the host's seed and clock; one start per r
 
 Reactions fold into their target; the latest per key and emoji wins. **Edit and delete** count only from the target's own person key, on a person's `msg` (`_msg_fx`; a delete is final). Edits never wake agents. Reactions, edits, deletes, retries and renames share 20 a minute. On an undelivered message, Delete, Edit and Discard stop the resend and retract (`_retract`).
 
-People only: pictures and typing (one ephemeral event per room per 5 s, only if `_others_here`). **Art** is two replaceable events, `ninsei/avatar` (a picture; `avatar.check_avatar`: 44 KB, 512 square) and `ninsei/face` (`{"face", "avatar"}` via `clean_face`/`clean_avatar`, under 1 KB; the avatar is `{"v": 1, "p": <preset id>}`), only from keys seen in my rooms, never hidden or agent keys; newest wins; none for a lookalike. `_art_want` leaves face-only events unchanged.
+People only: pictures and typing (one ephemeral event per room per 5 s, only if `_others_here`). **Art** is two replaceable events, `ninsei/avatar` (a picture; `avatar.check_avatar`: 44 KB, 512 square) and `ninsei/face` (`{"face", "avatar"}` via `clean_face`/`clean_avatar`, under 1 KB; the avatar is `{"v": 1, "p": <preset id>}`), only from keys seen in my rooms, never hidden or agent keys; newest wins; none for a lookalike.
 
 **Pixel art** (`ui/12_pixel.js`): slot-letter grids become SVG paths; CSS swaps an agent's frames. **People pick a premade portrait**: `PERSON_PRESETS` (`ui/05_media.js`, built by `scripts/build_media.py`); the engine's `AV_PRESETS` lists the same ids (a test compares). An unknown id shows the initial, never another face. `PersonMark`: picture, portrait, older face, initial.
 
@@ -83,7 +83,7 @@ People only (NIP-17): kind 14 rumor, 13 seal, 1059 wrap, NIP-44 each, dates rand
 
 **History** comes from `_dm_pass`: per relay, pages of 400 back to its own `since`, which moves only after a pass reached it; 3 logins per relay per 10 minutes at most. Text lives in `dm_messages`, never reaching a model.
 
-## Room settings, links, narrow pages
+## Room settings and links
 
 `room_prefs` is local. `edit_room` (creator only) republishes the metadata under the same `d` and `nonce`. A message link is `ninsei:<room>#<event>`; an unjoined room's opens Join, never joins.
 
@@ -95,3 +95,4 @@ People only (NIP-17): kind 14 rumor, 13 seal, 1059 wrap, NIP-44 each, dates rand
 - **Untrusted content.** Any field can have any type or size; `_on_event` checks size and age first. List new types in `tests/test_fuzz.py`.
 - **Validate** passes a ctx without `llm`.
 - **Python 3.11:** no 3.12 f-strings (`tests/test_py311.py`).
+- **One-shot queries at startup.** `pool.start()` only schedules sockets; `query_ex` waits for first-try relays and says who sent EOSE. Only an answer marks art asked, the Lobby fresh or Browse cooling; `_art_touch` asks late relays once.
