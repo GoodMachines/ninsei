@@ -7484,7 +7484,12 @@ function picksFor(snap) {
 // The Lobby's rooms with "joined" taken from the rooms you're in now, not from when the Lobby was last fetched.
 function lobbyRooms(snap) {
   const mine = new Set((snap.rooms || []).map(r => r.id))
-  return ((snap.lobby || {}).rooms || []).map(r => Object.assign({}, r, { joined: mine.has(r.id) })).sort(byActivity)
+  return ((snap.lobby || {}).rooms || []).map(r => Object.assign({}, r, { joined: mine.has(r.id) })).sort(byJoined)
+}
+
+// Rooms you haven't joined come first (they are what the Lobby is for), then the usual order.
+function byJoined(a, b) {
+  return (a.joined ? 1 : 0) - (b.joined ? 1 : 0) || byActivity(a, b)
 }
 
 function Lobby(props) {
@@ -7493,6 +7498,17 @@ function Lobby(props) {
   const [busy, setBusy] = useState(false)
   const [joining, setJoining] = useState('')
   const asked = useRef(false)
+  // "Browse all public rooms": one wider relay query, only when you open it, and again only on Refresh there.
+  // The engine holds the cooldown; `browse` is its last answer.
+  const [browse, setBrowse] = useState(null)
+  const [browsing, setBrowsing] = useState(false)
+  const [open, setOpen] = useState(false)
+  const loadAll = async () => {
+    setBrowsing(true)
+    try { setBrowse(await store.post('/lobby/browse', {})) } catch (_) { /* toasted */ }
+    setBrowsing(false)
+  }
+  const toggleAll = () => { const next = !open; setOpen(next); if (next && !browse) loadAll() }
 
   const refresh = async () => {
     setBusy(true)
@@ -7532,11 +7548,30 @@ function Lobby(props) {
         : jsx('div', { className: 'h-list', children: rooms.map(r => jsx(LobbyRoom, { r, joining: joining === r.id, onJoin: () => join(r), onOpen: () => openRoom(store, r.id) }, r.id)) })
     ] }),
     jsxs('section', { className: 'h-col', style: { gap: 10 }, children: [
+      jsxs('div', { className: 'h-row', children: [
+        jsx(K.Button, { variant: 'secondary', size: 'sm', 'aria-expanded': open, onClick: toggleAll, children: open ? 'Hide all public rooms' : 'Browse all public rooms' }),
+        open && jsx(K.Button, { variant: 'ghost', size: 'sm', disabled: browsing, onClick: loadAll, children: browsing ? 'Looking…' : 'Refresh this list' }),
+        open && browse && browse.cached && jsx('span', { className: 'h-faint h-small', children: 'Just asked: try again in ' + browse.wait + ' s' })
+      ] }),
+      open && browsing && !browse && jsx('div', { className: 'h-faint', children: 'Asking the relays…' }),
+      open && browse && jsx(BrowseList, { store, snap, rooms: browse.rooms || [], onJoin: join, joining })
+    ] }),
+    jsxs('section', { className: 'h-col', style: { gap: 10 }, children: [
       jsx('h3', { children: 'People' }),
       people.length === 0 ? jsx('div', { className: 'h-faint', children: busy ? 'Asking the relays…' : 'Nobody has published a card that matches yet.' })
         : jsx('div', { className: 'h-list', children: people.map(p => jsx(LobbyPerson, { p }, p.pk)) })
     ] })
   ] }) })
+}
+
+// Every public room one wider query found, unjoined first. No activity is known for them, so none is shown.
+function BrowseList(props) {
+  const { store, snap, rooms, joining } = props
+  const mine = new Set((snap.rooms || []).map(r => r.id))
+  const rows = rooms.map(r => Object.assign({}, r, { joined: mine.has(r.id) })).sort((a, b) => (a.joined ? 1 : 0) - (b.joined ? 1 : 0) || (b.overlap || []).length - (a.overlap || []).length || (b.at || 0) - (a.at || 0))
+  if (!rows.length) return jsx('div', { className: 'h-faint', children: 'No public rooms came back from the relays.' })
+  return jsx('div', { className: 'h-list', 'aria-label': 'All public rooms', children: rows.map(r => jsx(LobbyRoom, { r, browse: true, joining: joining === r.id,
+    onJoin: () => props.onJoin(r), onOpen: () => openRoom(store, r.id) }, r.id)) })
 }
 
 function LobbyRoom(props) {
@@ -7551,7 +7586,7 @@ function LobbyRoom(props) {
         n > 0 && jsx('span', { className: 'h-faint h-tiny', children: n + ' shared interest' + (n === 1 ? '' : 's') })
       ] }),
       r.about && jsx('div', { className: 'h-muted h-small', children: r.about }),
-      jsx(RoomActivity, { r }),
+      !props.browse && jsx(RoomActivity, { r }),
       jsx(Chips, { items: r.interests, hits: r.overlap })
     ] }),
     r.joined ? jsx(K.Button, { variant: 'ghost', size: 'sm', onClick: props.onOpen, children: 'Open' })

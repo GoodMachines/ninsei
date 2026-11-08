@@ -71,6 +71,9 @@ FAKES_WINDOW = 600
 MAX_PRESENCE = 64          # agents tracked per room
 MAX_CLAIM_TRIGGERS = 500
 LIVE_ROOM = 1800
+# "Browse all public rooms": one wider relay query when the person opens it, never polled. Relays limit per IP
+# (damus banned us once), so it is bounded by a limit and a cooldown that holds even after a failed try.
+BROWSE_LIMIT, BROWSE_DAYS, BROWSE_COOLDOWN, BROWSE_ROOMS = 500, 90, 30, 100
 LIVE_MAX_BYTES = 4096      # content of a presence beat or claim (a real one is a few hundred bytes)
 MAX_ROOM_EVENTS = EVENT_ROOM_CAP  # room events held in memory per room, like the store keeps on disk
 ROOM_STRANGER_CLAIMS = 2 * ROOM_STRANGER_CALLS  # floor claims ALL other teams together can make my agent
@@ -628,6 +631,9 @@ class Engine:
         self.claims: dict[str, list[tuple]] = {}           # trigger -> [(prio, tb, agent_pk)]
         self.topics: dict[str, TopicTracker] = {}
         self.lobby: dict = {"rooms": [], "people": [], "at": 0}
+        self._browse: dict = {"rooms": [], "at": 0}   # the last "Browse all public rooms" answer (see browse_rooms)
+        self._browse_at = -1e9
+        self._browse_busy = False
         self.agent_state = "activity: idle"
         self.agent_note = ""
         self._gave_up: Optional[tuple] = None   # (gid, n, room) of the last game round my agent had no answer for
@@ -3639,6 +3645,49 @@ class Engine:
         self.store.set("settings", cur)
         return {"accepted": sum(1 for ok, _ in res.values() if ok), "relays": len(res)}
 
+    def _lobby_room(self, ev: dict, c: dict, d: str, tags: list, overlap: list) -> Optional[dict]:
+        """One room's lobby row from its metadata event, or None unless the id commits to its creator (the same
+        check for the interest list and for "Browse all")."""
+        rid = d.split("/")[-1]
+        if room_id_for(ev["pubkey"], str(c.get("nonce", ""))) != rid:
+            return None
+        return {"id": rid, "name": _name_ok(c.get("name"), "Room"), "about": str(c.get("about", ""))[:200],
+                "interests": tags[:8], "overlap": overlap, "at": ev["created_at"],
+                "joined": rid in self.store.rooms(), "commons": rid == COMMONS_ID}
+
+    async def browse_rooms(self) -> dict:
+        """Every public room the relays hand back in one wider query (BROWSE_DAYS back, BROWSE_LIMIT events), with
+        the lobby's checks: proof of work, the room id committing to its creator, hidden people left out. No
+        activity query follows, so the rows carry none. A second call inside BROWSE_COOLDOWN seconds, or while one
+        is running, sends nothing and returns the last list with `wait` seconds to go."""
+        left = BROWSE_COOLDOWN - (time.monotonic() - self._browse_at)
+        if self._browse_busy or left > 0:
+            return {**self._browse, "cached": True, "wait": max(1, int(left + 0.999))}
+        self._browse_busy = True
+        self._browse_at = time.monotonic()   # counted from the start: a failed try waits too
+        try:
+            evs = await self.pool.query([{"kinds": [KIND_META], "#t": [APP_TAG], "since": _now() - BROWSE_DAYS * 86400,
+                                          "limit": BROWSE_LIMIT}], timeout=6)
+        finally:
+            self._browse_busy = False
+        mine = set(self.settings()["interests"])
+        rooms, seen = [], set()
+        for ev in sorted(evs, key=lambda e: -e["created_at"]):
+            if ev.get("kind") != KIND_META or nostr.leading_zero_bits(ev["id"]) < 12 or not nostr.check_event(ev) \
+                    or ev["pubkey"] in self._hidden:
+                continue
+            d = (nostr.tag_values(ev, "d") or [""])[0]
+            if not d.startswith("ninsei/room/"):
+                continue
+            tags = [str(t)[:24] for t in nostr.tag_values(ev, "t") if t != APP_TAG][:8]
+            row = self._lobby_room(ev, self._content(ev), d, tags, sorted(mine & set(tags)))
+            if row is not None and row["id"] not in seen:
+                seen.add(row["id"])
+                rooms.append(row)
+        rooms.sort(key=lambda r: (-len(r["overlap"]), -r["at"]))
+        self._browse = {"rooms": rooms[:BROWSE_ROOMS], "at": _now()}
+        return {**self._browse, "cached": False, "wait": BROWSE_COOLDOWN}
+
     async def refresh_lobby(self) -> dict:
         evs = await self.pool.query([{"kinds": [KIND_META], "#t": [APP_TAG], "since": _now() - 21 * 86400,
                                       "limit": 300}], timeout=5)
@@ -3655,13 +3704,11 @@ class Engine:
             tags = [str(t)[:24] for t in nostr.tag_values(ev, "t") if t != APP_TAG][:8]
             overlap = sorted(mine & set(tags))
             if d.startswith("ninsei/room/"):
-                rid = d.split("/")[-1]
-                if rid in seen_rooms or room_id_for(ev["pubkey"], str(c.get("nonce", ""))) != rid:
+                row = self._lobby_room(ev, c, d, tags, overlap)
+                if row is None or row["id"] in seen_rooms:
                     continue
-                seen_rooms.add(rid)
-                rooms.append({"id": rid, "name": _name_ok(c.get("name"), "Room"), "about": str(c.get("about", ""))[:200],
-                              "interests": tags[:8], "overlap": overlap, "at": ev["created_at"],
-                              "joined": rid in self.store.rooms(), "commons": rid == COMMONS_ID})
+                seen_rooms.add(row["id"])
+                rooms.append(row)
             elif d == "ninsei/card" and ev["pubkey"] != me and ev["pubkey"] not in seen_people \
                     and ev["pubkey"] not in self._hidden:
                 seen_people.add(ev["pubkey"])

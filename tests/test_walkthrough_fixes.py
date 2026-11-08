@@ -322,6 +322,8 @@ async def test_a_request_i_sent_is_listed_as_pending_until_answered_and_cancelli
     await e.friend_remove(k.ppk)                                                  # Cancel request
     assert e.dm_summary()["sent"] == []
     await settle(e)
+    for t in list(e._dm_later):     # my own copy is held back a few seconds: not this test's business
+        t.cancel()
 
 
 async def test_a_request_that_was_accepted_is_a_friend_not_pending(bare):
@@ -335,6 +337,8 @@ async def test_a_request_that_was_accepted_is_a_friend_not_pending(bare):
     s = e.dm_summary()
     assert s["sent"] == [] and s["rel"][k.ppk] == "friend"
     await settle(e)
+    for t in list(e._dm_later):
+        t.cancel()
 
 
 DM_JS = src("57_dm.js")
@@ -360,3 +364,76 @@ out({ label: row.props['aria-label'], shown: text(row), opened, hint, lonely })
     assert r["label"] == "Maya, friend request pending" and "Maya" in r["shown"] and "pending" in r["shown"]
     assert r["opened"] == ["e" * 64] and not r["hint"] and r["lonely"]
     assert "Cancel request" in DM_JS                 # the conversation view's button, which takes the request back
+
+
+# ---- the Lobby: unjoined rooms first, and Browse all public rooms -------------------------------------------------
+
+from test_engine import read, run, world  # noqa: E402,F401  (fixture)
+
+
+async def test_browse_all_asks_the_relays_once_per_open_filters_like_the_lobby_and_keeps_a_cooldown(world):
+    from ninsei_engine import engine as eng_mod
+    _, engines, _ = world
+    maya, sam = engines["Maya"], engines["Sam"]
+    made = await run(maya, maya.create_room, "shader club", "", ["shaders"])
+    queries = []
+    real = sam.pool.query
+
+    async def counting(filters, **kw):
+        queries.append(filters)
+        return await real(filters, **kw)
+
+    sam.pool.query = counting
+    out = await run(sam, sam.browse_rooms)
+    names = [r["name"] for r in out["rooms"]]
+    assert "shader club" in names and "Commons" in names and out["cached"] is False
+    assert len(queries) == 1                                        # one query, nothing else (no activity query)
+    [f] = queries[0]
+    assert f["kinds"] == [eng_mod.KIND_META] and f["#t"] == [eng_mod.APP_TAG] and f["limit"] == eng_mod.BROWSE_LIMIT
+    assert f["since"] >= int(time.time()) - eng_mod.BROWSE_DAYS * 86400 - 5        # bounded in time and in size
+    assert all(set(r) >= {"id", "name", "interests", "overlap", "joined"} for r in out["rooms"])
+    again = await run(sam, sam.browse_rooms)                        # straight away: the cooldown answers, the relays don't
+    assert again["cached"] is True and again["wait"] >= 1 and len(queries) == 1
+    assert [r["id"] for r in again["rooms"]] == [r["id"] for r in out["rooms"]]
+    assert made["id"] in {r["id"] for r in again["rooms"]}
+
+
+async def test_browse_all_drops_an_unproven_or_forged_room_and_a_hidden_creator(bare):
+    import json as _json
+    from ninsei_engine import engine as eng_mod, nostr
+    from test_hostile import Key
+    e, _ = bare()
+    k = Key("browser")
+    rid = eng_mod.room_id_for(k.ppk, "n1")
+
+    def meta(nonce, rid_, bits=12):
+        return nostr.build_event(k.psk, eng_mod.KIND_META, _json.dumps({"name": "Pop-up", "nonce": nonce}),
+                                 [["d", "ninsei/room/" + rid_], ["t", eng_mod.APP_TAG], ["t", "synths"]], pow_bits=bits)
+
+    class Pool:
+        def __init__(self, evs):
+            self.evs = evs
+
+        async def query(self, filters, **kw):
+            return self.evs
+
+    e.pool = Pool([meta("n1", rid), meta("forged", rid), meta("n2", eng_mod.room_id_for(k.ppk, "n2"), bits=0)])
+    out = await e.browse_rooms()
+    assert [r["id"] for r in out["rooms"]] == [rid]                 # the forged id and the unproven one are gone
+    e._browse_at = -1e9
+    e._hidden = {k.ppk}
+    assert (await e.browse_rooms())["rooms"] == []                  # a hidden creator's rooms are left out
+
+
+def test_the_route_exists_and_the_lobby_lists_unjoined_rooms_first_and_browses_only_on_open():
+    assert '@router.post("/lobby/browse")' in (ROOT / "dashboard" / "plugin_api.py").read_text()
+    lobby = src("70_lobby.js")
+    r = run_node(fn(lobby, "byActivity") + fn(lobby, "byJoined") + fn(lobby, "lobbyRooms") + """
+const snap = { rooms: [{ id: 'a' }], lobby: { rooms: [
+  { id: 'a', name: 'joined, live', live: true, overlap: ['x'] }, { id: 'b', name: 'shader club', overlap: [] }, { id: 'c', name: 'live one', live: true, overlap: [] }] } }
+out(lobbyRooms(snap).map(r => r.id))
+""")
+    assert r == ["c", "b", "a"]                                     # not joined first (live before quiet), joined last
+    body = fn(lobby, "Lobby")
+    assert "/lobby/browse" in body and "if (next && !browse) loadAll()" in body
+    assert "setInterval" not in body and "setTimeout" not in body   # not polled, not in the background

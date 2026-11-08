@@ -425,6 +425,12 @@ async def lobby():
     return await _run(eng.refresh_lobby)
 
 
+@router.post("/lobby/browse")
+async def lobby_browse():
+    eng = await _engine()
+    return await _run(eng.browse_rooms)
+
+
 @router.get("/card/preview")
 async def card_preview():
     eng = await _engine()
