@@ -230,7 +230,7 @@ out({
 
 
 @needs_node
-def test_the_status_popover_is_placed_before_paint_relative_to_the_page_container():
+def test_the_status_popover_is_placed_before_paint_from_where_its_containing_block_really_is():
     r = run_node(POPOVER_JS + """
 globalThis.window = {}
 globalThis.document = { documentElement: { clientWidth: 1000, clientHeight: 700 } }
@@ -238,14 +238,19 @@ globalThis.P = { listen: (t, type, fn) => { listened.push(type); return () => {}
 const listened = []
 const page = { getBoundingClientRect: () => ({ left: 100, top: 50, right: 1000, bottom: 650 }) }
 const anchor = { current: { getBoundingClientRect: () => ({ left: 120, right: 250, top: 70, bottom: 86 }), closest: sel => (sel === '.h-page' ? page : null) } }
-const el = { style: {}, offsetWidth: 300, scrollHeight: 280 }
+// parked at 0,0 the popover lands at (100, 50): its containing block starts there, whatever element that is
+const el = { style: {}, offsetWidth: 300, scrollHeight: 280, getBoundingClientRect: () => ({ left: 100, top: 50 }) }
+const el2 = { style: {}, offsetWidth: 300, scrollHeight: 280, getBoundingClientRect: () => ({ left: 0, top: 0 }) }   // the viewport
 function Probe(props) { usePopover(props.ref, props.anchor); return null }
 mount(Probe, { ref: { current: el }, anchor })
-out({ style: el.style, listened })
+mount(Probe, { ref: { current: el2 }, anchor })
+out({ style: el.style, style2: el2.style, listened })
 """)
     s = r["style"]
-    assert s["left"] == "20px" and s["top"] == "42px" and s["width"] == "300px"   # (120-100, 86+6-50): page-relative
-    assert r["listened"] == ["resize"]
+    assert s["left"] == "20px" and s["top"] == "42px" and s["width"] == "300px"   # (120-100, 86+6-50)
+    s2 = r["style2"]
+    assert s2["left"] == "120px" and s2["top"] == "92px"                           # the same spot on screen
+    assert r["listened"] == ["resize", "resize"]
 
 
 def test_the_status_picker_is_a_popover_not_an_inline_block():
@@ -441,3 +446,13 @@ out(lobbyRooms(snap).map(r => r.id))
     body = fn(lobby, "Lobby")
     assert "/lobby/browse" in body and "if (next && !browse) loadAll()" in body
     assert "setInterval" not in body and "setTimeout" not in body   # not polled, not in the background
+
+
+def test_the_popover_measures_its_containing_block_instead_of_assuming_one():
+    """Found live 2026-11-07: assuming `.h-page` was the fixed popover's containing block put the status picker
+    under the dashboard's own nav. It must park at 0,0 and offset from where that actually landed."""
+    src = (ROOT / "ui/52_tools.js").read_text()
+    body = src[src.index("function usePopover"):src.index("function usePopover") + 2000]
+    assert "const origin = el.getBoundingClientRect ? el.getBoundingClientRect()" in body
+    assert "pos.left - origin.left" in body and "pos.top - origin.top" in body
+    assert "base.left" not in body

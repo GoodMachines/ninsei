@@ -6213,27 +6213,32 @@ function placePopover(anchor, size, bounds, opts) {
   return { left, top, width, maxHeight: Math.floor(space), flipped: flip }
 }
 
-// Puts a popover (position: fixed) next to its anchor button. `.h-page` is a size container, which makes it the
-// containing block of a fixed child, so the numbers are relative to it; outside one they are the viewport's.
-// Runs before paint and again on resize.
+// Puts a popover (position: fixed) next to its anchor button. A fixed child is placed relative to its containing
+// block, which is the viewport unless an ancestor has a transform, filter or container query, and which one that is
+// differs between Desktop and the dashboard (the dashboard's own frame, not `.h-page`, put it under the Hermes nav,
+// found live 2026-11-07). So it measures instead of assuming: park at 0,0, read where that landed, offset from there.
+// The bounds it keeps inside are the viewport, cut to `.h-page` when there is one. Runs before paint and on resize.
 function usePopover(ref, anchor) {
   useLayoutEffect(() => {
     const el = ref.current, a = anchor && anchor.current
     if (!el || !a || !a.getBoundingClientRect) return
     const put = () => {
       const page = a.closest && a.closest('.h-page')
-      const base = page ? page.getBoundingClientRect() : { left: 0, top: 0, right: 0, bottom: 0 }
+      const box = page ? page.getBoundingClientRect() : null
       const vw = (document.documentElement && document.documentElement.clientWidth) || 1e5
       const vh = (document.documentElement && document.documentElement.clientHeight) || 1e5
-      const view = page ? { left: Math.max(0, base.left), top: Math.max(0, base.top), right: Math.min(vw, base.right), bottom: Math.min(vh, base.bottom) }
+      const view = box ? { left: Math.max(0, box.left), top: Math.max(0, box.top), right: Math.min(vw, box.right), bottom: Math.min(vh, box.bottom) }
         : { left: 0, top: 0, right: vw, bottom: vh }
       const r = a.getBoundingClientRect()
       el.style.maxHeight = ''
+      el.style.left = '0px'
+      el.style.top = '0px'
+      const origin = el.getBoundingClientRect ? el.getBoundingClientRect() : { left: 0, top: 0 }   // 0,0 of the containing block, in viewport px
       const pos = placePopover(r, { width: el.offsetWidth, height: el.scrollHeight }, view)
       el.style.width = pos.width + 'px'
       el.style.maxHeight = pos.maxHeight + 'px'
-      el.style.left = (pos.left - base.left) + 'px'
-      el.style.top = (pos.top - base.top) + 'px'
+      el.style.left = (pos.left - origin.left) + 'px'
+      el.style.top = (pos.top - origin.top) + 'px'
     }
     put()
     return P.listen(window, 'resize', put)
