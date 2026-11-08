@@ -26,11 +26,15 @@ function limitError(v, max, unit, example) {
 function capFirst(t) {
   return t ? t[0].toUpperCase() + t.slice(1) : t
 }
-function budgetOption(n, b) {
+// A preset in replies, never past the message limit (the typed one in Settings, else the saved one), like the ring.
+function budgetOption(n, b, msgsCap) {
+  const cap = msgsCap != null ? msgsCap : (b && b.msgs && b.msgs.limit != null ? Number(b.msgs.limit) : null)
+  const byTokens = repliesFor(n, b)
+  const capped = cap != null && cap < byTokens
   return { id: n, label: jsxs('span', { className: 'h-seg-two', children: [
-    jsx('span', { children: capFirst(repliesWords(repliesFor(n, b))) }),
+    jsx('span', { children: capFirst(repliesWords(capped ? cap : byTokens)) }),
     jsx('span', { className: 'h-vh', children: ', ' }),
-    jsx('span', { className: 'h-seg-sub', children: fmtTokens(n) + ' tokens' })
+    jsx('span', { className: 'h-seg-sub', children: fmtTokens(n) + ' tokens' + (capped ? ', message limit' : '') })
   ] }) }
 }
 
@@ -280,7 +284,7 @@ function SettingsForm(props) {
       jsx(Field, { label: 'Daily limit', id: 'h-s-budget', error: budgetErr, hint: budgetErr ? undefined : budgetHint, hintId: 'h-s-budget-hint',
         children: jsxs('div', { className: 'h-row', style: { flexWrap: 'wrap' }, children: [
         jsx(Seg, { label: 'Budget presets', value: Number(form.budget_daily), onChange: v => set({ budget_daily: v }),
-          options: BUDGET_PRESETS.map(n => budgetOption(n, snap.budget)) }),
+          options: BUDGET_PRESETS.map(n => budgetOption(n, snap.budget, msgsCap)) }),
         jsxs('span', { className: 'h-row', style: { gap: 6 }, children: [
           jsx(K.Input, { id: 'h-s-budget', type: 'number', min: 0, step: 1000, value: form.budget_daily, style: { width: 120 }, 'aria-label': 'Daily limit in tokens',
             'aria-invalid': budgetErr ? true : undefined, 'aria-describedby': budgetErr ? 'h-s-budget-err' : 'h-s-budget-hint', onChange: e => set({ budget_daily: e.target.value }) }),

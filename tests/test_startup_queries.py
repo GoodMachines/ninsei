@@ -330,6 +330,11 @@ async def close_hanging(srv, held):
         w.close()
     await asyncio.gather(*(w.wait_closed() for w in held), return_exceptions=True)
     srv.close()
+    # A connection accepted before its handler ran is in no `held` list; Python 3.13+ can close every client
+    # the server still has (3.11 and 3.12 lack it, and there wait_closed() doesn't wait for clients anyway).
+    close_clients = getattr(srv, "close_clients", None)
+    if close_clients:
+        close_clients()
     await asyncio.wait_for(srv.wait_closed(), 5)
 
 

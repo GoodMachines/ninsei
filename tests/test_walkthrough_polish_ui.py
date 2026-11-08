@@ -102,8 +102,23 @@ out({ id: o.id, main: text(main), gap: [gap.props.className, text(gap)], sub: te
     assert r["guess"] == "About 20 replies a day, 20k tokens"
     assert r["ring"] == "12k of 40k tokens today (about 47 replies a day)"
     assert "BUDGET_PRESETS.map(n => budgetOption(n, snap.budget))" in fn(SETUP, "Onboarding")
-    assert "BUDGET_PRESETS.map(n => budgetOption(n, snap.budget))" in fn(SETUP, "SettingsForm")
+    assert "BUDGET_PRESETS.map(n => budgetOption(n, snap.budget, msgsCap))" in fn(SETUP, "SettingsForm")
     assert ".h-seg-sub{" in STYLE
+
+
+@needs_node
+def test_a_preset_never_promises_more_replies_than_the_message_limit_allows():
+    # 2026-11-08, live: the 40k preset said "About 87 replies a day" beside "about 60 replies left today"
+    r = run(BUDGET_JS + """
+const saved = budgetOption(40000, { reply_tokens: 456, msgs: { limit: 60 } })
+const typed = budgetOption(40000, { reply_tokens: 456, msgs: { limit: 60 } }, 30)
+const under = budgetOption(20000, { reply_tokens: 456, msgs: { limit: 60 } })
+const words = o => o.label.props.children.map(text).join('')
+out({ saved: words(saved), typed: words(typed), under: words(under) })
+""")
+    assert r["saved"] == "About 60 replies a day, 40k tokens, message limit"
+    assert r["typed"] == "About 30 replies a day, 40k tokens, message limit"
+    assert r["under"] == "About 43 replies a day, 20k tokens"
 
 
 @needs_node
