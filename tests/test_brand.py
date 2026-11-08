@@ -118,6 +118,36 @@ def test_the_wordmark_is_labelled_and_in_the_sidebar():
     assert "jsx(Wordmark, { height: 13 })" in (ROOT / "ui/80_app.js").read_text()
 
 
+def _wordmark_glyphs():
+    """The wordmark path's letters as [x0, x1] ink spans: subpaths that overlap in x are one letter (the i's dot)."""
+    parts = (ROOT / "ui/30_parts.js").read_text()
+    d = re.search(r"const WORDMARK_PATH = '([^']+)'", parts).group(1)
+    spans = []
+    for sub in re.findall(r"M[^M]*", d):
+        xs = []
+        for cmd, args in re.findall(r"([MH])([^MHVZ]*)", sub):
+            nums = [float(v) for v in re.findall(r"-?\d+\.?\d*", args)]
+            xs += nums[:1] if cmd == "M" else nums
+        spans.append([min(xs), max(xs)])
+    glyphs = []
+    for x0, x1 in sorted(spans):
+        if glyphs and x0 <= glyphs[-1][1]:
+            glyphs[-1][1] = max(glyphs[-1][1], x1)
+        else:
+            glyphs.append([x0, x1])
+    return parts, glyphs
+
+
+def test_the_wordmark_letters_are_evenly_spaced():
+    # DotGothic16 is monospaced: set with its own advances, the gaps around the i's were four times the others
+    parts, glyphs = _wordmark_glyphs()
+    assert len(glyphs) == 6
+    gaps = {b[0] - a[1] for a, b in zip(glyphs, glyphs[1:])}
+    assert gaps == {124.0}, gaps
+    width = int(re.search(r"viewBox: '0 360 (\d+) 840'", parts).group(1))
+    assert glyphs[0][0] == 28 and width - glyphs[-1][1] == 28
+
+
 def test_hearth_era_icons_and_theme_are_gone():
     tail = (ROOT / "ui/platform/desktop_tail.js").read_text()
     assert "codicon: 'radio-tower'" in tail and "'home'" not in tail
