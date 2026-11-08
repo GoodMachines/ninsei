@@ -8325,10 +8325,12 @@ function RoomActivity(props) {
   ] })
 }
 
+// One person as the Lobby lists them: their picture, avatar or face, their line and interests, their agent beside.
+// Your own card preview uses this too (className 'h-cardpreview'), so it looks the way others see the card.
 function LobbyPerson(props) {
   const p = props.p
-  return jsxs('div', { className: 'h-item', children: [
-    jsx(PersonMark, { pk: p.pk, name: p.name }),
+  return jsxs('div', { className: props.className || 'h-item', children: [
+    jsx(PersonMark, { pk: p.pk, name: p.name, size: props.size }),
     jsxs('div', { className: 'h-grow h-col', style: { gap: 4 }, children: [
       jsxs('div', { className: 'h-row', children: [
         jsx('b', { className: 'h-trunc', children: p.name }),
@@ -8369,14 +8371,10 @@ function CardSection(props) {
       jsx('h3', { className: 'h-grow', children: 'Your interest card' }),
       jsx('span', { className: 'h-faint h-small', children: published ? 'Published ' + fmtAgo(s.card_published_at) : 'Not published' })
     ] }),
-    jsxs('div', { className: 'h-cardpreview', children: [
-      jsx(Face, { face: c.agent && c.agent.face, pk: c.agent && c.agent.pk, state: busy ? 'activity: working' : 'activity: idle', size: 44, name: c.agent && c.agent.name }),
-      jsxs('div', { className: 'h-grow h-col', style: { gap: 4 }, children: [
-        jsxs('div', { children: [jsx('b', { children: c.name || 'No name yet' }), c.agent && c.agent.name ? jsx('span', { className: 'h-faint', children: ' with ' + c.agent.name }) : null] }),
-        c.line ? jsx('div', { className: 'h-muted h-small', children: c.line }) : jsx('div', { className: 'h-faint h-small', children: 'No line about you yet (Settings)' }),
-        jsx(Chips, { items: c.interests || [] })
-      ] })
-    ] }),
+    jsx(LobbyPerson, { className: 'h-cardpreview', size: 44, p: {
+      pk: snap.me.pk, name: c.name || 'No name yet', line: c.line, interests: c.interests || [],
+      agent: c.agent && c.agent.name, face: c.agent && c.agent.face } }),
+    !c.line && jsx('div', { className: 'h-faint h-small', children: 'No line about you yet (Settings)' }),
     raw && jsx('pre', { className: 'h-pre', children: JSON.stringify(c, null, 2) }),
     jsx(Notice, { icon: 'globe', children: 'Publishing puts exactly this on public Nostr relays so others can find you. Anyone can read it. Publish again after you change it.' }),
     jsxs('div', { className: 'h-actions', children: [

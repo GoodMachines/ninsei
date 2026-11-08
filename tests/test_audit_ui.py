@@ -367,3 +367,14 @@ def test_built_outputs_carry_the_fixes():
         built = (ROOT / rel).read_text()
         for needle in ("Run preview", "shareChanged", "tabTarget", "openRoom", "limitError", "h-right-close", "Show game"):
             assert needle in built, f"{rel} is missing {needle}: run python3 scripts/build_ui.py"
+
+
+def test_card_preview_draws_you_the_way_the_lobby_draws_others():
+    """The preview reuses LobbyPerson (picture, then avatar, then face, then letter, with the agent beside), not the
+    agent's face alone. The card event carries no picture: others get it from the person's art event, which the
+    snapshot's `people` already holds for you."""
+    card = fn(LOBBY, "CardSection")
+    assert "jsx(LobbyPerson, { className: 'h-cardpreview'" in card and "pk: snap.me.pk" in card
+    assert "jsx(Face," not in card
+    assert "jsx(PersonMark, { pk: p.pk" in fn(LOBBY, "LobbyPerson")
+    assert "JSON.stringify(c, null, 2)" in card
