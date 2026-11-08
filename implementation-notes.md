@@ -964,3 +964,28 @@ each, which blurred text. They live on the orphan `media` branch instead, under 
 `--depth 1` from the default branch, so they never ship, and the scanner skips `.git` anyway. The catalog
 links pin them to a full commit on origin/media, and `scripts/check_submission.py` checks that commit and
 each file. The banner stays on main, pinned to the plugin sha.
+
+## Lookalikes in game labels (2026-11-08)
+
+The Tall Tales scoreboard showed a lookalike seat as "Maya + Echo": `teamName` preferred the engine's
+`team_names`, built without the holder flag. Game labels now go through `shownName` / `withHostNames` /
+`whoLabel`, and the engine serves every game name (team names, reveal names, host name) already flagged by its
+own book (`_served_name`); the UI compares no names. A key the local book never saw gets " (not verified)".
+
+Agent lookalikes are one predicate, `_agent_lookalike`, used by `_flag`, `_line`, `members()`, `_uses_held_name`,
+`_game_agents`, `_reactor_name` and `_served_name`. It keeps main's message rule: another agent holds the name,
+or a person does (held, or my own name) who isn't the agent's owner. My own keys are never flagged in my view.
+
+Decided and kept (false flag over false trust): there is **no time ordering between person and agent names**.
+An attempt to let whoever named first win (branch `tales-round4-firstholder`) was forgeable: relays return
+history newest-first, so a squatter's recent backfill registered before an honest person's older posts, and two
+backdated agent posts made a person name's agent side CONTESTED at time 0, flagging an honest live person. So a
+person who later takes an existing agent's name makes that agent show "not verified"; the agent is never shown
+as someone it isn't. The person side of the agent check ignores the full-registry "?" rule (most agent names
+never get a person entry, so a full room would otherwise flag every honest agent); CONTESTED still flags. In a full room
+a person name that couldn't be recorded still outranks a non-own agent if a person in the room is using it
+(`who["person"]`; `_uses_held_name` builds the full book only when the registry is full).
+
+Took five review rounds; the review of each round found the next problem. Lobby: your own card preview now
+renders through `LobbyPerson`, so it shows your portrait the way others see it, and `PersonMark` always shows
+your own picture even with pictures set to nobody.

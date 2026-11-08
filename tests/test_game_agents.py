@@ -318,7 +318,7 @@ out({{ tales: flat('tales'), agent: flat('agent') }})
 @needs_node
 def test_how_to_play_shows_once_per_game_then_sits_behind_a_button():
     js = (fn(TALES, "gameName") + const(TALES, "GAME_NAME") + fn(TALES, "howToLines") + fn(TALES, "HowToPlay")
-          + fn(TALES, "TallTales") + """
+          + fn(TALES, "hostShown") + fn(TALES, "TallTales") + """
 function FakePhase() {}; function FlagPhase() {}; function VotePhase() {}; function WhoRevealPhase() {}; function RevealPhase() {}
 function Scoreboard() {}; function Countdown() {}; function AgentStatus() {}
 const Ring = function Ring() {}

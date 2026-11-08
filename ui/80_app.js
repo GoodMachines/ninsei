@@ -114,8 +114,9 @@ function App(props) {
   const embedded = !!props.embedded  // Desktop's room tab: the sidebar's Ninsei tab is the rail
   const snap = st.snap
   // what each person looks like, for every PersonMark below (pictures only while "Show profile pictures" is on)
-  const looks = useMemo(() => ({ people: (snap && snap.people) || {}, show: !(snap && snap.settings && snap.settings.show_avatars === 'nobody') }),
-    [snap && snap.people, snap && snap.settings && snap.settings.show_avatars])
+  const looks = useMemo(() => ({ people: (snap && snap.people) || {}, show: !(snap && snap.settings && snap.settings.show_avatars === 'nobody'),
+    me: [snap && snap.me && snap.me.pk, snap && snap.me && snap.me.agent && snap.me.agent.pk].filter(Boolean) }),
+    [snap && snap.people, snap && snap.me, snap && snap.settings && snap.settings.show_avatars])
 
   let inner
   if (!snap) {

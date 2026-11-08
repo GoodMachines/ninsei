@@ -280,7 +280,9 @@ button.h-link{background:none;border:0;padding:0;font:inherit;cursor:pointer;tex
 .h-opt .h-letter{width:20px;height:20px;border-radius:50%;display:grid;place-items:center;font-size:11px;font-weight:600;background:var(--h-raise);flex:none}
 .h-score{display:flex;flex-wrap:wrap;gap:6px}
 .h-team{display:inline-flex;align-items:center;gap:6px;padding:3px 9px;border-radius:999px;background:var(--h-raise);font-size:12px}
-.h-team b{font-variant-numeric:tabular-nums}
+.h-team{max-width:100%;min-width:0;border-radius:14px}
+.h-team>span{min-width:0;overflow-wrap:anywhere}
+.h-team b{font-variant-numeric:tabular-nums;flex:none}
 .h-team[data-you=true]{outline:1px solid color-mix(in oklch,var(--h-accent) 60%,transparent)}
 
 /* rings */

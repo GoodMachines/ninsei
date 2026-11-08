@@ -9,6 +9,12 @@ const LETTERS = 'ABCDEFGHIJKL'
 // Who's the Agent? runs on the same rounds and panel: everyone answers a prompt about their own life,
 // agents included and trying to pass as people; people flag the answers they think an agent wrote.
 const GAME_NAME = { tales: 'Tall Tales', agent: 'Who’s the Agent?' }
+// The host's name: from the live book when its key is there (so agent and owner flags apply), else the engine's
+// own flagged host_name.
+function hostShown(book, game, fallback) {
+  return book && book[game.host] ? whoLabel(book, game.host) : (game.host_name || fallback || 'an agent')
+}
+
 function gameName(mode) { return GAME_NAME[mode] || GAME_NAME.tales }
 
 // "How to play": what each phase does, its length, the points. The numbers come from the engine's own
@@ -100,12 +106,12 @@ function TallTales(props) {
     ] })
   }
 
-  const hostLabel = game.you_host ? 'Your agent is hosting' : 'Hosted by ' + (game.host_name || 'an agent')
+  const hostLabel = game.you_host ? 'Your agent is hosting' : 'Hosted by ' + hostShown(book, game)
   const round = game.n ? 'Round ' + game.n + ' of ' + game.rounds : 'Getting ready'
 
   let body = null
   const who = game.mode === 'agent'
-  if (game.phase === 'starting') body = jsx('div', { className: 'h-muted', children: (game.host_name || 'The host') + (who ? ' is picking prompts…' : ' is writing questions…') })
+  if (game.phase === 'starting') body = jsx('div', { className: 'h-muted', children: hostShown(book, game, 'The host') + (who ? ' is picking prompts…' : ' is writing questions…') })
   else if (game.phase === 'fakes') body = jsx(FakePhase, { store, room, game, quiet: props.quiet })
   else if (game.phase === 'vote') body = who ? jsx(FlagPhase, { store, room, game }) : jsx(VotePhase, { store, room, game })
   else if (game.phase === 'reveal') body = who ? jsx(WhoRevealPhase, { game, book }) : jsx(RevealPhase, { game, book })
@@ -258,8 +264,7 @@ function FlagPhase(props) {
 function WhoRevealPhase(props) {
   const { game } = props
   const rv = game.reveal || {}
-  const book = Object.assign({}, props.book)
-  Object.keys(rv.names || {}).forEach(pk => { if (!book[pk]) book[pk] = { name: String(rv.names[pk]) } })
+  const book = withHostNames(props.book, rv.names)
   const authors = rv.authors || {}
   const kinds = rv.kinds || {}
   const flags = rv.picks || {}
@@ -295,8 +300,7 @@ function RevealPhase(props) {
   const { game } = props
   const rv = game.reveal || {}
   // Names the host sent fill gaps for players who have left the room since.
-  const book = Object.assign({}, props.book)
-  Object.keys(rv.names || {}).forEach(pk => { if (!book[pk]) book[pk] = { name: String(rv.names[pk]) } })
+  const book = withHostNames(props.book, rv.names)
   const authors = rv.authors || {}
   const picks = rv.picks || {}
   const points = rv.points || {}
@@ -322,10 +326,13 @@ function RevealPhase(props) {
   ] })
 }
 
+// "Maya + Echo": a lookalike seat carries the room's "not verified" flag on whichever part of the name it wears.
+// The book decides; game.team_names (this engine's own list, flagged the same way) only fills in people who left.
 function teamName(game, book, pk) {
-  const person = (game.team_names && game.team_names[pk]) || (book[pk] && book[pk].name) || 'Someone'
-  const agent = Object.values(book).find(b => b.agent && b.owner === pk)
-  return agent ? person + ' + ' + agent.name : person
+  const full = withHostNames(book, game.team_names)
+  const person = shownName(full, pk, 'Someone')
+  const agent = Object.keys(full).find(k => full[k].agent && full[k].owner === pk)
+  return agent ? person + ' + ' + shownName(full, agent) : person
 }
 
 function Scoreboard(props) {

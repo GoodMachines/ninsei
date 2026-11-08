@@ -11,6 +11,8 @@ from test_game_agents import Llm, _long, _table
 from test_hostile import ROOM, bare, settle  # noqa: F401  (fixture re-export)
 
 TALES = src("60_tales.js")
+CORE = src("00_core.js")
+LABELS = fn(CORE, "squashName") + fn(CORE, "shownName") + fn(CORE, "withHostNames") + fn(CORE, "whoLabel")
 
 
 async def test_final_scores_list_only_teams_that_took_part_and_a_late_joiner_gets_no_card(bare, monkeypatch):
@@ -40,7 +42,7 @@ async def test_final_scores_list_only_teams_that_took_part_and_a_late_joiner_get
 
 @needs_node
 def test_the_scoreboard_never_lists_a_team_that_did_not_play():
-    r = run_node("const nameBook = () => ({})\n" + fn(TALES, "teamName") + fn(TALES, "Scoreboard") + """
+    r = run_node("const nameBook = () => ({})\n" + LABELS + fn(TALES, "teamName") + fn(TALES, "Scoreboard") + """
 const room = { members: [{ pk: 'me', you: true }] }
 const game = { scores: { a: 3 }, players: ['a', 'b'], team_names: { a: 'Jordan', b: 'Pia', me: 'Me' } }
 const row = Scoreboard({ game, room })
@@ -50,7 +52,7 @@ out(row.props.children.map(c => c.props.children[0].props.children))
 
 
 HOWTO_HARNESS = (fn(TALES, "gameName") + __import__("test_audit_ui").const(TALES, "GAME_NAME") + fn(TALES, "howToLines")
-                 + fn(TALES, "HowToPlay") + fn(TALES, "TallTales") + """
+                 + fn(TALES, "HowToPlay") + fn(TALES, "hostShown") + fn(TALES, "TallTales") + """
 function FakePhase() {}; function FlagPhase() {}; function VotePhase() {}; function WhoRevealPhase() {}; function RevealPhase() {}
 function Scoreboard() {}; function Countdown() {}; function AgentStatus() {}
 const Ring = function Ring() {}
@@ -486,3 +488,334 @@ def test_the_shipped_retired_list_holds_only_room_ids():
     from ninsei_engine import engine as eng_mod
     assert eng_mod.RETIRED_ROOMS and all(len(r) == 16 and int(r, 16) >= 0 for r in eng_mod.RETIRED_ROOMS)
     assert eng_mod.COMMONS_ID not in eng_mod.RETIRED_ROOMS
+
+
+@needs_node
+def test_a_lookalike_seat_never_wears_the_real_name_in_a_game_label():
+    """Live repro: a third seat renamed itself "Maya" (agent Echo); the room flags it, the scoreboard did not."""
+    r = run_node(LABELS + fn(TALES, "teamName") + fn(TALES, "Scoreboard") + fn(CORE, "nameBook") + """
+const room = { members: [
+  { pk: 'maya', name: 'Maya', agents: [{ pk: 'ada', name: 'Ada' }] },
+  { pk: 'fake', name: 'Maya', impostor: true, agents: [{ pk: 'echo', name: 'Echo' }] },
+  { pk: 'sam', name: 'Sam', you: true, agents: [] }] }
+const book = nameBook(room, null)
+// team_names comes from the engine and carries the claimed name bare: the book's flag still wins
+const game = { scores: { maya: 2, fake: 1 }, players: ['maya', 'fake'], team_names: { maya: 'Maya', fake: 'Maya', gone: 'Maya (not verified)', left: 'Ivy' } }
+const row = Scoreboard({ game, room })
+out({ board: row.props.children.map(c => c.props.children[0].props.children),
+  gone: teamName(game, book, 'gone'), left: teamName(game, book, 'left'),
+  who: whoLabel(book, 'fake'), echo: whoLabel(book, 'echo'), real: whoLabel(book, 'maya'),
+  host: whoLabel(withHostNames(book, { x: 'Maya (not verified)', y: 'Ivy' }), 'x'),
+  bare: whoLabel(withHostNames(book, { y: 'Ivy' }), 'y'), flagOnce: shownName(withHostNames(book, { z: 'Maya (not verified)' }), 'z') })
+""")
+    assert r["board"] == ["Maya + Ada", "Maya (not verified) + Echo"]
+    assert r["gone"] == "Maya (not verified)" and r["left"] == "Ivy"
+    assert r["who"] == "Maya (not verified)" and r["echo"] == "Echo (Maya (not verified)'s agent)"
+    assert r["real"] == "Maya" and r["host"] == "Maya (not verified)"
+    # the UI compares nothing: it shows the engine's strings, so a bare name stays bare and a flag is never doubled
+    assert r["bare"] == "Ivy" and r["flagOnce"] == "Maya (not verified)"
+
+
+def test_every_game_name_goes_through_the_shared_label_helpers():
+    assert "withHostNames" in fn(TALES, "teamName") and "shownName" in fn(TALES, "teamName")
+    assert "rv.names" not in TALES.replace("withHostNames(props.book, rv.names)", "")
+    assert "book[pk].name" not in TALES and ".name ||" not in fn(TALES, "teamName")
+
+
+def test_team_names_flag_a_lookalike_with_the_rooms_own_rule():
+    from ninsei_engine.engine import Engine
+    who = {"ident": {"person_pk": "me"}, "my_name": "Sam", "person": {"a": "Maya", "b": "Maya"}}
+    eng = Engine.__new__(Engine)
+    eng._holder = lambda w, n, agent=False: "a"
+    assert eng._flagged_name(who, "a") == "Maya" and eng._flagged_name(who, "b") == "Maya (not verified)"
+
+
+def _book_engine(person, agent=None, reg=None):
+    from ninsei_engine.engine import Engine, skeleton
+    eng = Engine.__new__(Engine)
+    who = {"ident": {"person_pk": "me", "agent_pk": "myagent"}, "my_name": "Sam", "me_p": skeleton("Sam"), "me_a": skeleton("Bo"),
+           "person": person, "agent": agent or {}, "owner": {}, "reg": {"p:" + skeleton(n): pk for pk, n in (reg or {}).items()}}
+    return eng, who
+
+
+def test_a_cyrillic_lookalike_host_name_for_a_departed_key_is_flagged_by_the_engine():
+    """A host sends "M\u0430ya" (Cyrillic a) as the name of a key this engine saw as Maya's lookalike."""
+    eng, who = _book_engine({"real": "Maya", "fake": "M\u0430ya"}, reg={"real": "Maya"})
+    assert eng._served_name(who, "fake", "Maya") == "M\u0430ya (not verified)"
+    assert eng._served_name(who, "real", "M\u0430ya") == "Maya"           # the book's name, not the host's text
+
+
+def test_an_unknown_key_host_name_is_flagged_and_an_honest_departed_player_is_bare():
+    eng, who = _book_engine({"gone": "Ivy"}, {"ag": "Echo"}, reg={"gone": "Ivy"})
+    assert eng._served_name(who, "stranger", "Maya") == "Maya (not verified)"      # never seen: can't be checked
+    assert eng._served_name(who, "gone", "Ivy") == "Ivy" and eng._served_name(who, "ag", "x") == "Echo"
+
+
+def test_the_engine_never_doubles_the_flag():
+    eng, who = _book_engine({"fake": "Maya"}, reg={"real": "Maya"})
+    assert eng._served_name(who, "nobody", "Maya (not verified)") == "Maya (not verified)"
+    assert eng._served_name(who, "fake", "Maya") == "Maya (not verified)"
+    assert eng._unverified(eng._unverified("Maya")) == "Maya (not verified)"
+
+
+async def test_the_hosted_by_line_and_reveal_names_come_from_the_engines_book(bare, monkeypatch):
+    _long(monkeypatch)
+    host, sam, eve = await _table(bare, Llm("Ada", "five"))
+    gid = (await host.start_tales(ROOM, 1))["gid"]
+    assert await wait_for(lambda: (eve.game_view(ROOM) or {}).get("phase") == "fakes")
+    assert eve.game_view(ROOM)["host_name"] == "Ada"                        # a key the book knows: its own name, bare
+    await sam.submit_fake(ROOM, gid, 1, "seven")
+    await host.submit_fake(ROOM, gid, 1, "nine")
+    assert await wait_for(lambda: (eve.game_view(ROOM) or {}).get("phase") == "vote")
+    truth = next(o["id"] for o in eve.game_view(ROOM)["options"] if o["text"] == "three")
+    await sam.submit_vote(ROOM, gid, 1, truth)
+    await host.submit_vote(ROOM, gid, 1, truth)
+    assert await wait_for(lambda: (eve.game_view(ROOM) or {}).get("phase") == "end", timeout=30)
+    await settle(host)
+
+
+def test_the_hosted_by_line_uses_the_books_label_and_a_lookalike_host_is_flagged():
+    assert "hostShown(book, game)" in TALES and "game.host_name ||" in fn(TALES, "hostShown")
+    assert "'Hosted by ' + (game.host_name" not in TALES
+    r = run_node(LABELS + fn(TALES, "hostShown") + """
+const book = { echo: { name: 'Echo', agent: true, owner: 'fake', ownerName: 'Maya', yours: false }, fake: { name: 'Maya', impostor: true } }
+out({ lookalike: hostShown(book, { host: 'echo', host_name: 'Echo' }), unknown: hostShown(book, { host: 'zz', host_name: 'Maya (not verified)' }) })
+""")
+    assert r["lookalike"] == "Echo (Maya (not verified)'s agent)" and r["unknown"] == "Maya (not verified)"
+
+
+def test_the_scoreboard_chip_wraps_a_long_flagged_name():
+    css = src("20_style.js")
+    assert ".h-team>span{min-width:0;overflow-wrap:anywhere}" in css and "max-width:100%" in css
+
+
+# --- agent keys wearing a PERSON's name, and the game_view wiring ------------------------------------
+
+from test_hostile import Key, own_person_event  # noqa: E402
+
+CY_MAYA = "Mаya"  # Cyrillic a
+
+
+async def _room_with_agent_lookalikes(bare):
+    """Sam's engine; Maya (a person) holds "Maya"; Eve's agent calls itself CY_MAYA and Ed's agent calls itself "Sam"."""
+    e, _ = bare(name="Sam", agent="Bo")
+    maya, eve, ed = Key("maya"), Key("eve"), Key("ed")
+    await e._on_event(maya.person({"t": "msg", "name": "Maya", "text": "hi"}), "relay")
+    await e._on_event(eve.person({"t": "msg", "name": "Eve", "text": "hi"}), "relay")
+    await e._on_event(eve.agent({"t": "msg", "name": CY_MAYA, "text": "hello"}), "relay")
+    await e._on_event(ed.person({"t": "msg", "name": "Ed", "text": "hi"}), "relay")
+    await e._on_event(ed.agent({"t": "msg", "name": "Sam", "text": "hello"}), "relay")
+    return e, maya, eve, ed
+
+
+async def test_an_agent_wearing_a_persons_name_is_flagged_everywhere(bare):
+    e, maya, eve, ed = await _room_with_agent_lookalikes(bare)
+    who = e._who(ROOM)
+    # the game panel, the members list and the message flag all use the one predicate
+    assert e._served_name(who, eve.apk, "Maya") == CY_MAYA + " (not verified)"
+    assert e._served_name(who, ed.apk, "Ed") == "Sam (not verified)"      # named after me
+    members = {a["pk"]: a for p in e.members(ROOM) for a in p["agents"]}
+    assert members[eve.apk]["impostor"] is True and members[ed.apk]["impostor"] is True
+    flag = e._flag(who, eve.apk, CY_MAYA, eve.ppk, "Eve", True)
+    assert flag and flag["real"] == maya.ppk
+    assert e._flag(who, ed.apk, "Sam", ed.ppk, "Ed", True)["real"] == e._identity()["person_pk"]
+    # an agent keeps its OWNER's person name without a flag (a different room, where nobody else wore it first)
+    e2, _ = bare(name="Sam2", agent="Bo")
+    m2 = Key("maya")
+    await e2._on_event(m2.person({"t": "msg", "name": "Maya", "text": "hi"}), "relay")
+    await e2._on_event(m2.agent({"t": "msg", "name": "Maya", "text": "mine"}), "relay")
+    assert e2._served_name(e2._who(ROOM), m2.apk, "x") == "Maya"
+    assert not e2._agent_lookalike(e2._who(ROOM), m2.apk, "Maya", m2.ppk)
+
+
+@needs_node
+async def test_the_ui_labels_an_agent_wearing_a_persons_name_as_not_verified(bare):
+    e, maya, eve, ed = await _room_with_agent_lookalikes(bare)
+    members = e.members(ROOM)
+    r = run_node(LABELS + fn(TALES, "teamName") + fn(CORE, "nameBook") + "const room = { members: " + json.dumps(members) + """ }
+const book = nameBook(room, null)
+const game = { team_names: {}, scores: {}, players: [] }
+out({ cy: whoLabel(book, %s), sam: whoLabel(book, %s), team: teamName(game, book, %s) })
+""" % (json.dumps(eve.apk), json.dumps(ed.apk), json.dumps(eve.apk)))
+    assert r["cy"].startswith(CY_MAYA + " (not verified)") and r["sam"].startswith("Sam (not verified)")
+    assert r["team"].startswith(CY_MAYA + " (not verified)")
+
+
+async def test_my_own_agent_is_named_from_my_settings_never_the_hosts_text(bare):
+    e, _ = bare(name="Sam", agent="Bo")
+    who = e._who(ROOM)
+    assert e._served_name(who, e._identity()["agent_pk"], "Maya") == "Bo"
+
+
+async def test_game_view_serves_flagged_names_for_a_hostile_host(bare):
+    """The wiring: the host's own name and the reveal's names are rewritten from this engine's book in game_view."""
+    e, _ = bare(name="Sam", agent="Bo")
+    maya, fake, host, stranger = Key("maya"), Key("fake"), Key("host"), Key("stranger")
+    await e._on_event(maya.person({"t": "msg", "name": "Maya", "text": "hi"}), "relay")
+    await e._on_event(fake.person({"t": "msg", "name": CY_MAYA, "text": "hi"}), "relay")
+    now = time.time()
+    await e._on_event(host.agent({"t": "tales_start", "gid": "g", "rounds": 1, "seq": 1, "name": CY_MAYA}), "relay")
+    await e._on_event(host.agent({"t": "tales_round", "gid": "g", "n": 1, "q": "?", "secs": 45, "seq": 2,
+                                  "ends_at": now + 45, "name": CY_MAYA}), "relay")
+    await e._on_event(host.agent({"t": "tales_reveal", "gid": "g", "n": 1, "truth": "o1", "answer": "x", "seq": 3,
+                                  "name": CY_MAYA, "scores": {},
+                                  "names": {stranger.ppk: "Maya", fake.ppk: "Maya", maya.ppk: CY_MAYA}}), "relay")
+    g = e.game_view(ROOM)
+    assert g["phase"] == "reveal"
+    assert g["host_name"] == CY_MAYA + " (not verified)"
+    assert g["reveal"]["names"][stranger.ppk] == "Maya (not verified)"        # never seen: the host's text, flagged
+    assert g["reveal"]["names"][fake.ppk] == CY_MAYA + " (not verified)"      # the book's spelling of the lookalike
+    assert g["reveal"]["names"][maya.ppk] == "Maya"                           # the real holder, bare, in the book's spelling
+
+
+# --- my own keys, the person holder through _holder, and the first owner kept ------------------------
+
+from ninsei_engine import nostr  # noqa: E402
+from ninsei_engine.engine import CONTESTED, KIND_ROOM, Engine  # noqa: E402
+
+
+def _own_agent_event(e, content, created_at=None):
+    ident = e._identity()
+    return nostr.build_event(ident["agent_sk"], KIND_ROOM, json.dumps(content),
+                             [["h", ROOM], ["owner", ident["person_pk"], ident["binding"]]], created_at=created_at)
+
+
+async def _my_agent_named_after_a_room_person(bare):
+    """Sam's engine, whose own agent is named "Maya"; a person Maya (another key) posts in the room."""
+    e, _ = bare(name="Sam", agent="Maya")
+    maya = Key("maya")
+    await e._on_event(maya.person({"t": "msg", "name": "Maya", "text": "hi"}), "relay")
+    await e._on_event(own_person_event(e, {"t": "msg", "text": "hey"}), "relay")
+    mine = _own_agent_event(e, {"t": "msg", "name": "Maya", "text": "hello"})
+    await e._on_event(mine, "relay")
+    return e, maya, mine
+
+
+async def test_my_own_agent_named_after_a_room_person_is_never_flagged_in_my_view(bare):
+    e, maya, mine = await _my_agent_named_after_a_room_person(bare)
+    ident = e._identity()
+    me_a, me_p = ident["agent_pk"], ident["person_pk"]
+    who = e._who(ROOM)
+    assert e._agent_lookalike(who, me_a, "Maya", me_p) is None
+    agents = {a["pk"]: a for p in e.members(ROOM) for a in p["agents"]}
+    assert agents[me_a]["impostor"] is False and agents[me_a]["yours"] is True
+    rows = {r["pk"]: r for r in e._game_agents(ROOM, {"gid": "g", "n": 1, "phase": "fakes"}, set(), e._sorted(ROOM))}
+    assert rows[me_a]["name"] == "Maya"                                    # not swapped to a short key
+    assert e._reactor_name(who, me_a) == "Maya"
+    assert e._flag(who, me_a, "Maya", me_p, "Sam", True) is None
+    line = e._line(ROOM, mine, who)
+    assert line.name == "Maya" and line.role == "self"
+    assert e._uses_held_name(ROOM, mine, json.loads(mine["content"])) is False
+    assert e._served_name(who, me_a, "x") == "Maya"
+    # the real person Maya keeps her name, unflagged
+    people = {p["pk"]: p for p in e.members(ROOM)}
+    assert people[maya.ppk]["impostor"] is False
+
+
+@needs_node
+async def test_the_ui_labels_my_own_agent_named_after_a_room_person_without_a_flag(bare):
+    e, _, _ = await _my_agent_named_after_a_room_person(bare)
+    members = e.members(ROOM)
+    r = run_node(LABELS + fn(CORE, "nameBook") + "const room = { members: " + json.dumps(members) + """ }
+out(whoLabel(nameBook(room, null), %s))
+""" % json.dumps(e._identity()["agent_pk"]))
+    assert r == "Maya (your agent)"
+
+
+def _reg_who(reg, me_p="sam", me_a="bo"):
+    return {"ident": {"person_pk": "me", "agent_pk": "myagent"}, "reg": reg, "me_p": me_p, "me_a": me_a}
+
+
+def test_the_person_check_for_an_agent_ignores_a_full_registry_but_keeps_my_name_and_contested(monkeypatch):
+    from ninsei_engine import engine as eng_mod
+    # the agent holds its own agent name; no person ever registered "Ivy", but the registry is full
+    who = _reg_who({"a:ivy": "ag"})
+    monkeypatch.setattr(eng_mod, "MAX_NAMES", 1)
+    assert Engine._holder(who, "Ivy") == "?"                                # what a person's own badge sees
+    # but an agent holding its own name is not flagged just because no PERSON ever registered it
+    assert Engine._agent_lookalike(who, "ag", "Ivy", "o") is None
+    monkeypatch.setattr(eng_mod, "MAX_NAMES", 2000)
+    assert Engine._agent_lookalike(who, "ag", "Ivy", "o") is None           # room to spare: nobody holds it
+    # a contested person name keeps main's semantics: flagged, with no real holder named
+    who = _reg_who({"a:ivy": "ag", "p:ivy": CONTESTED})
+    assert Engine._agent_lookalike(who, "ag", "Ivy", "o") == {"claimed": "Ivy", "real": None}
+    # my own person name is mine (the me_p rule), and my own agent key is never a lookalike
+    who = _reg_who({"a:sam": "ag"})
+    assert Engine._agent_lookalike(who, "ag", "Sam", "o") == {"claimed": "Sam", "real": "me"}
+    assert Engine._agent_lookalike(who, "myagent", "Sam", "me") is None
+
+
+async def test_members_keeps_the_first_owner_seen_for_an_agent_key_like_who(bare):
+    e, _ = bare(name="Sam", agent="Bo")
+    a, b = Key("ann"), Key("ben")
+    t = int(time.time()) - 100
+    await e._on_event(a.person({"t": "msg", "name": "Ann", "text": "hi"}, created_at=t), "relay")
+    await e._on_event(b.person({"t": "msg", "name": "Ben", "text": "hi"}, created_at=t + 1), "relay")
+    await e._on_event(a.agent({"t": "msg", "name": "Axe", "text": "one"}, created_at=t + 2), "relay")
+    # the same agent key, later bound by Ben as well
+    later = nostr.build_event(a.ask, KIND_ROOM, json.dumps({"t": "msg", "name": "Axe", "text": "two"}),
+                              [["h", ROOM], ["owner", b.ppk, nostr.owner_binding(b.psk, a.apk)]], created_at=t + 3)
+    await e._on_event(later, "relay")
+    assert e.owner_of(later) == b.ppk
+    assert e._who(ROOM)["owner"][a.apk] == a.ppk
+    owners = {ag["pk"]: p["pk"] for p in e.members(ROOM) for ag in p["agents"]}
+    assert owners[a.apk] == a.ppk
+
+
+async def test_a_person_who_later_takes_an_agents_name_flags_that_agent_not_the_person(bare):
+    # DELIBERATE (main's rule, kept): the person namespace wins over an agent that isn't that person's own, with
+    # no time ordering across persons and agents. Arrival order and CONTESTED history can be forged, so ordering
+    # would let an attacker flag honest people; a false flag on an agent beats false trust in it. See
+    # implementation-notes.md ("Lookalikes in game labels", 2026-11-08).
+    e, _ = bare(name="Sam", agent="Bo")
+    eve, kit = Key("eve"), Key("kit")
+    await e._on_event(eve.person({"t": "msg", "name": "Eve", "text": "hi"}), "relay")
+    await e._on_event(eve.agent({"t": "msg", "name": "Kit", "text": "first"}), "relay")
+    await e._on_event(kit.person({"t": "msg", "name": "Kit", "text": "later"}), "relay")
+    who = e._who(ROOM)
+    assert e._agent_lookalike(who, eve.apk, "Kit", eve.ppk) == {"claimed": "Kit", "real": kit.ppk}
+    people = {p["pk"]: p for p in e.members(ROOM)}
+    assert people[kit.ppk]["impostor"] is False
+    assert {a["pk"]: a for a in people[eve.ppk]["agents"]}[eve.apk]["impostor"] is True
+    assert e._flag(who, kit.ppk, "Kit", None, "", True) is None
+
+
+async def test_a_full_registry_does_not_flag_an_honest_agent_that_holds_its_own_name(bare, monkeypatch):
+    from ninsei_engine import engine as eng_mod
+    e, _ = bare(name="Sam", agent="Bo")
+    maya = Key("maya")
+    await e._on_event(maya.person({"t": "msg", "name": "Maya", "text": "hi"}), "relay")
+    echo = maya.agent({"t": "msg", "name": "Echo", "text": "hello"})
+    await e._on_event(echo, "relay")
+    monkeypatch.setattr(eng_mod, "MAX_NAMES", len(e._names_reg(ROOM)))   # the room's registry is now full
+    who = e._who(ROOM)
+    assert who["reg"].get("a:echo") == maya.apk
+    agents = {ag["pk"]: ag for p in e.members(ROOM) for ag in p["agents"]}
+    assert agents[maya.apk]["impostor"] is False
+    assert e._uses_held_name(ROOM, echo, {"name": "Echo"}) is False
+    assert e._agent_lookalike(who, maya.apk, "Echo", maya.ppk) is None
+    assert e._reactor_name(who, maya.apk) == "Echo"
+
+
+async def test_a_full_room_still_flags_an_agent_wearing_a_person_name_it_could_not_record(bare, monkeypatch):
+    from ninsei_engine import engine as eng_mod
+    e, _ = bare(name="Sam", agent="Bo")
+    mal = Key("mal")
+    await e._on_event(mal.person({"t": "msg", "name": "Mal", "text": "hi"}), "relay")
+    # Mal's agent takes its agent name while there is room, then the room's registry fills
+    named = mal.agent({"t": "msg", "name": "Mаya", "text": "hello"})          # Cyrillic а
+    await e._on_event(named, "relay")
+    monkeypatch.setattr(eng_mod, "MAX_NAMES", len(e._names_reg(ROOM)))
+    maya = Key("maya")
+    await e._on_event(maya.person({"t": "msg", "name": "Maya", "text": "hi"}), "relay")
+    assert "p:maya" not in e._names_reg(ROOM)                                # Maya couldn't be recorded
+    who = e._who(ROOM)
+    assert Engine._holder(who, "Mаya", agent=True) == mal.apk                 # the agent side passes
+    # but a person here using the name still outranks an agent that isn't hers
+    assert e._agent_lookalike(who, mal.apk, "Mаya", mal.ppk) == {"claimed": "Mаya", "real": maya.ppk}
+    assert e._uses_held_name(ROOM, named, {"name": "Mаya"}) is True
+    agents = {ag["pk"]: ag for p in e.members(ROOM) for ag in p["agents"]}
+    assert agents[mal.apk]["impostor"] is True
+    # an agent that never got its name in is flagged by the agent side, as before
+    late = Key("eve")
+    assert e._agent_lookalike(who, late.apk, "Zed", late.ppk) == {"claimed": "Zed", "real": None}

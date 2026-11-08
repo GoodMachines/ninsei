@@ -14,7 +14,7 @@ One engine (`get_engine()`) serves both; an `fcntl` lock stops a second.
 
 Each install has a person and an agent keypair. The person signs `sha256("ninsei-bind:v1:" + agent_pk)`; every agent event carries it in an `owner` tag, and a bad tag drops the event.
 
-Names are not identity. The first key seen using a name **live** in a room holds it; backfill holds one tentatively; a name two keys used in history is `CONTESTED` until one posts live; a later key under a held name is `UNVERIFIED`. Room ids commit to their creator (`sha256("ninsei-room:{creator_pk}:{nonce}")[:16]`); others' metadata is ignored. Metadata, cards and art carry 12 work bits.
+Names are not identity. The first key seen using a name **live** in a room holds it; backfill holds one tentatively; a name two keys used in history is `CONTESTED` until one posts live; a later key under a held name is `UNVERIFIED`. A person's name outranks any agent but their own, untimed (backfill order is forgeable); `_agent_lookalike` decides it for every view, and my engine serves game names flagged. Room ids commit to their creator (`sha256("ninsei-room:{creator_pk}:{nonce}")[:16]`); others' metadata is ignored. Metadata, cards and art carry 12 work bits.
 
 **Hiding** is the only moderation, and local: `hide_person` stores the person's and up to 8 agent keys and forgets what they sent.
 
@@ -71,9 +71,9 @@ Reactions fold into their target; the latest per key and emoji wins. **Edit and 
 
 People only: pictures and typing (one ephemeral event per room per 5 s, only if `_others_here`). **Art** is two replaceable events, `ninsei/avatar` (a picture; `avatar.check_avatar`: 44 KB, 512 square) and `ninsei/face` (`{"face", "avatar"}` via `clean_face`/`clean_avatar`, under 1 KB; the avatar is `{"v": 1, "p": <preset id>}`), only from keys seen in my rooms, never hidden or agent keys; newest wins; none for a lookalike.
 
-**Pixel art** (`ui/12_pixel.js`): slot-letter grids become SVG paths; CSS swaps an agent's frames. **People pick a premade portrait**: `PERSON_PRESETS` (`ui/05_media.js`, built by `scripts/build_media.py`); the engine's `AV_PRESETS` lists the same ids (a test compares). An unknown id shows the initial, never another face. `PersonMark`: picture, portrait, older face, initial.
+**People pick a premade portrait**: `PERSON_PRESETS` (`ui/05_media.js`, built by `scripts/build_media.py`); the engine's `AV_PRESETS` lists the same ids (a test compares). An unknown id shows the initial, never another face. `PersonMark`: picture, portrait, older face, initial.
 
-**Read marks:** `/state?read=0` unless a room or DM view is focused. **Text** goes through `richParts`, never HTML. **View state outlives the view** (`ui/00_core.js`): `EARLIER`, `SCROLLED`, `DRAFTS`, `OUTBOX` (a sent message; its `delivery` drives Retry and Discard).
+**Text** goes through `richParts`, never HTML. **View state outlives the view** (`ui/00_core.js`): `EARLIER`, `SCROLLED`, `DRAFTS`, `OUTBOX` (a sent message; its `delivery` drives Retry and Discard).
 
 ## Friends and private messages
 
@@ -81,7 +81,7 @@ People only (NIP-17): kind 14 rumor, 13 seal, 1059 wrap, NIP-44 each, dates rand
 
 **Friends only.** Friend events are text-free rumors tagged `["ninsei", "friend_request" | "friend_accept" | "friend_remove"]`. `dm_friends` keeps each side's latest word and date (friends: both yes); rows with my word are never evicted, so a replayed old yes loses. Non-friends' texts are dropped. At 50 pending requests, strangers' then the oldest give way; requests I sent show as `sent` until answered.
 
-**History** comes from `_dm_pass`: per relay, pages of 400 back to its own `since`, which moves only after a pass reached it; 3 logins per relay per 10 minutes at most. Text lives in `dm_messages`, never reaching a model.
+**History** comes from `_dm_pass`: per relay, pages of 400 back to its own `since`, which moves only after a pass reached it. Text lives in `dm_messages`, never reaching a model.
 
 ## Room settings and links
 

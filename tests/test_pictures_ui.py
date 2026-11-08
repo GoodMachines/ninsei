@@ -258,3 +258,15 @@ def test_the_pieces_are_styled_without_a_tint_and_hidden_pictures_stay_in_a_circ
         assert sel in STYLE, sel
     assert "var(--tint)" not in STYLE.split(".h-pface,.h-photo{")[1].split("\n")[0]
     assert "hf-still" in fn(FACE, "PersonFace")                       # a person's face holds still: no agent blinking
+
+
+@needs_node
+def test_your_own_picture_shows_even_when_pictures_are_set_to_nobody():
+    r = run(PERSON_MARK + """
+globalThis.URIS = { ['me:v1']: 'data:image/webp;base64,AAAA', ['p1:v1']: 'data:image/webp;base64,BBBB' }
+const shown = (ctx, props) => { globalThis.CTX = ctx; return kind(PersonMark(props)) }
+const off = { show: false, me: ['me', 'myagent'], people: { me: { av: 'v1' }, p1: { av: 'v1' } } }
+out({ mine: shown(off, { pk: 'me', name: 'Me' }), other: shown(off, { pk: 'p1', name: 'P' }),
+  noMe: shown({ show: false, people: off.people }, { pk: 'me', name: 'Me' }) })
+""")
+    assert r["mine"] == "photo" and r["other"] == "letter" and r["noMe"] == "letter"
