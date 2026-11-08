@@ -4471,7 +4471,7 @@ function activityRow(text) {
 // "anthropic/claude-sonnet-5-5" -> "claude-sonnet-5-5": the provider prefix rarely fits a card corner.
 function shortModel(m) {
   const s = String(m || '')
-  return s.includes('/') ? s.split('/').pop() : s
+  return s.split(/[\\/]/).pop()   // a local model's file path, Windows or not: its file name only
 }
 
 // ===== ui/36_cardimage.js =======================================================================

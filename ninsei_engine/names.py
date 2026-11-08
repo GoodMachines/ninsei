@@ -14,13 +14,13 @@ import re
 import unicodedata
 
 # Unicode's Default_Ignorable_Code_Point (DerivedCoreProperties.txt), plus blank glyphs that draw nothing
-# but are ordinary symbols (U+2800 BRAILLE PATTERN BLANK). Python's unicodedata has no property lookup, so
+# but are ordinary symbols (U+2800 BRAILLE PATTERN BLANK, U+1D159 MUSICAL SYMBOL NULL NOTEHEAD). Python's unicodedata has no property lookup, so
 # the ranges are listed; tests pin the ones that have been used against us.
 _INVISIBLE_RANGES = (
     (0x00AD, 0x00AD), (0x034F, 0x034F), (0x061C, 0x061C), (0x115F, 0x1160), (0x17B4, 0x17B5),
     (0x180B, 0x180F), (0x200B, 0x200F), (0x202A, 0x202E), (0x2060, 0x206F), (0x2800, 0x2800),
     (0x3164, 0x3164), (0xFE00, 0xFE0F), (0xFEFF, 0xFEFF), (0xFFA0, 0xFFA0), (0xFFF0, 0xFFF8),
-    (0x1BCA0, 0x1BCA3), (0x1D173, 0x1D17A), (0xE0000, 0xE0FFF),
+    (0x1BCA0, 0x1BCA3), (0x1D159, 0x1D159), (0x1D173, 0x1D17A), (0xE0000, 0xE0FFF),
 )
 _INVISIBLE_RE = re.compile("[" + "".join(
     re.escape(chr(a)) if a == b else f"{re.escape(chr(a))}-{re.escape(chr(b))}" for a, b in _INVISIBLE_RANGES) + "]")
@@ -41,6 +41,13 @@ def name_ok(name, fallback: str) -> str:
     return strip_invisible(str(name or "")).strip()[:32] or fallback
 
 
+# Latin letter small capitals, to the letter they show.
+SMALL_CAPITALS = {
+    "\u1d00": "a", "\u0299": "b", "\u1d04": "c", "\u1d05": "d", "\u1d07": "e", "\ua730": "f", "\u0262": "g",
+    "\u029c": "h", "\u026a": "i", "\u1d0a": "j", "\u1d0b": "k", "\u029f": "l", "\u1d0d": "m", "\u0274": "n",
+    "\u1d0f": "o", "\u1d18": "p", "\ua7af": "q", "\u0280": "r", "\ua731": "s", "\u1d1b": "t", "\u1d1c": "u",
+    "\u1d20": "v", "\u1d21": "w", "\u028f": "y", "\u1d22": "z",
+}
 # Capitals that look like Latin ones but casefold to something that doesn't (Greek Υ -> υ, Μ -> μ).
 _CONFUSABLE_CAPS = {
     "Α": "a", "Β": "b", "Ε": "e", "Ζ": "z", "Η": "h", "Ι": "i", "Κ": "k", "Μ": "m", "Ν": "n", "Ο": "o",
@@ -57,6 +64,8 @@ _CONFUSABLE_LETTERS = {
     # Greek
     "α": "a", "β": "b", "ε": "e", "η": "n", "ι": "i", "κ": "k", "ν": "v", "ο": "o", "ρ": "p", "τ": "t",
     "υ": "u", "χ": "x", "γ": "y", "ϲ": "c", "ϳ": "j", "ζ": "z",
+    # Latin small capitals: they read as capitals ("ʏᴏᴜʀ ᴏᴡɴᴇʀ") but have no case of their own
+    **SMALL_CAPITALS,
 }
 # Digits and marks that pass for letters; i, l and 1 all read as one stroke. Names only: in running text
 # these are punctuation the sanitizer has its own rules for.
@@ -94,10 +103,26 @@ def fold_letters(text: str) -> str:
     return "".join(_fold_char(ch) for ch in text)
 
 
+# Digits that spell a label word ("Y0UR 0WN3R"). Only for spotting labels: as a fold for names (skeleton) or
+# for text that is shown, they would turn "R2D2 007" into letters.
+_LABEL_DIGITS = str.maketrans({"0": "o", "1": "i", "3": "e", "4": "a", "5": "s", "7": "t"})
+
+
+def fold_label(text: str) -> str:
+    """fold_letters, plus digits read as the letters they stand in for. One character for one, so a match is
+    at the same place in `text`. Every check for a role word ("your owner", "agent of", "unverified") uses this."""
+    return fold_letters(text).translate(_LABEL_DIGITS)
+
+
+def lower_look(text: str) -> str:
+    """`text` so it reads as lowercase: str.lower, and small capitals (which have no lowercase) as Latin."""
+    return "".join(SMALL_CAPITALS.get(ch) or ch.lower() for ch in text)
+
+
 def sub_folded(pattern: re.Pattern, repl, text: str) -> str:
-    """re.sub, matching against fold_letters(text) and replacing the same span of the original text."""
+    """re.sub, matching against fold_label(text) and replacing the same span of the original text."""
     out, last = [], 0
-    for m in pattern.finditer(fold_letters(text)):
+    for m in pattern.finditer(fold_label(text)):
         out.append(text[last:m.start()])
         out.append(repl(text[m.start():m.end()]))
         last = m.end()

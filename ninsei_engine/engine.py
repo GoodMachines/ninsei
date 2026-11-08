@@ -259,8 +259,9 @@ def _model_ok(v) -> str:
 
 def _model_short(v) -> str:
     """The model id as the owner's own card shows it (its last path segment): a local server may report a
-    file path, and a path carries the owner's username and folders. What goes on the wire is this form."""
-    return _model_ok(v).rsplit("/", 1)[-1]
+    file path, and a path carries the owner's username and folders. What goes on the wire is this form.
+    Split before _model_ok, on both separators: it drops backslashes, which would glue a Windows path together."""
+    return _model_ok(re.split(r"[\\/]", v)[-1]) if isinstance(v, str) else ""
 
 
 def room_id_for(creator_pk: str, nonce: str) -> str:
@@ -306,7 +307,10 @@ class BuildChanged(ValueError):
 
 def _budget_share(v) -> Optional[float]:
     """A peer's shared budget: a finite number in 0..1, or None."""
-    if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v):
+    try:
+        if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v):
+            return None
+    except OverflowError:   # an int too big for a float
         return None
     return round(max(0.0, min(float(v), 1.0)), 2)
 
@@ -365,18 +369,27 @@ def _secs(c: dict) -> float:
     return _bounded(c.get("secs"), 0.0, 600.0)
 
 
+MAX_INT_DIGITS = 15   # every integer the protocol uses (timestamps, counts, seqs) fits; a float holds it exactly
+
+
 def _loads(text):
-    """json.loads for text a stranger wrote: NaN, Infinity and numbers too big for a float (`1e999`) are
-    refused here, once, so no later `int()`, `float()` or JSON response meets a non-finite value."""
+    """json.loads for text a stranger wrote: NaN, Infinity and numbers too big for a float (`1e999`, or an
+    integer of hundreds of digits) are refused here, once, so no later `int()`, `float()` or JSON response
+    meets a non-finite value, and no `float()` of a huge int raises OverflowError while sorting."""
     def num(s):
         f = float(s)
         if not math.isfinite(f):
             raise ValueError("number out of range")
         return f
 
+    def whole(s):
+        if len(s.lstrip("-")) > MAX_INT_DIGITS:
+            raise ValueError("integer out of range")
+        return int(s)
+
     def const(s):
         raise ValueError("non-finite number")
-    return json.loads(text, parse_float=num, parse_constant=const)
+    return json.loads(text, parse_float=num, parse_int=whole, parse_constant=const)
 
 
 def _build_claim(b: Any) -> Optional[dict]:
@@ -1324,7 +1337,7 @@ class Engine:
         at = self._content(ev).get("at")
         try:
             at = float(at)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             at = 0.0
         if not (ev["created_at"] <= at < ev["created_at"] + 1):
             at = float(ev["created_at"])
@@ -1833,10 +1846,11 @@ class Engine:
     # ============================================================================================
     # the agent's behaviour
     # ============================================================================================
-    def _mentions(self, text: str, name: str) -> bool:
-        # An everyday word ("Ok", "Agent", "Hi") or a one-letter name is never "named": every message with the
-        # word in it would address that agent, past away mode, quiet rooms and the game rule.
-        return _nameable(name) and (re.search(rf"(?<![\w@])@?{re.escape(name)}\b", text or "", re.I) is not None
+    def _mentions(self, text: str, name: str, by_owner: bool = False) -> bool:
+        # An everyday word ("Ok", "Agent", "Hi") or a one-letter name is never "named" by anyone else: every
+        # message with the word in it would address that agent, past away mode, quiet rooms and the game rule.
+        # Its own owner chose the name (or left the default "Agent"), so their naming it still counts.
+        return (by_owner or _nameable(name)) and (re.search(rf"(?<![\w@])@?{re.escape(name)}\b", text or "", re.I) is not None
                                or at_mentions(text or "", name))
 
     def _at_names_other(self, room: str, text: str) -> bool:
@@ -1903,7 +1917,8 @@ class Engine:
         # named only when the text really names the name it holds (below), or the event replies to it.
         if self._replied_agent(room, ev) == self._identity()["agent_pk"]:
             return True
-        return self._mentions(str(c.get("text", "")), self.persona()["name"])
+        return self._mentions(str(c.get("text", "")), self.persona()["name"],
+                              by_owner=ev["pubkey"] == self._identity()["person_pk"])
 
     def _rate_ok(self, key: str, limit: int, window: float) -> bool:
         """Sliding-window limiter: True (and counted) while `key` has had fewer than `limit` hits."""
@@ -1986,8 +2001,13 @@ class Engine:
             since = self._held_since(room, pk, name) if name else None
             current = self._name_current_since(room, pk, name) if name else None
             arrived = self._arrived.get(trigger, tev["created_at"])
-            if since is not None and current is not None and max(since, current) <= arrived and _nameable(name) \
-                    and self._mentions(str(tc.get("text", "")), name):
+            by_owner = bool(owner) and tev["pubkey"] == owner
+            if since is None and by_owner and not _nameable(name):
+                # An everyday-word name ("Ok", the default "Agent") is held by nobody, but its own owner may still
+                # name it; it must still have carried the name before the message arrived.
+                since = current
+            if since is not None and current is not None and max(since, current) <= arrived \
+                    and self._mentions(str(tc.get("text", "")), name, by_owner):
                 return 100
             return 20
         return claimed if owner and tev["pubkey"] == owner else 20
@@ -5876,7 +5896,7 @@ class Engine:
             "me": {"pk": ident["person_pk"], "npub": nostr.npub(ident["person_pk"]), "name": s["display_name"],
                    "agent": {"pk": ident["agent_pk"], "name": s["agent_name"], "vibe": s["vibe"], "face": s["face"],
                              "state": self.agent_state, "note": self.agent_note,
-                             "model": self.store.get("model_last") or ""}},
+                             "model": _model_short(self.store.get("model_last"))}},
             "settings": {k: s[k] for k in ("onboarded", "display_name", "interests", "line", "agent_name", "vibe",
                                            "persona", "persona_source", "face", "budget_daily", "msgs_daily", "chattiness", "offers", "share_budget", "relays",
                                            "card_details", "card_published_at", "person_face", "person_avatar", "show_avatars",

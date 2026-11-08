@@ -211,3 +211,61 @@ async def test_unhashable_sig_does_not_raise_in_the_read_loop():
     await pool._on_message(url, json.dumps(["EVENT", "s", ev]))
     assert got == []
     await pool.stop()
+
+
+# --- integers too big for a float -----------------------------------------------------------------
+
+BIG = "9" * 400
+
+
+async def test_a_400_digit_at_in_a_message_never_breaks_the_snapshot(bare):
+    e, _ = bare(ts=1.0)
+    k = Key("bigat")
+    await e._on_event(raw_agent(k, '{"t":"msg","name":"Big","text":"hi","at":%s}' % BIG), "relay")
+    await e._on_event(raw_agent(k, '{"t":"msg","name":"Big","text":"ok","at":1}'), "relay")
+    json.dumps(e.snapshot(ROOM), allow_nan=False)
+    assert "hi" not in [m["text"] for m in e.messages(ROOM)]   # refused at the parse, so never stored
+
+
+async def test_a_400_digit_budget_in_a_beat_never_breaks_the_snapshot(bare):
+    e, _ = bare(ts=1.0)
+    k = Key("bigbudget")
+    ev = nostr.build_event(k.ask, eng_mod.KIND_LIVE, '{"t":"presence","name":"Big","budget":%s}' % BIG,
+                           [["h", ROOM], ["owner", k.ppk, k.bind]])
+    await e._on_event(ev, "relay")
+    json.dumps(e.snapshot(ROOM), allow_nan=False)
+
+
+def test_content_rejects_huge_integers_at_the_parse():
+    e = Engine.__new__(Engine)
+    e._cc = {}
+    assert e._content({"id": "a", "content": '{"x": %s}' % BIG}) == {}
+    assert e._content({"id": "b", "content": '{"x": -%s}' % BIG}) == {}
+    assert e._content({"id": "c", "content": '{"x": 123456789012345}'}) == {"x": 123456789012345}
+
+
+def test_order_and_budget_share_survive_a_huge_int():
+    assert eng_mod._budget_share(10 ** 400) is None
+    e = Engine.__new__(Engine)
+    e._cc = {"x": {"at": 10 ** 400}}
+    assert e._order({"id": "x", "created_at": 5, "content": "{}"})[1] == 5.0
+
+
+# --- the host's own timeout -----------------------------------------------------------------------
+
+async def test_the_model_call_passes_its_timeout_to_hosts_that_take_one():
+    seen = []
+
+    class Current:   # PluginLlm.complete's shape: keyword-only timeout and task
+        def complete(self, messages, *, max_tokens=None, timeout=None, purpose=None, task=None):
+            seen.append(timeout)
+            return types.SimpleNamespace(text="ok", usage=None, model=None)
+
+    class Older:     # an older host: no timeout argument, which must not break the call
+        def complete(self, messages, max_tokens=None, purpose=None):
+            seen.append("older")
+            return types.SimpleNamespace(text="ok", usage=None, model=None)
+    for llm in (Current(), Older()):
+        b = brain_mod.Brain(lambda llm=llm: llm, lambda cat, est: "t", lambda t, used: None)
+        assert await b._complete("reply", [{"role": "user", "content": "hi"}], 50, "reply") == "ok"
+    assert seen == [brain_mod.MODEL_TIMEOUT_S, "older"]

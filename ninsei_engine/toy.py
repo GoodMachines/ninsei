@@ -83,6 +83,7 @@ _PRIVATE_LABELS = {
     "home_path": "a home-folder path (it names an account on your computer)",
     "email": "an email address",
     "url_secret": "a link carrying a token or password",
+    "key": "a key or token (a long code that may be a password)",
 }
 
 
@@ -92,8 +93,8 @@ def scan_secrets(html: str) -> list[str]:
     found = [label for label, rx in _SECRET_PATTERNS if rx.search(text)]
     # The build prompt hands the model the save path (under the owner's home folder), so a comment that
     # repeats it, or the owner's email, is the likely leak. The same detector the room's drafts go through.
-    kinds = {f["kind"] for f in persona.scan_private(text)}
-    found += [label for kind, label in _PRIVATE_LABELS.items() if kind in kinds]
+    # Each kind is searched on its own, uncapped: scan_private keeps 20 findings, so twenty links would hide a path.
+    found += [label for kind, label in _PRIVATE_LABELS.items() if persona.SECRET_KINDS[kind].search(text)]
     return found
 
 

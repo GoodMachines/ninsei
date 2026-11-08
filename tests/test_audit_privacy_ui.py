@@ -42,6 +42,40 @@ async def test_a_model_path_is_published_as_its_last_segment(bare, monkeypatch):
     assert [c for c in sent if c.get("t") == "presence"][-1]["model"] == "hermes-5"
 
 
+WIN_PATH = "C:\\Users\\jane.doe\\models\\qwen3-8b.gguf"
+
+
+def test_a_windows_model_path_is_cut_to_its_file_name():
+    from ninsei_engine.engine import _model_short
+    assert _model_short(WIN_PATH) == "qwen3-8b.gguf"
+    assert _model_short("/Users/jane/models/x.gguf") == "x.gguf"
+    assert _model_short("nous/hermes-5") == "hermes-5"
+
+
+async def test_a_windows_model_path_is_published_and_shown_short(bare, monkeypatch):
+    e, _ = bare()
+    e.save_settings({"onboarded": True, "agent_name": "Ada", "card_details": True})
+    e.store.set("model_last", WIN_PATH)
+    sent = []
+
+    async def capture(room, as_agent, content, **kw):
+        sent.append(content)
+        return {}
+    monkeypatch.setattr(e, "_publish_room", capture)
+    monkeypatch.setattr(e.store, "rooms", lambda: {ROOM: {}})
+    await e._presence_once()
+    live = [c for c in sent if c.get("t") == "presence"]
+    assert live and live[-1]["model"] == "qwen3-8b.gguf" and "jane" not in json.dumps(sent)
+    assert e.snapshot()["me"]["agent"]["model"] == "qwen3-8b.gguf"   # the owner's own card: the same short form
+
+
+@needs_node
+def test_the_card_shortens_a_windows_path_too():
+    from test_audit_ui import CARD, fn
+    r = run_js(fn(CARD, "shortModel") + "out([shortModel('C:\\\\Users\\\\jane\\\\m\\\\x.gguf'), shortModel('a/b'), shortModel('c')])")
+    assert r == ["x.gguf", "b", "c"]
+
+
 # --- Tall Tales topics are the interests as published ------------------------------------------------
 
 async def test_questions_use_the_published_interests_not_later_edits(bare):
@@ -70,6 +104,20 @@ async def test_questions_use_the_published_interests_not_later_edits(bare):
 ])
 def test_scan_secrets_flags_home_paths_emails_and_secret_urls(html):
     assert toy.scan_secrets(html)
+
+
+def test_scan_secrets_sees_a_home_path_after_many_other_flags():
+    # scan_private keeps 20 findings, sorted by kind: twenty secret links used to push the home path out.
+    links = "".join(f"<img src='https://x.example/{i}?token=t{i}abcdef'>" for i in range(25))
+    mails = "".join(f"<p>u{i}@example.com</p>" for i in range(25))
+    found = toy.scan_secrets(links + mails + "<!-- /Users/jane/.hermes/builds/x/index.html -->")
+    assert any("home-folder" in f for f in found), found
+    assert any("email" in f for f in found) and any("link carrying" in f for f in found)
+
+
+def test_scan_secrets_names_a_key_the_private_scan_finds():
+    found = toy.scan_secrets("<script>const t = 'eyJhbGciOiJIUzI1.eyJzdWIiOiIxMjM0.SflKxwRJ'</script>")
+    assert found and all(isinstance(f, str) and f for f in found)
 
 
 def test_scan_secrets_leaves_an_ordinary_toy_alone():
@@ -140,6 +188,21 @@ def test_a_message_that_only_knows_the_public_offer_id_attaches_nothing(hooks):
     mod.pre_llm_call(session_id="mine", user_message="Build...\nninsei build key (private): " + KEY)
     mod.pre_tool_call(session_id="mine")
     assert store.build_progress()[OID]["steps"] == 1
+
+
+def test_a_hook_without_the_key_never_opens_the_store(hooks, monkeypatch):
+    # Every hook in every Hermes chat runs this: one without a build key must not load the engine or open SQLite.
+    mod, store = hooks
+    opened = []
+    monkeypatch.setattr(mod, "_loader", SimpleNamespace(load_engine=lambda: opened.append("engine")))
+    monkeypatch.setattr(mod.sqlite3, "connect", lambda *a, **k: opened.append("db"))
+    mod.pre_llm_call(session_id="chat", user_message="what's the weather?")
+    mod.pre_llm_call(session_id="chat", user_message=[{"type": "text", "text": "hi"}])
+    mod.pre_tool_call(session_id="chat")
+    mod.on_human_input_request(session_id="chat")
+    mod.post_llm_call(session_id="chat")
+    mod.pre_llm_call(session_id=None, user_message="ninsei build key (private): " + KEY)
+    assert opened == []
 
 
 async def test_accepting_an_offer_mints_a_key_that_only_the_build_prompt_carries(bare):

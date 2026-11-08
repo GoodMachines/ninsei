@@ -7,6 +7,8 @@ import subprocess
 import unicodedata
 from pathlib import Path
 
+from ninsei_engine import names
+
 ROOT = Path(__file__).resolve().parent.parent
 TEXT = (".py", ".js", ".md", ".yaml", ".yml", ".json", ".css", ".html", ".txt", ".toml", ".ini")
 
@@ -17,14 +19,19 @@ def _tracked():
 
 
 def invisible(line: str) -> list:
+    # The scanner's format characters, plus what the engine itself treats as invisible (Hangul fillers, U+2800):
+    # a literal one in a test reads as an empty string to a reviewer. U+FE0F is an emoji's own style selector.
     return sorted({f"U+{ord(c):04X}" for c in line
-                   if unicodedata.category(c) in ("Cf", "Zl", "Zp") or (unicodedata.category(c) == "Cc" and c != "\t")})
+                   if unicodedata.category(c) in ("Cf", "Zl", "Zp") or (unicodedata.category(c) == "Cc" and c != "\t")
+                   or (names.invisible(c) and c not in "\t\ufe0e\ufe0f")})
 
 
 def test_the_check_sees_what_the_scanner_flags():
     assert invisible("x.lstrip(\"\ufeff\")") == ["U+FEFF"]
     assert invisible("a\u200bb \u202e") == ["U+200B", "U+202E"]
     assert invisible('x.lstrip("\\ufeff")  # an escape is fine') == []
+    assert invisible("Ada\u3164 \u2800") == ["U+2800", "U+3164"]
+    assert invisible("\u2764\ufe0f") == []
 
 
 def test_no_tracked_text_file_has_a_literal_invisible_character():

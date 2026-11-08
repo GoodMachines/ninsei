@@ -92,6 +92,12 @@ def _offer_with_key(db: sqlite3.Connection, key: str) -> Optional[str]:
 def _record(session_id: Any, *, text: Any = None, state: Optional[str] = None, step: bool = False) -> None:
     try:
         with _lock:
+            # These hooks run on every turn of every Hermes chat: only a known build session, or a message that
+            # carries a build key, loads the engine and opens the store.
+            if not isinstance(session_id, str) or not session_id:
+                return
+            if session_id not in _sessions and not (isinstance(text, str) and BUILD_KEY.search(text)):
+                return
             db = _db()
             if db is None:
                 return
