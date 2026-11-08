@@ -29,7 +29,7 @@ def hooks(tmp_path, monkeypatch):
     spec.loader.exec_module(pkg)
     mod = importlib.import_module(name + ".ninsei_hooks")
     store = Store(tmp_path / "ninsei.db")
-    store.set("offers", {OID: {"status": "building", "room": "r", "title": "Pixel Sorter"},
+    store.set("offers", {OID: {"status": "building", "room": "r", "title": "Pixel Sorter", "build_key": "c" * 32},
                          OTHER: {"status": "ready", "room": "r", "title": "Old"}})
     monkeypatch.setattr(mod, "_loader", SimpleNamespace(
         load_engine=lambda: SimpleNamespace(db_path_if_present=lambda: tmp_path / "ninsei.db")))
@@ -42,7 +42,7 @@ def hooks(tmp_path, monkeypatch):
 
 def test_hooks_track_only_an_accepted_offer_and_keep_only_a_count(hooks, tmp_path):
     mod, store = hooks
-    line = '::ninsei-offer{id="%s"}' % OID
+    line = "ninsei build key (private): " + "c" * 32
     assert mod.pre_llm_call(session_id="s0", user_message="unrelated chat") is None
     assert store.build_progress() == {}
     assert mod.pre_llm_call(session_id="s1", user_message="Build a toy...\n" + line) is None

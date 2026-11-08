@@ -1027,3 +1027,11 @@ Seen live: `POST /game/start` awaited the question-writing model call, which som
 - **Cancel.** `_end_hosted` (leave room, shutdown) cancels the room's start tasks and awaits them first; a done callback frees the slot even for a task cancelled before its first step, which never runs its own `finally`. A cancel after `tales_start` was posted leaves the game in `_host_games`, which `_end_hosted` then ends with `tales_end`.
 - Tests that wanted the old "returns when started" shape use `tests/start_helpers.py::started`.
 - ARCHITECTURE.md lost a few words elsewhere (the player cap, EOSE and art catch-up asides) to stay under its 1,500-word test.
+
+## Audit fixes: privacy and UI group (2026-11-08)
+
+- **Model id on the wire.** `model_last` still stores the full id (the brain test and Settings expect it); the presence beat publishes `_model_short(...)`, its last path segment, the same form `shortModel()` shows the owner. Received ids from peers are untouched (the UI shortens those too).
+- **Tall Tales topics.** `publish_card` now records `card_interests` in settings; questions use `_published_interests()` (empty until a card is published, and after an upgrade until the next publish, rather than falling back to live settings).
+- **Toy scan.** `toy.scan_secrets` also runs `persona.scan_private` and reports home paths, emails and secret-bearing URLs (same confirm step). IPs, phone numbers and addresses are left out on purpose: toys are full of number-like strings and the confirm step would fire on innocent builds.
+- **Direction marks.** Two layers: `linkAt` refuses an address containing any format character (`\p{Cf}`), and `.h-link` is `unicode-bidi:isolate; direction:ltr` so a mark in the text before a link can't reach into it.
+- **Build hooks.** The offer id is public, so it no longer binds a session. `answer_offer` mints a private `build_key` on accept; the build prompt carries `ninsei build key (private): <key>`; the hooks look the key up in the store (offer must be `building`). `build_key` is stripped from the UI's pending offers. Not done: a TTL for offers stuck in `building` (separate concern, not needed once the key gates attachment).

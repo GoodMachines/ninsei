@@ -1008,6 +1008,8 @@ function linkAt(text, i) {
   const m = /^https?:\/\/[^\s<>]{1,2000}/i.exec(text.slice(i, i + 2010))
   if (!m) return null
   let url = m[0]
+  // A text-direction control inside an address (U+202E and friends) can draw it as another address: not a link.
+  if (/[\p{Cf}\u2028\u2029]/u.test(url)) return null
   for (;;) {
     const c = url.charAt(url.length - 1)
     const count = ch => url.split(ch).length - 1

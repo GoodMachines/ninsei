@@ -1061,6 +1061,8 @@ function linkAt(text, i) {
   const m = /^https?:\/\/[^\s<>]{1,2000}/i.exec(text.slice(i, i + 2010))
   if (!m) return null
   let url = m[0]
+  // A text-direction control inside an address (U+202E and friends) can draw it as another address: not a link.
+  if (/[\p{Cf}\u2028\u2029]/u.test(url)) return null
   for (;;) {
     const c = url.charAt(url.length - 1)
     const count = ch => url.split(ch).length - 1
@@ -2068,7 +2070,7 @@ const CSS = TOKENS + `
 .h-jump-btn{pointer-events:auto;display:inline-flex;align-items:center;gap:6px;height:30px;padding:0 13px 0 10px;border:1px solid var(--h-line2);border-radius:999px;background:var(--h-card);color:var(--h-fg);font:inherit;font-size:12.5px;font-weight:600;cursor:pointer;box-shadow:0 8px 22px -10px var(--h-shadow)}
 .h-jump-btn:hover{background:var(--h-hover)}
 .h-jump-btn:focus-visible,.h-link:focus-visible,.h-search-in:focus-visible{outline:2px solid var(--h-accent);outline-offset:1px}
-.h-link{color:var(--h-accent);text-decoration:underline;text-underline-offset:2px;overflow-wrap:anywhere;word-break:break-all}
+.h-link{color:var(--h-accent);text-decoration:underline;text-underline-offset:2px;overflow-wrap:anywhere;word-break:break-all;unicode-bidi:isolate;direction:ltr}
 .h-link:hover{text-decoration-thickness:2px}
 button.h-link{background:none;border:0;padding:0;font:inherit;cursor:pointer;text-align:left}
 .h-code{font-family:var(--h-mono);font-size:.92em;padding:1px 5px;border-radius:5px;background:var(--h-raise);border:1px solid var(--h-line)}
