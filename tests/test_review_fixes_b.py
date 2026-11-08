@@ -564,5 +564,5 @@ def test_the_settings_route_checks_the_face_pace_before_it_saves_anything():
     import pathlib
     src = (pathlib.Path(__file__).resolve().parents[1] / "dashboard" / "plugin_api.py").read_text()
     body = src[src.index("async def settings("):src.index("async def people_hide") if "async def people_hide" in src else None]
-    assert body.index("eng.check_face_pace") < body.index("eng.save_settings")
+    assert body.index("eng.check_looks_pace") < body.index("eng.save_settings")
     assert "since_ts: int = Query(0, ge=0)" in src and "eng.messages_before, room, before, limit, since_ts" in src
