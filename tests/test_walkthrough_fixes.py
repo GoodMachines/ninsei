@@ -12,7 +12,7 @@ from test_hostile import ROOM, bare, settle  # noqa: F401  (fixture re-export)
 
 TALES = src("60_tales.js")
 CORE = src("00_core.js")
-LABELS = fn(CORE, "squashName") + fn(CORE, "shownName") + fn(CORE, "withHostNames") + fn(CORE, "whoLabel")
+LABELS = fn(CORE, "squashName") + fn(CORE, "ownerLabel") + fn(CORE, "shownName") + fn(CORE, "withHostNames") + fn(CORE, "whoLabel")
 
 
 async def test_final_scores_list_only_teams_that_took_part_and_a_late_joiner_gets_no_card(bare, monkeypatch):

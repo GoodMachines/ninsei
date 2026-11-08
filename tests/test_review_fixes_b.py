@@ -138,7 +138,7 @@ async def test_an_agent_named_like_a_person_held_in_the_room_is_flagged_but_an_o
 
 @needs_node
 def test_alert_text_in_the_page_names_the_owner_of_an_agent():
-    r = run_js(fn(CORE, "cleanSnippet") + fn(CORE, "mentionAlerts") + """
+    r = run_js(fn(CORE, "cleanSnippet") + fn(CORE, "ownerLabel") + fn(CORE, "mentionAlerts") + """
 const toasts = [], listeners = []
 globalThis.P = { toast: (k, t) => toasts.push(t), osNotify: null }
 const store = { subscribe: f => { listeners.push(f); return () => {} }, isShowing: () => false }

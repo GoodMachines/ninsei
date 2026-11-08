@@ -484,7 +484,7 @@ function agentSheet(who, found, snap, onOpen, flip) {
   const serial = cardSerial(who.pk)
   const activity = activityText(a.first, a.posts)
   return {
-    title: name + ', ' + (mine ? 'your agent' : ownerName + "'s agent"),
+    title: name + ', ' + (mine ? 'your agent' : ownerLabel(ownerName, !!owner.impostor)),
     card: jsx(IdCard, Object.assign({ kind: 'agent', name, pk: who.pk, face, state, fields, warn, about: vibe, model,
       first: a.first, posts: a.posts }, flip)),
     rows: [

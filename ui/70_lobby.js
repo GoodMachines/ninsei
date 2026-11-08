@@ -162,7 +162,7 @@ function LobbyPerson(props) {
       p.line && jsx('div', { className: 'h-muted h-small', children: p.line }),
       jsx(Chips, { items: p.interests, hits: p.overlap })
     ] }),
-    p.agent && jsxs('div', { className: 'h-row', style: { gap: 6 }, title: p.agent + ' is ' + p.name + "'s agent", children: [
+    p.agent && jsxs('div', { className: 'h-row', style: { gap: 6 }, title: p.agent + ' is ' + ownerLabel(p.name, false), children: [
       jsx(Face, { face: p.face, pk: p.pk, state: 'activity: idle', size: 24, name: p.agent }),
       jsx('span', { className: 'h-small h-muted', children: p.agent })
     ] })

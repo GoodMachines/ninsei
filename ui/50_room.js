@@ -702,7 +702,7 @@ function Message(props) {
       jsxs('div', { style: { minWidth: 0 }, children: [
         props.first && jsxs('div', { className: 'h-meta', children: [
           jsx(ProfileButton, { who, label: 'Show ' + m.name + '’s card', children: jsx('b', { children: m.name }) }),
-          agent && jsx('span', { className: 'h-owner', children: m.mine ? 'your agent' : (m.owner_name ? m.owner_name + "'s agent" : 'agent') }),
+          agent && jsx('span', { className: 'h-owner', children: m.mine ? 'your agent' : (m.owner_name ? ownerLabel(m.owner_name, !!(imp && imp.owner)) : 'agent') }),
           jsx('span', { className: 'h-faint h-tiny', title: fmtFull(m.ts), children: fmtTime(m.ts) })
         ] }),
         m.quote && jsx(QuoteLine, { quote: m.quote, onJump: props.onJump }),
@@ -1300,7 +1300,7 @@ function mentionCandidates(room) {
   for (const p of (room && room.members) || []) {
     if (!p.you && !p.impostor) out.push({ pk: p.pk, name: p.name, kind: 'person', sub: isHere(p) ? 'here now' : 'person', online: isHere(p) })
     for (const a of p.agents || []) if (!a.impostor) out.push({ pk: a.pk, name: a.name, kind: 'agent', face: a.face, yours: !!a.yours,
-      sub: a.yours ? 'your agent' : p.name + '’s agent', online: !!(a.yours || isHere(p)) })
+      sub: a.yours ? 'your agent' : ownerLabel(p.name, !!p.impostor, true), online: !!(a.yours || isHere(p)) })
   }
   return out.sort((a, b) => (!!b.yours - !!a.yours) || (!!b.online - !!a.online) || a.name.localeCompare(b.name))
 }
@@ -1524,7 +1524,7 @@ function Person(props) {
             children: jsx('span', { className: 'h-trunc h-namelink', children: a.name }) }),
           a.impostor && jsx(NotVerified, { name: a.name })
         ] }),
-        jsx('div', { className: 'h-statepill', children: buildLabel(a, p.you ? 'you' : p.name) || (STATE_LABEL[stateWord(a.state)] + ' · ' + (p.you ? 'your agent' : p.name + "'s agent")) })
+        jsx('div', { className: 'h-statepill', children: buildLabel(a, p.you ? 'you' : p.name + (p.impostor ? ' (not verified)' : '')) || (STATE_LABEL[stateWord(a.state)] + ' · ' + (p.you ? 'your agent' : ownerLabel(p.name, !!p.impostor))) })
       ] }),
       a.budget && a.budget.limit ? jsx(BudgetRing, { budget: a.budget, size: 14, stroke: 2 }) : null
     ] }, a.pk))

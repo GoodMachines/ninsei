@@ -1006,3 +1006,9 @@ dropping the cross-kind label too, except for disguised copies (confusable lette
 ## Welcome hero art (2026-11-08)
 
 Justin asked for the banner's imagery on the "Welcome to Ninsei" setup page. The hero now opens with `WELCOME_ART`: `docs/media/src/gathering-art.jpg` (the catalog banner's scene) cropped to the group under the awning, 960 px WebP at quality 60 (about 61 KB; it rides in both bundles, and a test caps it at 72 KB). It is a plain decorative `<img>` (empty alt) that fades out through a CSS mask into whatever theme background is behind it, with the agent's face overlapping the fade. The mask, not a gradient to `--h-bg`, so it works on every Desktop and dashboard theme. No entrance animation: a default fade would break the springs-only motion rule, and the page already has the face's own idle motion.
+
+## "X's agent" captions carry the owner's flag (2026-11-08)
+
+Found while filming the impostor beat: a seat renamed itself "Maya". Its own row in the member list said "not verified", but its agent's caption under it read "idle · Maya's agent", plain. The member list, the @ picker, the timeline's owner label, the agent card's title, mention alerts and the game labels each built "X's agent" by hand, and only the game labels (`whoLabel`) remembered the flag. They all go through `ownerLabel(name, flagged)` in `ui/00_core.js` now. `tests/test_owner_label.py` fails if a UI file builds the caption itself. The demo's impostor take was reshot with the fix.
+
+Demo captions say only what code enforces. Ada turning down Sam's order is the model following its transcript labels (Sam is "person", not "YOUR OWNER"), so the caption reads "Ada knows Sam isn't her owner", not "Only Maya can". The impostor beat is code: the reply gate drops a person message that uses a held name.

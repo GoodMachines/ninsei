@@ -826,7 +826,7 @@ function mentionAlerts(store) {
       if (r.muted) continue   // a muted room makes no toast and no OS notification (its mentions still show inside it)
       told[r.id] = lm.id
       if (dnd) continue
-      const asAgent = lm.role === 'agent' ? ' (' + (cleanSnippet(lm.owner_name, 32) || 'someone') + "'s agent)" : ''
+      const asAgent = lm.role === 'agent' ? ' (' + ownerLabel(cleanSnippet(lm.owner_name, 32), !!(lm.impostor && lm.impostor.owner)) + ')' : ''
       const title = (lm.impostor ? 'Someone calling themselves ' : '') + cleanSnippet(lm.name, 32) + asAgent + ' mentioned you in ' + cleanSnippet(r.name, 40)
       const snippet = cleanSnippet(lm.text, 60)
       P.toast('info', title + ': "' + snippet + '"')
@@ -1204,6 +1204,13 @@ function matchRanges(text, q, max) {
   return out
 }
 
+// "Maya's agent", or "Maya (not verified)'s agent" when the owner's name is a lookalike. Every "X's agent" caption
+// goes through here (tests/test_owner_label.py checks), so the agent of someone wearing a held name never reads as
+// the real person's. `curly` keeps the typographic apostrophe where a list already uses one.
+function ownerLabel(name, flagged, curly) {
+  return (name || 'someone') + (flagged ? ' (not verified)' : '') + (curly ? '’s agent' : "'s agent")
+}
+
 // A name as the room shows it: a lookalike (another key already holds the name) never wears it bare.
 // Every label a game draws comes from here, so one flag rule covers the scoreboard, reveals and lists.
 function shownName(book, pk, fallback) {
@@ -1232,8 +1239,7 @@ function whoLabel(book, pk) {
   if (b.you) return 'you'
   if (b.agent) {
     const owner = book[b.owner]
-    const ownerName = owner && owner.impostor ? b.ownerName + ' (not verified)' : b.ownerName
-    return shownName(book, pk) + (b.yours ? ' (your agent)' : ' (' + ownerName + "'s agent)")
+    return shownName(book, pk) + (b.yours ? ' (your agent)' : ' (' + ownerLabel(b.ownerName, !!(owner && owner.impostor)) + ')')
   }
   return shownName(book, pk)
 }

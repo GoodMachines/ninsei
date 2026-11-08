@@ -862,7 +862,7 @@ function mentionAlerts(store) {
       if (r.muted) continue   // a muted room makes no toast and no OS notification (its mentions still show inside it)
       told[r.id] = lm.id
       if (dnd) continue
-      const asAgent = lm.role === 'agent' ? ' (' + (cleanSnippet(lm.owner_name, 32) || 'someone') + "'s agent)" : ''
+      const asAgent = lm.role === 'agent' ? ' (' + ownerLabel(cleanSnippet(lm.owner_name, 32), !!(lm.impostor && lm.impostor.owner)) + ')' : ''
       const title = (lm.impostor ? 'Someone calling themselves ' : '') + cleanSnippet(lm.name, 32) + asAgent + ' mentioned you in ' + cleanSnippet(r.name, 40)
       const snippet = cleanSnippet(lm.text, 60)
       P.toast('info', title + ': "' + snippet + '"')
@@ -1240,6 +1240,13 @@ function matchRanges(text, q, max) {
   return out
 }
 
+// "Maya's agent", or "Maya (not verified)'s agent" when the owner's name is a lookalike. Every "X's agent" caption
+// goes through here (tests/test_owner_label.py checks), so the agent of someone wearing a held name never reads as
+// the real person's. `curly` keeps the typographic apostrophe where a list already uses one.
+function ownerLabel(name, flagged, curly) {
+  return (name || 'someone') + (flagged ? ' (not verified)' : '') + (curly ? '’s agent' : "'s agent")
+}
+
 // A name as the room shows it: a lookalike (another key already holds the name) never wears it bare.
 // Every label a game draws comes from here, so one flag rule covers the scoreboard, reveals and lists.
 function shownName(book, pk, fallback) {
@@ -1268,8 +1275,7 @@ function whoLabel(book, pk) {
   if (b.you) return 'you'
   if (b.agent) {
     const owner = book[b.owner]
-    const ownerName = owner && owner.impostor ? b.ownerName + ' (not verified)' : b.ownerName
-    return shownName(book, pk) + (b.yours ? ' (your agent)' : ' (' + ownerName + "'s agent)")
+    return shownName(book, pk) + (b.yours ? ' (your agent)' : ' (' + ownerLabel(b.ownerName, !!(owner && owner.impostor)) + ')')
   }
   return shownName(book, pk)
 }
@@ -4380,7 +4386,7 @@ function agentSheet(who, found, snap, onOpen, flip) {
   const serial = cardSerial(who.pk)
   const activity = activityText(a.first, a.posts)
   return {
-    title: name + ', ' + (mine ? 'your agent' : ownerName + "'s agent"),
+    title: name + ', ' + (mine ? 'your agent' : ownerLabel(ownerName, !!owner.impostor)),
     card: jsx(IdCard, Object.assign({ kind: 'agent', name, pk: who.pk, face, state, fields, warn, about: vibe, model,
       first: a.first, posts: a.posts }, flip)),
     rows: [
@@ -6035,7 +6041,7 @@ function Message(props) {
       jsxs('div', { style: { minWidth: 0 }, children: [
         props.first && jsxs('div', { className: 'h-meta', children: [
           jsx(ProfileButton, { who, label: 'Show ' + m.name + '’s card', children: jsx('b', { children: m.name }) }),
-          agent && jsx('span', { className: 'h-owner', children: m.mine ? 'your agent' : (m.owner_name ? m.owner_name + "'s agent" : 'agent') }),
+          agent && jsx('span', { className: 'h-owner', children: m.mine ? 'your agent' : (m.owner_name ? ownerLabel(m.owner_name, !!(imp && imp.owner)) : 'agent') }),
           jsx('span', { className: 'h-faint h-tiny', title: fmtFull(m.ts), children: fmtTime(m.ts) })
         ] }),
         m.quote && jsx(QuoteLine, { quote: m.quote, onJump: props.onJump }),
@@ -6633,7 +6639,7 @@ function mentionCandidates(room) {
   for (const p of (room && room.members) || []) {
     if (!p.you && !p.impostor) out.push({ pk: p.pk, name: p.name, kind: 'person', sub: isHere(p) ? 'here now' : 'person', online: isHere(p) })
     for (const a of p.agents || []) if (!a.impostor) out.push({ pk: a.pk, name: a.name, kind: 'agent', face: a.face, yours: !!a.yours,
-      sub: a.yours ? 'your agent' : p.name + '’s agent', online: !!(a.yours || isHere(p)) })
+      sub: a.yours ? 'your agent' : ownerLabel(p.name, !!p.impostor, true), online: !!(a.yours || isHere(p)) })
   }
   return out.sort((a, b) => (!!b.yours - !!a.yours) || (!!b.online - !!a.online) || a.name.localeCompare(b.name))
 }
@@ -6857,7 +6863,7 @@ function Person(props) {
             children: jsx('span', { className: 'h-trunc h-namelink', children: a.name }) }),
           a.impostor && jsx(NotVerified, { name: a.name })
         ] }),
-        jsx('div', { className: 'h-statepill', children: buildLabel(a, p.you ? 'you' : p.name) || (STATE_LABEL[stateWord(a.state)] + ' · ' + (p.you ? 'your agent' : p.name + "'s agent")) })
+        jsx('div', { className: 'h-statepill', children: buildLabel(a, p.you ? 'you' : p.name + (p.impostor ? ' (not verified)' : '')) || (STATE_LABEL[stateWord(a.state)] + ' · ' + (p.you ? 'your agent' : ownerLabel(p.name, !!p.impostor))) })
       ] }),
       a.budget && a.budget.limit ? jsx(BudgetRing, { budget: a.budget, size: 14, stroke: 2 }) : null
     ] }, a.pk))
@@ -8390,7 +8396,7 @@ function LobbyPerson(props) {
       p.line && jsx('div', { className: 'h-muted h-small', children: p.line }),
       jsx(Chips, { items: p.interests, hits: p.overlap })
     ] }),
-    p.agent && jsxs('div', { className: 'h-row', style: { gap: 6 }, title: p.agent + ' is ' + p.name + "'s agent", children: [
+    p.agent && jsxs('div', { className: 'h-row', style: { gap: 6 }, title: p.agent + ' is ' + ownerLabel(p.name, false), children: [
       jsx(Face, { face: p.face, pk: p.pk, state: 'activity: idle', size: 24, name: p.agent }),
       jsx('span', { className: 'h-small h-muted', children: p.agent })
     ] })

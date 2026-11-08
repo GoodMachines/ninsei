@@ -116,7 +116,7 @@ out([
 
 @needs_node
 def test_composer_offers_room_members_and_enter_inserts_the_full_name():
-    js = MENTION_JS() + composer_js() + fn(ROOM, "mentionCandidates") + fn(ROOM, "Composer") + """
+    js = MENTION_JS() + composer_js() + fn(CORE, "ownerLabel") + fn(ROOM, "mentionCandidates") + fn(ROOM, "Composer") + """
 function useMemo(f) { return f() }
 const useLayoutEffect = useEffect
 const isHere = p => !!p.online; function Face() {}; function Initial() {}; function PersonMark() {}; function typingPing() {}; function GamesMenu() {}; function gameName(m) { return m }
