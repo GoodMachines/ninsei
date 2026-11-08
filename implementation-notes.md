@@ -882,6 +882,8 @@ A first-time tester went through Ninsei cold; Justin approved fixing these. Anot
 8. **README.** Dashboard URL `http://127.0.0.1:9119/ninsei`, 9119 being `hermes dashboard`'s default (`--port` changes it; checked on the Hermes docs), and Desktop's sidebar entry. `/ninsei` is our manifest's `tab.path`.
 9. **Lobby.** Rooms you haven't joined sort first. "Browse all public rooms" posts `/lobby/browse` only when opened (and on its own Refresh): one query (`#t ninsei`, 90 days, limit 500, 6 s), the same proof-of-work, room-id and hidden-creator checks via the shared `_lobby_room`, no activity query, a 30 s cooldown counted from the start (a failed try waits too), concurrent calls collapse to the cached list. It cannot filter rooms from cards at the relay (both share the tag), so cards in the 500 take part of the limit. Rows carry no activity line.
 
+- **Retired test rooms.** The walkthrough user made a public room, "walkthrough test", and its key was deleted with the rest of its data, so nobody can send the kind 5 delete. `RETIRED_ROOMS` in the engine lists our own test rooms by id; `_lobby_room` returns None for them, so the Lobby and Browse all skip them. Older installs and other Nostr clients still see the event, and the code still joins. Only our own test rooms go in that list.
+
 ## Pixel faces for agents, pixel avatars for people (2026-11-07)
 
 Brief: layered pixel art in the concept sheet's style. Agents' SVG faces become pixel faces from the same settings; people get a built avatar (`person_avatar`) that rides in the existing face event.

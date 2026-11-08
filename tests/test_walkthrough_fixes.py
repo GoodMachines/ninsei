@@ -456,3 +456,33 @@ def test_the_popover_measures_its_containing_block_instead_of_assuming_one():
     assert "const origin = el.getBoundingClientRect ? el.getBoundingClientRect()" in body
     assert "pos.left - origin.left" in body and "pos.top - origin.top" in body
     assert "base.left" not in body
+
+
+async def test_a_retired_test_room_is_left_out_of_the_lobby_and_browse_all(bare, monkeypatch):
+    import json as _json
+    from ninsei_engine import engine as eng_mod, nostr
+    from test_hostile import Key
+    e, _ = bare()
+    e.save_settings({"interests": ["synths"]})
+    k = Key("tester")
+    keep, gone = eng_mod.room_id_for(k.ppk, "a"), eng_mod.room_id_for(k.ppk, "b")
+
+    def meta(nonce, rid):
+        return nostr.build_event(k.psk, eng_mod.KIND_META, _json.dumps({"name": "Room " + nonce, "nonce": nonce}),
+                                 [["d", "ninsei/room/" + rid], ["t", eng_mod.APP_TAG], ["t", "synths"]], pow_bits=12)
+
+    class Pool:
+        async def query(self, filters, **kw):
+            return [meta("a", keep), meta("b", gone)]
+
+    e.pool = Pool()
+    monkeypatch.setattr(eng_mod, "RETIRED_ROOMS", frozenset({gone}))
+    assert {r["id"] for r in (await e.browse_rooms())["rooms"]} == {keep}
+    assert gone not in {r["id"] for r in (await e.refresh_lobby())["rooms"]}
+    assert keep in {r["id"] for r in (await e.refresh_lobby())["rooms"]}
+
+
+def test_the_shipped_retired_list_holds_only_room_ids():
+    from ninsei_engine import engine as eng_mod
+    assert eng_mod.RETIRED_ROOMS and all(len(r) == 16 and int(r, 16) >= 0 for r in eng_mod.RETIRED_ROOMS)
+    assert eng_mod.COMMONS_ID not in eng_mod.RETIRED_ROOMS

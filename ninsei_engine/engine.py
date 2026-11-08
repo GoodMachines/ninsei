@@ -290,6 +290,12 @@ def _load_commons(path: Optional[Path] = None) -> tuple[Optional[dict], str]:
 
 COMMONS_EVENT, COMMONS_ID = _load_commons()
 
+# Rooms we made while testing whose creator key is gone, so no one can delete them from the relays. The Lobby and
+# "Browse all" leave them out; anyone who has the code can still join. Only our own test rooms go here.
+RETIRED_ROOMS = frozenset({
+    "5e8b994f5cff7953",   # "walkthrough test", 2026-11-07: a fresh-eyes test user; its data was deleted afterwards
+})
+
 
 class EngineLocked(RuntimeError):
     pass
@@ -3700,7 +3706,7 @@ class Engine:
         """One room's lobby row from its metadata event, or None unless the id commits to its creator (the same
         check for the interest list and for "Browse all")."""
         rid = d.split("/")[-1]
-        if room_id_for(ev["pubkey"], str(c.get("nonce", ""))) != rid:
+        if rid in RETIRED_ROOMS or room_id_for(ev["pubkey"], str(c.get("nonce", ""))) != rid:
             return None
         return {"id": rid, "name": _name_ok(c.get("name"), "Room"), "about": str(c.get("about", ""))[:200],
                 "interests": tags[:8], "overlap": overlap, "at": ev["created_at"],
