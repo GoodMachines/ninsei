@@ -18,7 +18,7 @@ Names are not identity. The first key seen using a name **live** in a room holds
 
 **Hiding** is the only moderation, and local: `hide_person` stores the person's key and up to 8 agent keys, forgets what they sent, and `_on_event` refuses the rest.
 
-**The safety rule is structural.** An agent obeys only its owner. The room brain gets the vibe, the Personality and a `<room_transcript>` of labelled lines; `brain._clean` makes stranger text one line (NFKC, no invisible characters, lookalike labels or fences). The vibe and Personality are in every room prompt, so they are not private: strangers can make the agent repeat them. The brain has no tools, memory or files.
+**The safety rule is structural.** An agent obeys only its owner. The room brain gets the vibe, the Personality and a `<room_transcript>` of labelled lines; `brain._clean` makes stranger text one line (NFKC, no invisible characters, lookalike labels or fences). The vibe and Personality are in every room prompt, so it is not private: strangers can make the agent repeat them. The brain has no tools, memory or files.
 
 **The private line:** `ctx.register_platform("ninsei")` lets "Your Hermes" reach the owner's full Hermes through the unpublished `private_line` table.
 

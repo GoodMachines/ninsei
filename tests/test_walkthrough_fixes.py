@@ -257,17 +257,21 @@ def test_the_status_picker_is_a_popover_not_an_inline_block():
     assert ".h-mystatus .h-menu{position:static" not in css       # 0c9643e's inline version is gone
 
 
+def _close(e, ticket, used):
+    e.store.settle(ticket, used)      # the ledger call that records what a model call really cost
+
+
 # ---- budget words ----------------------------------------------------------------------------------------------
 
 def test_a_call_in_flight_is_held_not_used_so_the_shown_use_never_drops_when_it_settles(bare):
     e, _ = bare()
     e.save_settings({"budget_daily": 10000, "msgs_daily": 60})
-    e.store.settle(e.store.reserve("chat", 100, 10000), 100)            # 100 tokens really spent
+    _close(e, e.store.reserve("chat", 100, 10000), 100)            # 100 tokens really spent
     ticket = e.store.reserve("chat", 1200, 10000)                       # a reply is on its way, holding 1,200
     mid = e.budget_view()
     assert mid["used"] == 100 and mid["held"] == 1200 and mid["by"] == {"chat": 100}
     assert e.store.budget_used() == {"chat": 1300}                      # the limit still counts the hold
-    e.store.settle(ticket, 600)                                         # it cost less than the hold
+    _close(e, ticket, 600)                                         # it cost less than the hold
     after = e.budget_view()
     assert after["used"] == 700 and after["held"] == 0 and after["used"] >= mid["used"]   # only ever goes up
 
@@ -279,7 +283,7 @@ def test_replies_a_day_come_from_what_replies_really_cost_and_are_capped_by_the_
     first = e.budget_view()
     assert first["reply_tokens"] == REPLY_TOKENS_GUESS and first["replies"]["per_day"] == 40   # 40,000 / 1,000
     for used in (500, 700, 600):                                        # three settled replies, 600 on average
-        e.store.settle(e.store.reserve("chat", 1000, 40000), used)
+        _close(e, e.store.reserve("chat", 1000, 40000), used)
     v = e.budget_view()
     assert v["reply_tokens"] == 600 and v["replies"]["per_day"] == 60   # 66 by tokens, but 60 messages a day is the cap
     assert v["replies"]["left"] == min(60, (40000 - 1800) // 600)
