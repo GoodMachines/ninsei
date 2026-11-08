@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import re
 
+from . import persona
+
 # Applied to every toy before it renders (backend output and, again, in the UI), so a hostile peer's
 # HTML can't phone home through fetch, XHR, WebSocket, images, fonts, frames or workers even after the
 # viewer presses Run. The iframe sandbox is the second layer.
@@ -77,10 +79,22 @@ _SECRET_PATTERNS = [
 ]
 
 
+_PRIVATE_LABELS = {
+    "home_path": "a home-folder path (it names an account on your computer)",
+    "email": "an email address",
+    "url_secret": "a link carrying a token or password",
+}
+
+
 def scan_secrets(html: str) -> list[str]:
     """Human-readable names for each secret-looking pattern found in the source."""
     text = html or ""
-    return [label for label, rx in _SECRET_PATTERNS if rx.search(text)]
+    found = [label for label, rx in _SECRET_PATTERNS if rx.search(text)]
+    # The build prompt hands the model the save path (under the owner's home folder), so a comment that
+    # repeats it, or the owner's email, is the likely leak. The same detector the room's drafts go through.
+    kinds = {f["kind"] for f in persona.scan_private(text)}
+    found += [label for kind, label in _PRIVATE_LABELS.items() if kind in kinds]
+    return found
 
 
 def serialized_size(content: dict) -> int:

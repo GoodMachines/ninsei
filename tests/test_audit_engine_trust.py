@@ -251,7 +251,7 @@ async def test_share_refuses_a_file_changed_after_review(bare):
     _ready_offer(e, b"<html>v1</html>")
     rep = e.build_report(OID)
     assert rep["sha256"] == hashlib.sha256(b"<html>v1</html>").hexdigest()
-    e.build_path(OID).write_bytes(b"<html>v2 /Users/someone</html>")
+    e.build_path(OID).write_bytes(b"<html>v2 changed</html>")
     with pytest.raises(BuildChanged):
         await e.share_build(OID, "T", False, rep["sha256"])
     with pytest.raises(BuildChanged):
@@ -439,6 +439,7 @@ async def test_questions_use_room_interests_until_the_card_is_published(bare):
     await e._end_hosted(ROOM)
     cur = e.settings()
     cur["card_published_at"] = int(time.time())
+    cur["card_interests"] = ["private grief"]   # what publish_card records
     e.store.set("settings", cur)
     await started(e, ROOM, 1)
     assert "private grief" in llm.prompts[-1]
