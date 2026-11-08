@@ -17,6 +17,8 @@ from pathlib import Path
 
 import pytest
 
+from start_helpers import started
+
 from ninsei_engine.engine import (HISTORY_FILTERS_PER_SUB, KIND_LIVE, KIND_META, KIND_ROOM, MAX_PLAYERS,
                                   MAX_ROOM_EVENTS, OFFER_TTL)
 from ninsei_engine.relays import RelayPool
@@ -104,7 +106,7 @@ async def test_a_hosted_game_remembers_who_was_there_before_it_started(bare):
     e, _ = bare()
     early, late = Key("early"), Key("late")
     await e._on_event(early.person({"t": "join", "name": "Early"}), "relay")
-    gid = (await e.start_tales(ROOM, 1))["gid"]
+    gid = (await started(e, ROOM, 1))["gid"]
     await e._on_event(late.person({"t": "join", "name": "Late"}), "relay")
     regulars = e._host_games[gid]["regulars"]
     assert early.ppk in regulars and late.ppk not in regulars

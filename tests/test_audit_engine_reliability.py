@@ -22,6 +22,7 @@ from ninsei_engine.engine import (CONTESTED, HISTORY_FILTERS_PER_SUB, KIND_LIVE,
 from ninsei_engine.relays import RelayPool
 from ninsei_engine.store import Store
 from test_engine import StubLLM, wait_for
+from start_helpers import started
 from test_hostile import ROOM, FakePool, Key, bare, own_person_event, settle  # noqa: F401  (fixture re-export)
 
 BUSY = "bb" * 8
@@ -261,11 +262,12 @@ async def test_two_concurrent_starts_make_one_game(bare):
         with pytest.raises(ValueError, match="already running"):
             await t
     llm.gate.set()
-    assert "gid" in await first
+    assert await first == {"starting": True}
+    assert await wait_for(lambda: not e._starting_games and e._host_games)
     starts = [ev for ev in e.pool.sent if json.loads(ev["content"]).get("t") == "tales_start"]
     assert len(starts) == 1 and len(e._host_games) == 1 and not e._starting_games
     with pytest.raises(ValueError, match="already running"):  # and a hosted game counts before its start is in view
-        await e.start_tales(ROOM, 1)
+        await started(e, ROOM, 1)
     await e._end_hosted(ROOM)
 
 
@@ -276,10 +278,10 @@ async def test_a_failed_start_frees_the_room(bare):
     llm.complete = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("model down")) \
         if k.get("purpose") == "ninsei.tales.questions" else orig(*a, **k)
     with pytest.raises(Exception):
-        await e.start_tales(ROOM, 1)
+        await started(e, ROOM, 1)
     assert not e._starting_games
     llm.complete = orig
-    assert "gid" in await e.start_tales(ROOM, 1)
+    assert "gid" in await started(e, ROOM, 1)
     await e._end_hosted(ROOM)
 
 
@@ -541,7 +543,7 @@ async def test_the_host_posts_claims_and_a_lucky_hosts_view_blocks_the_truth(bar
     e, _ = bare(ts=0.02)
     mal = Key("mal")
     await e._on_event(mal.agent({"t": "presence", "name": "Mal", "state": "activity: idle"}, kind=KIND_LIVE), "relay")
-    gid = (await e.start_tales(ROOM, 1))["gid"]
+    gid = (await started(e, ROOM, 1))["gid"]
     assert await wait_for(lambda: (e.game_view(ROOM) or {}).get("phase") == "fakes")
     n = e.game_view(ROOM)["n"]
     await e.submit_fake(ROOM, gid, n, "three")  # the host's own owner guesses the real answer: lucky
@@ -567,3 +569,105 @@ async def test_the_host_posts_claims_and_a_lucky_hosts_view_blocks_the_truth(bar
     # the lucky rule: the truth carries the lucky writer's token, so to them it reads as their own answer
     assert set(e.game_view(ROOM)["blocked"]) == {texts["three"], texts["Ada five"]}  # + my own agent's fake
     await e._end_hosted(ROOM)
+
+
+# --- the start is a background task: Desktop's bridge gives up on a route after 30 s -------------------------
+
+def _slow_questions(e, gate, result=None, raises=None):
+    """Replace the brain's question writing with one that waits for `gate` (an asyncio.Event) first."""
+    async def questions(persona, interests, n):
+        await gate.wait()
+        if raises:
+            raise raises
+        return result if result is not None else [{"q": "How many?", "a": "three", "fake": "five"}]
+    e.brain.questions = questions
+
+
+async def test_start_tales_returns_before_the_questions_are_written(bare):
+    e, _ = bare()
+    gate = asyncio.Event()
+    _slow_questions(e, gate)
+    out = await asyncio.wait_for(e.start_tales(ROOM, 1), 1)   # the route's answer, with the model still busy
+    assert out == {"starting": True} and not e._host_games
+    gate.set()
+    assert await wait_for(lambda: e._host_games and ROOM not in e._starting_games)
+    await e._end_hosted(ROOM)
+
+
+async def test_the_snapshot_shows_my_game_starting_before_its_event_exists(bare):
+    e, _ = bare()
+    gate = asyncio.Event()
+    _slow_questions(e, gate)
+    await e.start_tales(ROOM, 1, mode="tales")
+    g = e.snapshot(ROOM)["room"]["game"]
+    assert g["phase"] == "starting" and g["you_host"] and g["mode"] == "tales" and g["gid"] == ""
+    assert g["host"] == e._identity()["agent_pk"] and g["host_name"]
+    gate.set()
+    assert await wait_for(lambda: (e.snapshot(ROOM)["room"]["game"] or {}).get("gid"))   # now the real game's view
+    assert e.snapshot(ROOM)["room"]["start_error"] is None
+    await e._end_hosted(ROOM)
+
+
+async def test_a_second_start_while_starting_is_refused(bare):
+    e, _ = bare()
+    gate = asyncio.Event()
+    _slow_questions(e, gate)
+    await e.start_tales(ROOM, 1)
+    for mode in ("tales", "agent"):
+        with pytest.raises(ValueError, match="already running"):
+            await e.start_tales(ROOM, 1, mode=mode)
+    gate.set()
+    assert await wait_for(lambda: len(e._host_games) == 1 and not e._starting_games)
+    starts = [ev for ev in e.pool.sent if json.loads(ev["content"]).get("t") == "tales_start"]
+    assert len(starts) == 1
+    await e._end_hosted(ROOM)
+
+
+@pytest.mark.parametrize("raises, result, text", [
+    (eng_mod.BudgetExhausted(), None, "your agent is out of budget for today"),
+    (None, [], "couldn't write questions this time, try again"),
+    (RuntimeError("model down"), None, "couldn't start the game, try again"),
+])
+async def test_a_failed_background_start_reaches_the_owner_once_and_clears_the_flag(bare, raises, result, text):
+    e, _ = bare()
+    gate = asyncio.Event()
+    _slow_questions(e, gate, result=result, raises=raises)
+    await e.start_tales(ROOM, 1)
+    gate.set()
+    assert await wait_for(lambda: not e._starting_games)
+    room = e.snapshot(ROOM)["room"]
+    assert room["game"] is None and not e._host_games
+    assert room["start_error"]["text"] == text and room["start_error"]["id"]
+    assert e.agent_state in ("activity: idle", "system: waiting")
+    first_id = room["start_error"]["id"]
+    gate.clear()
+    await e.start_tales(ROOM, 1)   # a new attempt drops the old error and, failing, gets a new id
+    assert e.snapshot(ROOM)["room"]["start_error"] is None
+    gate.set()
+    assert await wait_for(lambda: not e._starting_games)
+    assert e.snapshot(ROOM)["room"]["start_error"]["id"] != first_id
+
+
+async def test_leaving_the_room_during_a_start_leaves_no_game(bare):
+    e, _ = bare()
+    e.pool = RoomPool()
+    gate = asyncio.Event()
+    _slow_questions(e, gate)
+    await e.start_tales(ROOM, 1)
+    task = e._starting_games[ROOM]["task"]
+    await e.leave_room(ROOM)
+    assert task.cancelled() and not e._starting_games and not e._host_games
+    gate.set()
+    await asyncio.sleep(0.05)   # fixed-wait-ok: absence of a late game
+    assert not e._host_games
+    assert not [ev for ev in e.pool.sent if json.loads(ev["content"]).get("t") == "tales_start"]
+
+
+async def test_shutdown_cancels_a_start_in_flight(bare):
+    e, _ = bare()
+    gate = asyncio.Event()
+    _slow_questions(e, gate)
+    await e.start_tales(ROOM, 1)
+    task = e._starting_games[ROOM]["task"]
+    await e._end_hosted()
+    assert task.cancelled() and not e._starting_games and not e._host_games

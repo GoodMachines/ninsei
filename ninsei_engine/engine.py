@@ -56,7 +56,8 @@ MAX_ROOM_EVENT_BYTES = MAX_SHARE_BYTES + 4000  # content of one room event (a sh
 FUTURE_SLACK = 60          # seconds: an event dated further ahead than this is dropped
 LIVE_MAX_AGE = 60          # seconds: an older presence beat or claim is a replay
 FRESH_WINDOW = 300         # seconds: how old a live room event may be and still get a reaction (clock skew)
-GAME_STALE = 60            # seconds past a phase's end with nothing from the host: the game is over
+START_ERROR_SECS = 120     # a failed game start stays in the room's snapshot this long, so a view that opens late still tells the owner
+GAME_STALE = 60           # seconds past a phase's end with nothing from the host: the game is over
 MAX_INFLIGHT = 2           # model calls that room events can have running at once
 PACE_LIMIT = 8             # posts my agent makes per PACE_WINDOW, in all rooms (relays limit per IP)
 PACE_WINDOW = 300
@@ -703,7 +704,9 @@ class Engine:
         # names first seen in a backfill (history), not yet shown live by their holder: a second key using one
         # of them before then makes it contested. In memory only, so a restart settles what it has.
         self._name_tentative: dict[str, set] = {}
-        self._starting_games: set[str] = set()   # rooms where start_tales is between its checks and its start
+        # room -> {"mode", "task"}: a game I'm starting (its questions are being written), from the checks to the start
+        self._starting_games: dict[str, dict] = {}
+        self._start_errors: dict[str, dict] = {}   # room -> {"id", "text", "at"}: why my last start failed, shown once
         self._room_subs: set[str] = set()        # subscription ids held for the joined rooms' history
         # private messages: gift wraps wait in a bounded queue and one worker opens them, on a thread
         self._dm_queue: Optional[asyncio.Queue] = None
@@ -2661,20 +2664,73 @@ class Engine:
     # Tall Tales
     # ============================================================================================
     async def start_tales(self, room: str, rounds: int = game.ROUNDS, mode: str = "tales") -> dict:
-        """Start a game I host: Tall Tales ("tales") or Who's the Agent? ("agent")."""
+        """Start a game I host: Tall Tales ("tales") or Who's the Agent? ("agent").
+
+        Returns at once with {"starting": True}. Writing the questions is a model call that can take longer
+        than Hermes Desktop's bridge waits (30 s), so it runs as a task: the room's snapshot shows the game as
+        starting meanwhile, and a failure reaches the owner as the room's `start_error` (see `_run_start`)."""
         if mode not in game.MODES:
             raise ValueError("unknown game")
         if self._game_running(room):
             raise ValueError("a game is already running in this room")
         if not self.brain.available():
             raise ValueError("your agent can't reach a model from this Hermes process")
-        # Reserve the room before the first await: writing the questions takes seconds, and a second call
-        # (a double click, the dashboard and Desktop at once) would otherwise pass the check above too.
-        self._starting_games.add(room)
+        # Reserve the room before the first await (there is none here): a second call (a double click, the
+        # dashboard and Desktop at once) would otherwise pass the check above too.
+        slot = {"mode": mode, "task": None}
+        self._starting_games[room] = slot
+        self._start_errors.pop(room, None)
+        slot["task"] = self._spawn(self._run_start(room, rounds, mode, slot))
+        # a task cancelled before its first step never runs its own cleanup, so the slot is freed here too
+        slot["task"].add_done_callback(lambda _t: self._starting_games.get(room) is slot and self._starting_games.pop(room, None))
+        self._bump()
+        return {"starting": True}
+
+    async def _run_start(self, room: str, rounds: int, mode: str, slot: dict) -> None:
+        """The background half of start_tales. Every way out clears the starting state; every failure but a
+        cancel (leaving the room, shutdown) is told to the owner."""
+        text = ""
         try:
-            return await self._start_tales(room, rounds, mode)
+            await self._start_tales(room, rounds, mode)
+        except asyncio.CancelledError:
+            self._set_state("activity: idle")
+            raise
+        except ValueError as e:   # budget, no questions, RoomLeft: the engine's own words
+            text = str(e)
+        except Exception as e:
+            log.exception("ninsei: game start failed")
+            self.last_error = f"game start failed: {type(e).__name__}: {e}"
+            self._set_state("activity: idle")
+            text = "couldn't start the game, try again"
         finally:
-            self._starting_games.discard(room)
+            if self._starting_games.get(room) is slot:
+                del self._starting_games[room]
+            if text:
+                self._start_errors[room] = {"id": secrets.token_hex(4), "text": text, "at": time.time()}
+            self._bump()
+
+    def _start_view(self, room: str) -> Optional[dict]:
+        """The game card for a start still in flight: the shape `game_view` makes for a "starting" game, so the
+        room shows "<host> is writing questions..." while the questions are written, before any event exists."""
+        slot = self._starting_games.get(room)
+        if not slot:
+            return None
+        ident = self._identity()
+        name = self.persona().get("name") or "Agent"
+        return {"gid": "", "host": ident["agent_pk"], "host_name": name, "rounds": game.ROUNDS, "mode": slot["mode"],
+                "my_picks": [], "n": 0, "phase": "starting", "q": "", "ends_at": 0, "secs": 0, "options": [],
+                "reveal": None, "scores": {}, "fakes_in": 0, "votes_in": 0, "my_fake": "", "my_vote": "",
+                "started_at": int(time.time()), "aborted": False, "last_at": time.time(), "players": [],
+                "agents": [], "rules": {"fake": game.FAKE_SECONDS, "vote": game.VOTE_SECONDS,
+                                        "reveal": game.REVEAL_SECONDS, "rounds": game.ROUNDS},
+                "team_names": {ident["person_pk"]: _name_ok(self.settings()["display_name"], "You")},
+                "blocked": [], "you_host": True}
+
+    def _start_error_view(self, room: str) -> Optional[dict]:
+        e = self._start_errors.get(room)
+        if e and time.time() - e["at"] < START_ERROR_SECS:
+            return {"id": e["id"], "text": e["text"]}
+        return None
 
     async def _start_tales(self, room: str, rounds: int, mode: str) -> dict:
         rounds = max(1, min(int(rounds), game.MAX_ROUNDS))
@@ -2714,7 +2770,14 @@ class Engine:
 
     async def _end_hosted(self, room: Optional[str] = None) -> None:
         """Stop the games I host (all, or one room's) and tell the room they're over. Used on shutdown
-        and when leaving a room; without it the game would hang until it goes stale."""
+        and when leaving a room; without it the game would hang until it goes stale. A start still writing its
+        questions is cancelled first, so it can't turn into a game after this returns."""
+        starts = [slot["task"] for r, slot in list(self._starting_games.items())
+                  if (room is None or r == room) and slot.get("task")]
+        for t in starts:
+            t.cancel()
+        if starts:
+            await asyncio.gather(*starts, return_exceptions=True)
         for gid, g in list(self._host_games.items()):
             if room is not None and g["room"] != room:
                 continue
@@ -3337,6 +3400,8 @@ class Engine:
     def _game_to_show(self, room: str) -> Optional[dict]:
         """The game the room view pins. A game that ended before I joined the room is history, not something
         to pin above my composer: the timeline's "is over" line stays, the card does not."""
+        if room in self._starting_games:  # my own start is in flight: it is the room's game until it exists
+            return self._start_view(room)
         g = self.game_view(room)
         if g and g["phase"] == "end" and self.store.joined_at(room) > g.get("last_at", 0):
             return None
@@ -5833,6 +5898,7 @@ class Engine:
             shown, earlier = self.messages_view(room)
             snap["room"] = {"id": room, **self.room_meta(room), "members": members,
                             "messages": shown, "earlier": earlier, "game": self._game_to_show(room),
+                            "start_error": self._start_error_view(room),
                             "typing": self.typing_view(room)}
             if mark and snap["room"]["messages"]:  # mark=False: the room is loaded but not on screen
                 self.store.mark_read(room, snap["room"]["messages"][-1]["ts"])

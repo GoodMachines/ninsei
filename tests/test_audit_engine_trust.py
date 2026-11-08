@@ -18,6 +18,7 @@ from ninsei_engine.engine import (DEFAULT_RELAYS, KIND_LIVE, KIND_META, KIND_ROO
                                   REVEAL_MAX_BYTES, ROOM_STRANGER_CALLS, STRANGER_REPLIES, BuildChanged, Engine)
 from ninsei_engine.toy import serialized_size
 from test_engine import StubLLM, wait_for
+from start_helpers import started
 from test_hostile import ROOM, FakePool, Key, bare, own_person_event, settle  # noqa: F401  (fixture re-export)
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -75,7 +76,7 @@ async def test_unbound_votes_change_nothing(bare, monkeypatch):
     e, _ = bare(ts=0.02)
     mal = Key("mallory")
     await e._on_event(mal.agent({"t": "presence", "name": "Mal", "state": "activity: idle"}, kind=KIND_LIVE), "relay")
-    gid = (await e.start_tales(ROOM, 1))["gid"]
+    gid = (await started(e, ROOM, 1))["gid"]
     assert await wait_for(lambda: (e.game_view(ROOM) or {}).get("phase") == "fakes")
     await e.submit_fake(ROOM, gid, 1, "nine")
     host_pk = e._identity()["agent_pk"]
@@ -433,13 +434,13 @@ async def test_questions_use_room_interests_until_the_card_is_published(bare):
     e, _ = bare(llm=llm)
     e.save_settings({"interests": ["private grief"]})
     e.store.save_room(ROOM, {"id": ROOM, "name": "test room", "interests": ["synths"]})
-    await e.start_tales(ROOM, 1)
+    await started(e, ROOM, 1)
     assert "synths" in llm.prompts[-1] and "private grief" not in llm.prompts[-1]
     await e._end_hosted(ROOM)
     cur = e.settings()
     cur["card_published_at"] = int(time.time())
     e.store.set("settings", cur)
-    await e.start_tales(ROOM, 1)
+    await started(e, ROOM, 1)
     assert "private grief" in llm.prompts[-1]
     assert llm.prompts[-1].index("synths") < llm.prompts[-1].index("private grief")
     await e._end_hosted(ROOM)

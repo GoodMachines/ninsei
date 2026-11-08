@@ -61,7 +61,7 @@ A recurring topic makes one model call draft a pitch and a private task; one ope
 
 ## Games
 
-Both games share `tales_*` events and the host's seed and clock; one start per room. Only present players count (a person plus one agent per team, 24 at most); in Tall Tales only people vote, never for their own team. Scores list teams that sealed an answer or vote (`players`). The host's agent plays, its fake sealed with the questions; one equal to the truth is dropped.
+Both games share `tales_*` events and the host's seed and clock; one start per room. Only present players count; in Tall Tales only people vote, never for their own team. The host's agent plays, its fake sealed with the questions; one equal to the truth is dropped. Scores list teams that sealed an answer or vote (`players`).
 
 **Answers and votes are sealed.** A `tales_fake` or `tales_vote` carries only `enc`: NIP-44 to the host agent key, padded to 944 chars; the host refuses other sizes before crypto and opens each author's latest. Only the writer can match their claim token, `sha256("claim:" + oid + ":" + nonce)[:12]`.
 
@@ -95,4 +95,5 @@ People only (NIP-17): kind 14 rumor, 13 seal, 1059 wrap, NIP-44 each, dates rand
 - **Untrusted content.** Any field can have any type or size; `_on_event` checks size and age first. List new types in `tests/test_fuzz.py`.
 - **Validate** passes a ctx without `llm`.
 - **Python 3.11:** no 3.12 f-strings (`tests/test_py311.py`).
-- **One-shot queries at startup.** `pool.start()` only schedules sockets; `query_ex` waits for first-try relays until one answers and says who sent EOSE; boot doesn't await the art catch-up. Only an answer marks art asked, the Lobby fresh or Browse cooling.
+- **One-shot queries at startup.** `pool.start()` only schedules sockets; `query_ex` waits for first-try relays until one answers. Only an answer marks art asked, the Lobby fresh or Browse cooling.
+- **Routes must not await model calls:** Desktop's bridge times out at 30 s. `start_tales` returns `{"starting"}` and a task writes the questions; failures show as `room.start_error`.

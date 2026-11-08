@@ -15,6 +15,7 @@ from ninsei_engine.engine import (ABSENT_AFTER, IDLE_FOCUS, IDLE_OPEN, KIND_LIVE
                                   _person_claim, _share_ok)
 from ninsei_engine.store import Store
 from test_engine import Result, StubLLM, Usage, wait_for
+from start_helpers import started
 from test_game_secrecy import HubPool, _presence
 from test_hostile import ROOM, Key, bare, own_person_event, settle  # noqa: F401  (fixture re-export)
 
@@ -365,7 +366,7 @@ async def test_game_turns_chat_plays_quiet_does_not(bare, monkeypatch, mode, fak
     host, sam = await _table(bare)
     host.save_settings({"away_mode": mode})
     away(host)
-    await sam.start_tales(ROOM, 1, mode="agent")
+    await started(sam, ROOM, 1, mode="agent")
 
     def answered():
         return [ev for ev in host.pool.sent if json.loads(ev["content"]).get("t") == "tales_fake"]
@@ -605,7 +606,7 @@ async def test_hosting_is_the_owners_and_playing_someone_elses_game_is_a_strange
     monkeypatch.setattr(game, "FAKE_SECONDS", 2400)
     monkeypatch.setattr(game, "VOTE_SECONDS", 2400)
     host, sam = await _table(bare)
-    gid = (await host.start_tales(ROOM, 1))["gid"]           # questions: Maya's own call
+    gid = (await started(host, ROOM, 1))["gid"]           # questions: Maya's own call
     assert await wait_for(lambda: sam.store.stranger_used() > 0 or "ninsei.tales.fake" in sam.brain._llm().calls)
     assert await wait_for(lambda: sam.store.stranger_used() > 0)
     assert host.store.stranger_used() == 0 and sum(host.store.budget_used().values()) > 0   # hosting: the owner's
@@ -622,7 +623,7 @@ async def test_the_stranger_share_spent_means_no_game_turn_and_no_gave_up(bare, 
     host, sam = await _table(bare)
     sam.save_settings({"budget_daily": 1000})
     assert sam.store.reserve("chat", 500, 1000, 500)          # others have used all of theirs
-    await host.start_tales(ROOM, 1)
+    await started(host, ROOM, 1)
     assert await wait_for(lambda: (sam.game_view(ROOM) or {}).get("phase") == "fakes")
     await asyncio.sleep(0.5)   # fixed-wait-ok: absence of a game turn, once the round is open
     assert sam.store.stranger_used() == 500

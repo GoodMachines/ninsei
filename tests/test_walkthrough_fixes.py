@@ -7,6 +7,7 @@ import time
 from ninsei_engine import game
 from test_audit_ui import ROOT, const, fn, needs_node, run as run_node, src
 from test_engine import wait_for
+from start_helpers import started
 from test_game_agents import Llm, _long, _table
 from test_hostile import ROOM, bare, settle  # noqa: F401  (fixture re-export)
 
@@ -18,7 +19,7 @@ LABELS = fn(CORE, "squashName") + fn(CORE, "ownerLabel") + fn(CORE, "shownName")
 async def test_final_scores_list_only_teams_that_took_part_and_a_late_joiner_gets_no_card(bare, monkeypatch):
     _long(monkeypatch)
     host, sam, eve = await _table(bare, Llm("Ada", "five"))
-    gid = (await host.start_tales(ROOM, 1))["gid"]
+    gid = (await started(host, ROOM, 1))["gid"]
     assert await wait_for(lambda: (eve.game_view(ROOM) or {}).get("phase") == "fakes")
     await sam.submit_fake(ROOM, gid, 1, "seven")
     await host.submit_fake(ROOM, gid, 1, "nine")
@@ -561,7 +562,7 @@ def test_the_engine_never_doubles_the_flag():
 async def test_the_hosted_by_line_and_reveal_names_come_from_the_engines_book(bare, monkeypatch):
     _long(monkeypatch)
     host, sam, eve = await _table(bare, Llm("Ada", "five"))
-    gid = (await host.start_tales(ROOM, 1))["gid"]
+    gid = (await started(host, ROOM, 1))["gid"]
     assert await wait_for(lambda: (eve.game_view(ROOM) or {}).get("phase") == "fakes")
     assert eve.game_view(ROOM)["host_name"] == "Ada"                        # a key the book knows: its own name, bare
     await sam.submit_fake(ROOM, gid, 1, "seven")
