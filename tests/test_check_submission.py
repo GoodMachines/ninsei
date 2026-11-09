@@ -25,9 +25,14 @@ def pr(sha: str) -> str:
     return f"# Add Ninsei\n\n- Repo: https://github.com/GoodMachines/ninsei, pinned at `{sha}`\n"
 
 
-def test_the_drafts_as_they_stand_are_not_ready():
-    found = cs.problems((ROOT / "submission/ninsei.yaml").read_text(), (ROOT / "submission/catalog-pr.md").read_text())
-    assert any("all-zeros" in p for p in found) or any("pinned to" in p for p in found)
+def test_the_files_as_they_stand_are_ready_exactly_when_no_marker_is_left():
+    # pinned on 2026-11-08; until the video link and the go, the draft markers keep them not ready
+    y, pr_ = (ROOT / "submission/ninsei.yaml").read_text(), (ROOT / "submission/catalog-pr.md").read_text()
+    found = cs.problems(y, pr_)
+    if any(m in y + pr_ for m in cs.LEFTOVERS):
+        assert found and all("still contains" in p for p in found), found   # only markers, the pin itself is fine
+    else:
+        assert found == []
 
 
 def test_placeholders_are_each_caught():
