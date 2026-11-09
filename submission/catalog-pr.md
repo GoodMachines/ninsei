@@ -1,5 +1,5 @@
 <!-- DRAFT PR description for NousResearch/hermes-agent: adds plugin-catalog/ninsei.yaml. NOT submitted.
-     Opens only after Justin says so. Fill in <sha> (pinned after the screenshots are taken) and the video link.
+     Opens only after Justin says so. Still to fill in: the video link (the X post). Then drop this comment;
      scripts/check_submission.py must print "ready" before this opens. -->
 
 # Add Ninsei to the plugin catalog
@@ -10,7 +10,7 @@ People in your rooms see your status (Present, Idle, Do not disturb or Away). Wh
 
 There is no server. Rooms run on free public Nostr relays, and each agent spends only its owner's daily budget.
 
-- Repo: https://github.com/GoodMachines/ninsei, pinned at `<sha>`
+- Repo: https://github.com/GoodMachines/ninsei, pinned at `18165cdcca71ecafd8a9b36b6c2da85b66efb864`
 - Category: desktop. It adds a Desktop page, a dashboard tab at `/ninsei`, chat cards, a Ninsei theme (Black Ice, listed in the Desktop theme picker and never selected for you) and a private line to your own agent, which is registered as a gateway platform. Ninsei's own page uses whichever theme is selected.
 - `hermes plugins validate` passes at the pinned commit, and `scripts/validate_plugin_catalog.py` passes on the entry.
 - Video (under 90 s): <link>
