@@ -20,8 +20,19 @@ MAX_HOST = 253              # characters of one host (a DNS name's own limit), w
 _PRIVATE_SUFFIXES = frozenset({
     "localhost", "local", "localdomain", "internal", "lan", "home", "corp", "intranet", "private", "arpa", "onion",
     "invalid", "test", "example"})
+# What "trimming" a pasted code means, spelled out so the page (ui/00_core.js `trimCode`) can use the very same set: Python's
+# str.strip() also removes U+001C-U+001F and U+0085 but not U+FEFF, JavaScript's .trim() the reverse. Whitespace plus
+# U+FEFF (a byte order mark pasted in front of a code), nothing else; a control character left after that is refused.
+TRIM_CHARS = ("\t\n\x0b\x0c\r \xa0\u1680" + "".join(chr(c) for c in range(0x2000, 0x200B))
+              + "\u2028\u2029\u202f\u205f\u3000\ufeff")
+_CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 _LABEL = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
 _TLD = re.compile(r"[a-z]{2,63}|xn--[a-z0-9-]{1,59}")   # real TLDs are letters: this refuses 1.2.3.4, 127.1 and 0x7f.0x1
+
+
+def trim(text: Any) -> str:
+    """`text` without the whitespace and byte order marks at either end (TRIM_CHARS); `""` for anything but text."""
+    return text.strip(TRIM_CHARS) if isinstance(text, str) else ""
 
 
 def clean_host(host: Any) -> Optional[str]:
@@ -31,7 +42,7 @@ def clean_host(host: Any) -> Optional[str]:
     if not isinstance(host, str):
         return None
     h = host.lower()
-    if not h or len(h) > MAX_HOST or h.count(":") > 1:
+    if not h or len(h) > MAX_HOST or h.count(":") > 1 or _CONTROL.search(h):
         return None
     name, _, port = h.partition(":")
     if ":" in h and not (port.isascii() and port.isdigit() and 1 <= len(port) <= 5 and 1 <= int(port) <= 65535):
@@ -45,10 +56,11 @@ def clean_host(host: Any) -> Optional[str]:
 
 
 def clean_hosts(items: Iterable[Any], limit: int = MAX_CODE_HOSTS) -> list[str]:
-    """The valid hosts among `items`, in order, without repeats, at most `limit`. A bad one is dropped silently."""
+    """The valid hosts among `items` (each trimmed first, as the page does), in order, without repeats, at most `limit`. A bad
+    one is dropped silently."""
     out: list[str] = []
     for x in items:
-        h = clean_host(x)
+        h = clean_host(trim(x) if isinstance(x, str) else x)
         if h and h not in out:
             out.append(h)
             if len(out) >= limit:

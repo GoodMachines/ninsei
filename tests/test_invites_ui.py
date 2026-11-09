@@ -18,7 +18,7 @@ DM = src("57_dm.js")
 ROOM_ID = "203f22bcfd1b4b2f"
 
 HOSTS_JS = re.search(r"const PRIVATE_SUFFIXES = new Set\(\[.*?\]\)\n", CORE, re.S).group(0) \
-    + "".join(fn(CORE, n) for n in ("cleanHost", "cleanHosts", "parseRoomLink", "roomLinkAt", "relayHost", "fmtAgo", "previewActivity", "cleanSnippet"))
+    + "".join(fn(CORE, n) for n in ("trimCode", "cleanHost", "cleanHosts", "parseRoomLink", "roomLinkAt", "relayHost", "fmtAgo", "previewActivity", "cleanSnippet"))
 
 
 # ---- hosts: the page and the engine read them the same way -------------------------------------------------------------
@@ -26,7 +26,7 @@ HOSTS_JS = re.search(r"const PRIVATE_SUFFIXES = new Set\(\[.*?\]\)\n", CORE, re.
 GOOD = ["nos.lol", "relay.damus.io", "a.b.c.example.com", "nos.lol:443", "NOS.LOL", "xn--bcher-kva.example.dev", "relay-1.example.org:8080", "x.io"]
 BAD = ["", "localhost", "foo.localhost", "nos", "127.0.0.1", "10.0.0.1", "192.168.1.1:7777", "1.2.3.4", "0x7f.0x1", "127.1", "2130706433", "[::1]",
        "::1", "[2001:db8::1]:443", "nos.lol/path", "user@nos.lol", "wss://nos.lol", "ws://nos.lol", "nos.lol:", "nos.lol:0", "nos.lol:99999",
-       "nos.lol:12:3", "nos..lol", ".nos.lol", "nos.lol.", "-a.nos.lol", "a-.nos.lol", "nos .lol", "nos.lol\n", "printer.local", "nas.lan",
+       "nos.lol:12:3", "nos..lol", ".nos.lol", "nos.lol.", "-a.nos.lol", "a-.nos.lol", "nos .lol", "nos.lol\n", "\x1fnos.lol", "nos.lol\x85", "nos\x00.lol", "nos.lol\ufeff", "printer.local", "nas.lan",
        "box.internal", "a" * 64 + ".lol", ("a." * 130) + "lol", "nos.l0l", "nos.123", "nös.lol"]
 
 
@@ -42,7 +42,12 @@ def test_the_page_reads_a_code_with_hosts_like_parse_room_link():
     ev = "b" * 64
     cases = [f"ninsei:{ROOM_ID}", f"ninsei:{ROOM_ID}@nos.lol,relay.damus.io", f"ninsei:{ROOM_ID}@nos.lol#{ev}", f"  NINSEI:{ROOM_ID.upper()}@NOS.LOL:443#{ev.upper()}  ",
              f"ninsei:{ROOM_ID}@nos.lol,127.0.0.1,localhost,[::1],bad host,relay.damus.io", f"ninsei:{ROOM_ID}@127.0.0.1,localhost,ws://nos.lol",
-             f"ninsei:{ROOM_ID}@a.io,b.io,c.io,d.io,e.io", ROOM_ID, "@nos.lol", "hello", f"ninsei:{ROOM_ID}#nothex", f"ninsei:{ROOM_ID}@" + ("a." * 5000) + "io"]
+             f"ninsei:{ROOM_ID}@a.io,b.io,c.io,d.io,e.io", ROOM_ID, "@nos.lol", "hello", f"ninsei:{ROOM_ID}#nothex", f"ninsei:{ROOM_ID}@" + ("a." * 5000) + "io",
+             # what each side trims: whitespace and U+FEFF, and nothing else (str.strip() and .trim() each differ from that)
+             "\ufeff" + f"ninsei:{ROOM_ID}@nos.lol", f"\x1c\x1d ninsei:{ROOM_ID}@nos.lol \x1e\x1f", f"\x85ninsei:{ROOM_ID}@nos.lol", f"ninsei:{ROOM_ID}@nos.lol\x85",
+             f"\xa0\u2003ninsei:{ROOM_ID}@nos.lol\u3000\ufeff", f"ninsei:{ROOM_ID}@nos.lol,\ufeffrelay.damus.io", f"ninsei:{ROOM_ID}@\x1cnos.lol,\x1frelay.damus.io",
+             f"ninsei:{ROOM_ID}@nos.lol#{ev}\ufeff", f"ninsei:{ROOM_ID}@nos.lol#\x1f{ev}", f"ninsei:{ROOM_ID}\x1f@nos.lol", f"ninsei:{ROOM_ID}\ufeff@nos.lol",
+             f"\u200bninsei:{ROOM_ID}@nos.lol", f"ninsei:{ROOM_ID}@\u180enos.lol", f"ninsei:{ROOM_ID}@nos.lol\u0000", f"{ROOM_ID}\n\ufeff"]
     r = run(HOSTS_JS + "const cases = %s\nout(cases.map(c => parseRoomLink(c)).concat([parseRoomLink(null), parseRoomLink('x'.repeat(5000))]))" % json.dumps(cases))
     from ninsei_engine.engine import parse_room_link
     want = [dict(zip(("room", "event", "hosts"), (a, b, [u[6:] for u in c]))) for a, b, c in (parse_room_link(x) for x in cases + [None, "x" * 5000])]
@@ -479,3 +484,17 @@ out({ kinds, scene, rejoin, typed, noneLeft: none.filter(i => i.kind === 'rejoin
     assert r["noneLeft"] == 0 and r["noInvites"] is False
     app = fn(APP, "App")
     assert "it.kind === 'rejoin') setJoinFor(it.code)" in app and "it.kind === 'invites'" in app and "DM_INVITES" in app
+
+
+@needs_node
+def test_the_page_and_the_engine_trim_exactly_the_same_characters():
+    """Every character of the Basic Multilingual Plane, at both ends of a word: the two sides strip the same set (whitespace and
+    U+FEFF), so a pasted code reads the same wherever it is parsed. Python's str.strip() and JavaScript's .trim() disagree on
+    U+001C-U+001F and U+0085 (Python only) and U+FEFF (JavaScript only)."""
+    chars = [chr(c) for c in range(0x10000) if not 0xD800 <= c < 0xE000]
+    r = run(HOSTS_JS + "const chars = %s\nout(chars.map(c => trimCode(c + 'ab' + c)))" % json.dumps(chars))
+    assert r == [codes.trim(c + "ab" + c) for c in chars]
+    stripped = {c for c, out in zip(chars, r) if out == "ab"}
+    assert "\ufeff" in stripped and "\xa0" in stripped and "\n" in stripped and "\u2003" in stripped
+    assert not stripped & {"\x1c", "\x1d", "\x1e", "\x1f", "\x85", "\u180e", "\u200b", "\x00"}
+    assert not {c for c in stripped if not (c.isspace() or c == "\ufeff")}

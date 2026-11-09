@@ -32,7 +32,7 @@ from . import avatar, codes, dm, game, nip44, nostr, persona as personas
 from .brain import Brain, BudgetExhausted, Line
 from .names import name_ok as _name_ok, skeleton  # one folding for every identity check (names.py)
 from .relays import RelayPool
-from .store import DM_PER_PEER, EVENT_ROOM_CAP, FRIEND_REQUESTS, Store, today
+from .store import DM_PER_PEER, EVENT_ROOM_CAP, FRIEND_REQUESTS, INVITES_MAX, Store, today
 from .topics import TopicTracker
 from .toy import OFFER_ID_RE, SHARE_SERIALIZED_LIMIT, inject_csp, scan_secrets, serialized_size
 
@@ -139,6 +139,10 @@ INVITES_SHOWN = 20         # waiting invites the sidebar carries
 INVITE_LINES = 20          # invite lines one conversation carries
 INVITE_NAME_GAP = 60.0     # seconds between lookups of one room's name for an invite (the creator's own metadata)
 INVITE_NAMES_PER_ASK = 10  # rooms one name lookup asks about
+INVITE_NAME_QUERIES_PER_MIN = 3   # name lookups in all, whoever the rooms are from: the per-room gap alone let a friend make
+                                  # a query for every invite (a new room id each time)
+INVITE_NAMES_KEPT = 100    # names remembered for rooms I'm not in
+CREATORS_KEPT = 500        # room -> creator pairs remembered, to tell whether a room's name may be shown
 RESOLVE_TIMEOUT = 4.0      # seconds a code's relay hosts get to resolve before "Add and look again" gives up on them
 PREVIEW_COOLDOWN = 5.0     # seconds: a second preview of one room inside this returns the last answer, without a query
 PREVIEW_WAIT_RELAYS = 3.0  # seconds a preview waits for relays the owner just added to connect
@@ -292,15 +296,25 @@ async def _resolve(host: str, port: int) -> list[str]:
     return [str(i[4][0]) for i in infos]
 
 
+_NAT64 = ipaddress.ip_network("64:ff9b::/96")          # RFC 6052: an IPv4 address behind a translator
+_NAT64_LOCAL = ipaddress.ip_network("64:ff9b:1::/48")   # RFC 8215: the same for one network's own use, never public
+
+
 def _public_address(addr: str) -> bool:
     """True only for a globally routable address: not loopback, private, link-local, CGNAT, multicast, reserved or
-    unspecified (what `ipaddress` calls not `is_global`). An IPv4 address wrapped in IPv6 is judged as the IPv4 one."""
+    unspecified (what `ipaddress` calls not `is_global`). An IPv4 address wrapped in IPv6 (mapped, or inside the NAT64 prefix
+    64:ff9b::/96, which Python versions disagree about) is judged as the IPv4 one."""
     try:
         ip = ipaddress.ip_address(addr.split("%", 1)[0])
     except ValueError:
         return False
-    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
-        ip = ip.ipv4_mapped
+    if isinstance(ip, ipaddress.IPv6Address):
+        if ip.ipv4_mapped is not None:
+            ip = ip.ipv4_mapped
+        elif ip in _NAT64:   # Python 3.11 calls this range global and 3.14 does not: judge the IPv4 address inside it
+            ip = ipaddress.IPv4Address(ip.packed[-4:])
+        elif ip in _NAT64_LOCAL:
+            return False
     # (`is_global` alone lets some multicast ranges through, so those are refused by name as well)
     return ip.is_global and not (ip.is_multicast or ip.is_loopback or ip.is_private or ip.is_link_local or ip.is_reserved or ip.is_unspecified)
 
@@ -496,15 +510,16 @@ def parse_room_link(text: str) -> tuple[str, str, list[str]]:
     `ninsei:<room>@host#<event id>`, `ninsei:<room>#<event id>` or a bare room id. The event id is "" unless it is
     64 hex characters. A room id is cut at its first non-hex character. `relays` are up to 3 `wss://` addresses
     from the hosts after the `@` (codes.clean_host decides each one: a bad host is dropped silently, and a code
-    whose hosts are all bad still names its room). The text is cut at 1,200 characters first."""
-    t = str(text or "").strip()[:1200]
+    whose hosts are all bad still names its room). The text is trimmed with `codes.trim` (the page's `trimCode`: whitespace and
+    U+FEFF, the same set on both sides) and cut at 1,200 characters first."""
+    t = codes.trim(str(text or ""))[:1200]
     t = re.sub(r"^ninsei:", "", t, flags=re.I)
     head, _, ev = t.partition("#")
     room, _, hosts = head.partition("@")
-    m = re.match(r"[0-9a-f]+", room.strip().lower())
+    m = re.match(r"[0-9a-f]+", codes.trim(room).lower())
     room = m.group(0)[:24] if m else ""
-    ev = ev.strip().lower()
-    relays = [codes.host_url(h) for h in codes.clean_hosts(x.strip() for x in hosts.split(",")[:8])] if room else []
+    ev = codes.trim(ev).lower()
+    relays = [codes.host_url(h) for h in codes.clean_hosts(hosts.split(",")[:8])] if room else []
     return room, ev if nostr.is_hex(ev, 32) else "", relays
 
 
@@ -774,6 +789,10 @@ class Engine:
         self._previews: dict[str, tuple] = {}     # room -> (monotonic start, finished Future of its preview)
         self._invite_names: dict[str, str] = {}   # room -> the name its creator signed, for an invite to a room I'm not in
         self._invite_asked: dict[str, float] = {} # room -> monotonic time its name was last asked for
+        self._invite_want: dict[str, None] = {}   # rooms whose name is wanted and not asked yet (waiting for the overall limit)
+        self._invite_queries: list[float] = []    # monotonic times of the name lookups made in the last minute
+        self._invite_wake: Optional[asyncio.TimerHandle] = None   # fires when the limit frees a slot, then asks the rooms waiting
+        self._creators: dict[str, str] = {}       # room -> its creator's key, as seen in a lookup, preview or the lobby
         self._joins: list[dict] = []              # recent live joins of rooms I made: {id, room, name, ts}
         # people's pictures and faces: {pk: {"avatar": meta, "face": meta}} (meta: id, created_at, and mime/size or
         # the face dict; an empty one is a removal). The picture bytes stay in the store until asked for.
@@ -1138,21 +1157,24 @@ class Engine:
         pool.dial_check = self._dial_check
         return pool
 
-    async def _dial_check(self, url: str) -> Optional[str]:
-        """Asked by the pool before every connection to a relay. A relay that came from a code or an invite is resolved
-        again each time (a stranger's name can point somewhere private later, after the check at "Add and look again"):
-        any address that isn't public, or a name that won't resolve, means the pool rests instead of dialling. Relays typed in
-        Settings are never checked: a relay on my own network is legitimate there."""
+    async def _dial_check(self, url: str) -> tuple[Optional[str], Optional[str]]:
+        """Asked by the pool before every connection to a relay; answers `(ip, why)`. A relay that came from a code or an
+        invite is resolved again each time (a stranger's name can point somewhere private later, after the check at "Add and
+        look again"): any address that isn't public, or a name that won't resolve, gives a reason and the pool rests instead
+        of dialling. Otherwise `ip` is the public address just checked and the pool connects to that address, not to a second
+        lookup of the name, which a stranger's DNS can answer differently (rebinding). The pinned connection also refuses
+        a redirect to another host. Relays typed in Settings are never checked or pinned, `(None, None)`: a relay on my own
+        network is legitimate there."""
         if url not in self.settings()["code_relays"]:
-            return None
+            return None, None
         host, _, port = url[6:].rstrip("/").partition(":")
         try:
             addrs = await asyncio.wait_for(_resolve(host, int(port or 443)), RESOLVE_TIMEOUT)
         except (OSError, asyncio.TimeoutError, ValueError):
-            return "its name could not be looked up"
+            return None, "its name could not be looked up"
         if not addrs or not all(_public_address(a) for a in addrs):
-            return "its name now points at a private network address"
-        return None
+            return None, "its name now points at a private network address"
+        return addrs[0].split("%", 1)[0], None
 
     def _login_event(self, url: str, challenge: str) -> dict:
         """NIP-42: the answer to a relay's challenge, signed by the PERSON key (the key private messages are
@@ -3950,6 +3972,7 @@ class Engine:
         rid = d.split("/")[-1]
         if rid in RETIRED_ROOMS or room_id_for(ev["pubkey"], str(c.get("nonce", ""))) != rid:
             return None
+        self._note_creator(rid, ev["pubkey"])   # kept off the row: it is only for hiding a room's name in an invite
         return {"id": rid, "name": _name_ok(c.get("name"), "Room"), "about": str(c.get("about", ""))[:200],
                 "interests": tags[:8], "overlap": overlap, "at": ev["created_at"],
                 "joined": rid in self.store.rooms(), "commons": rid == COMMONS_ID}
@@ -5661,11 +5684,13 @@ class Engine:
 
     def _room_name_known(self, room: str, mine_only: bool = False) -> str:
         """The name of a room as far as this install knows it: from a room I'm in, else (unless `mine_only`) the
-        creator-signed metadata a lookup or the cached Lobby and Browse lists found. "" when not known (shown as "a room")."""
+        creator-signed metadata a lookup or the cached Lobby and Browse lists found. "" when not known (shown as "a room"),
+        and when the room's creator is someone I hid: a name that person chose doesn't reach the page, even from a cache
+        made before I hid them."""
         meta = self.store.rooms().get(room)
         if meta and meta.get("name"):
             return str(meta["name"])
-        if mine_only:
+        if mine_only or self._creators.get(room) in self._hidden:
             return ""
         if self._invite_names.get(room):
             return self._invite_names[room]
@@ -5674,26 +5699,75 @@ class Engine:
                 return str(r["name"])
         return ""
 
+    def _note_creator(self, room: str, creator: Any) -> None:
+        """Remember who made a room (the id commits to its creator, so a lookup's metadata proves it)."""
+        if isinstance(creator, str) and creator:
+            self._creators.pop(room, None)
+            self._creators[room] = creator
+            while len(self._creators) > CREATORS_KEPT:
+                self._creators.pop(next(iter(self._creators)))
+
+    def _remember_invite_name(self, room: str, name: str, creator: Any = None) -> None:
+        """Keep a looked-up room name (at most INVITE_NAMES_KEPT, oldest out), from any of the paths that find one."""
+        self._invite_names.pop(room, None)
+        self._invite_names[room] = name
+        self._note_creator(room, creator)
+        while len(self._invite_names) > INVITE_NAMES_KEPT:
+            self._invite_names.pop(next(iter(self._invite_names)))
+
     def _invite_names_ask(self, rooms: list[str]) -> None:
-        """Look up the names of the rooms I've been invited to and don't know: one query (at most one per room per
-        INVITE_NAME_GAP seconds), answered from the room's creator-signed metadata on my own relays. Called when an
-        invite arrives and from the sidebar's summary; a no-op when nothing is missing or there is no loop to run on."""
+        """Look up the names of the rooms I've been invited to and don't know. The rooms asked about are the ones whose
+        invite is still waiting for me (an evicted or answered one is not worth a query), at most one try per room per
+        INVITE_NAME_GAP seconds; the rooms waiting are asked in one query of up to INVITE_NAMES_PER_ASK, and the lookups
+        in all are limited to INVITE_NAME_QUERIES_PER_MIN a minute whoever the invites came from: past that the rooms
+        wait for a slot (`_invite_names_flush`). Called when an invite arrives and from the sidebar's summary; a no-op
+        when nothing is missing or there is no loop to run on."""
         if not self.pool or not hasattr(self.pool, "query"):
-            return
-        now = time.monotonic()
-        todo = [r for r in dict.fromkeys(rooms) if not self._room_name_known(r)
-                and now - self._invite_asked.get(r, -1e9) >= INVITE_NAME_GAP][:INVITE_NAMES_PER_ASK]
-        if not todo:
             return
         try:
             asyncio.get_running_loop()
         except RuntimeError:
             return
+        for r in rooms:
+            if r not in self._invite_want and len(self._invite_want) < 4 * INVITES_MAX:
+                self._invite_want[r] = None
+        self._invite_names_flush()
+
+    def _invite_names_flush(self) -> None:
+        """Ask for the names of the rooms waiting, if the limit allows, else wait for a slot."""
+        now = time.monotonic()
+        self._invite_queries = [t for t in self._invite_queries if now - t < 60]
+        live = {i["room"] for i in self.store.invites_new(self._identity()["person_pk"], INVITES_MAX) if i["peer"] not in self._hidden}
+        for r in list(self._invite_want):
+            if r not in live or self._room_name_known(r) or now - self._invite_asked.get(r, -1e9) < INVITE_NAME_GAP:
+                del self._invite_want[r]   # gone, known, or tried a moment ago (the summary asks again later)
+        if not self._invite_want:
+            return
+        if len(self._invite_queries) >= INVITE_NAME_QUERIES_PER_MIN:
+            self._invite_names_wake(self._invite_queries[0] + 60 - now)
+            return
+        todo = list(self._invite_want)[:INVITE_NAMES_PER_ASK]
         for r in todo:
+            del self._invite_want[r]
             self._invite_asked[r] = now
+        self._invite_queries.append(now)
         while len(self._invite_asked) > 200:
             self._invite_asked.pop(next(iter(self._invite_asked)))
         self._spawn(self._invite_lookup(todo))
+        if self._invite_want:
+            self._invite_names_wake(self._invite_queries[0] + 60 - now)
+
+    def _invite_names_wake(self, delay: float) -> None:
+        """Come back when the limit frees a slot (one timer at a time; a timer, not a task, so nothing waits on it)."""
+        if self._invite_wake is None:
+            self._invite_wake = asyncio.get_running_loop().call_later(max(0.0, delay) + 0.05, self._invite_names_woke)
+
+    def _invite_names_woke(self) -> None:
+        self._invite_wake = None   # this wait is over: the flush may start the next one
+        try:
+            self._invite_names_flush()
+        except Exception:
+            log.exception("ninsei: asking for invited rooms' names failed")
 
     async def _invite_lookup(self, rooms: list[str]) -> None:
         try:
@@ -5711,9 +5785,7 @@ class Engine:
             if meta and meta["at"] >= best.get(room, {}).get("at", -1):
                 best[room] = meta
         for room, meta in best.items():
-            self._invite_names[room] = meta["name"]
-        while len(self._invite_names) > 100:
-            self._invite_names.pop(next(iter(self._invite_names)))
+            self._remember_invite_name(room, meta["name"], meta["creator"])
         if best:
             self._dm_rev += 1
             self._bump()
@@ -5765,7 +5837,7 @@ class Engine:
         if meta is None and room in self.store.rooms():
             meta = self.store.rooms()[room]   # offline, or the relays dropped it: what I already have
         if meta is not None:
-            self._invite_names[room] = meta.get("name") or ""   # the same lookup serves an invite to this room
+            self._remember_invite_name(room, meta.get("name") or "", meta.get("creator"))   # the same lookup serves an invite to this room
         return {"id": room, "found": meta is not None or a.get("msgs", 0) > 0, "reached": bool(answered),
                 "name": (meta or {}).get("name") or "Room " + room[:4], "about": str((meta or {}).get("about") or "")[:200],
                 "interests": [str(x)[:24] for x in ((meta or {}).get("interests") or [])][:8],

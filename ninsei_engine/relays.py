@@ -12,14 +12,20 @@ import logging
 import random
 import re
 import time
+from urllib.parse import urlsplit
 from dataclasses import dataclass, field
 from typing import Awaitable, Callable, Optional
 
 import websockets
+from websockets.version import version as _ws_version
 
 from . import nostr
 
 log = logging.getLogger("ninsei.relays")
+
+# websockets 15 reads the proxy settings of the environment by default and would take a pinned `host`/`port` for the proxy's
+# address; older versions have no proxy support (and no `proxy` argument). A pinned dial must be direct.
+_NO_PROXY: dict = {"proxy": None} if int(_ws_version.split(".")[0]) >= 15 else {}
 
 EventHandler = Callable[[dict, str], Awaitable[None] | None]
 
@@ -144,10 +150,13 @@ class RelayPool:
         self._auth_wait: dict[str, set] = {}   # url -> subs the relay closed before it had sent a challenge
         self._auth_times: dict[str, list] = {}  # url -> monotonic times of our logins there (kept across reconnects)
         self._auth_resume: set[str] = set()    # urls waiting out the login window before asking again
-        # Asked before every connection (first and every reconnect): None to go ahead, or a short reason to rest instead.
-        # The engine uses it for relays that came from a code or an invite, whose names must still resolve to public
-        # addresses when we dial them (a name can change what it points at after it was added).
-        self.dial_check: Optional[Callable[[str], Awaitable[Optional[str]]]] = None
+        # Asked before every connection (first and every reconnect); answers `(ip, why)`. `why` is a short reason to rest
+        # instead of dialling. Otherwise `ip` is None (an ordinary relay: dial the name as usual) or the public address the
+        # check just resolved: the socket then goes to that address, not to a second lookup of the name (a stranger's name
+        # can answer differently the second time), while the TLS certificate is still checked against the name. Pinning also
+        # makes websockets refuse a redirect to any other host or port, which would otherwise skip the check.
+        # The engine uses it for relays that came from a code or an invite.
+        self.dial_check: Optional[Callable[[str], Awaitable[tuple[Optional[str], Optional[str]]]]] = None
         self._refused: set[str] = set()        # urls refused on their last try (logged once, until one is let through)
         if self._store is not None:
             try:
@@ -204,13 +213,20 @@ class RelayPool:
             opened = None
             busy = False
             try:
+                pin: Optional[str] = None
                 if self.dial_check is not None:
-                    why = await self.dial_check(url)
+                    pin, why = await self.dial_check(url)
                     if why:
                         raise _DialRefused(why)
                     self._refused.discard(url)
+                where: dict = {}
+                if pin:
+                    u = urlsplit(url)
+                    # direct, to the checked address: a proxy would look the name up itself, and `host`/`port` would
+                    # otherwise be read as the proxy's address
+                    where = {"host": pin, "port": u.port or (443 if u.scheme == "wss" else 80), **_NO_PROXY}
                 async with websockets.connect(url, open_timeout=8, ping_interval=25, ping_timeout=20,
-                                              max_size=2 ** 20) as ws:
+                                              max_size=2 ** 20, **where) as ws:
                     self._ws[url] = ws
                     st.state, st.last_error = "open", ""
                     opened = time.monotonic()

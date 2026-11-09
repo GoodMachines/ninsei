@@ -44,7 +44,8 @@ def _no_public_relays(monkeypatch):
     tried = []
 
     def guarded(url, *a, **k):
-        host = urlsplit(str(url)).hostname or ""
+        # a pinned dial (`host=`) connects there whatever the URL's name says: judge the address the socket will open
+        host = str(k.get("host") or urlsplit(str(url)).hostname or "")
         if host not in _LOCAL:
             tried.append(str(url))
             raise OSError("tests never open public relays")  # the pool's retry loop swallows this...

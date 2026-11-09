@@ -1124,10 +1124,15 @@ function roomLinkAt(text, i) {
 // not aim an install at its own network). Connecting to a relay shows it your IP, so a code never connects by itself.
 const PRIVATE_SUFFIXES = new Set(['localhost', 'local', 'localdomain', 'internal', 'lan', 'home', 'corp', 'intranet', 'private', 'arpa', 'onion',
   'invalid', 'test', 'example'])
+// Trimming a pasted code: whitespace and U+FEFF, the exact set of the engine's codes.TRIM_CHARS (JavaScript's .trim() and Python's
+// str.strip() each differ from it, in opposite ways). Anything else, a control character included, stays and is refused later.
+function trimCode(s) {
+  return String(s == null ? '' : s).replace(/^[\t\n\v\f\r \u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]+|[\t\n\v\f\r \u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]+$/g, '')
+}
 function cleanHost(host) {
   if (typeof host !== 'string') return null
   const h = host.toLowerCase()
-  if (!h || h.length > 253) return null
+  if (!h || h.length > 253 || /[\u0000-\u001f\u007f-\u009f]/.test(h)) return null
   const parts = h.split(':')
   if (parts.length > 2) return null
   if (parts.length === 2 && !(/^[0-9]{1,5}$/.test(parts[1]) && +parts[1] >= 1 && +parts[1] <= 65535)) return null
@@ -1141,7 +1146,7 @@ function cleanHost(host) {
 function cleanHosts(list, limit) {
   const out = []
   for (const x of list || []) {
-    const h = cleanHost(typeof x === 'string' ? x.trim() : x)
+    const h = cleanHost(typeof x === 'string' ? trimCode(x) : x)
     if (h && !out.includes(h)) { out.push(h); if (out.length >= (limit || 3)) break }
   }
   return out
@@ -1150,13 +1155,13 @@ function cleanHosts(list, limit) {
 // What a pasted code or link names: { room, event, hosts } ('' and [] when absent; `hosts` are up to 3 clean relay hosts,
 // bad ones dropped); the same reading as the engine's parse_room_link.
 function parseRoomLink(s) {
-  const t = String(s == null ? '' : s).trim().slice(0, 1200).replace(/^ninsei:/i, '')
+  const t = trimCode(s).slice(0, 1200).replace(/^ninsei:/i, '')
   const k = t.indexOf('#')
   const head = k < 0 ? t : t.slice(0, k)
   const at = head.indexOf('@')
-  const room = (at < 0 ? head : head.slice(0, at)).toLowerCase().trim()
+  const room = trimCode((at < 0 ? head : head.slice(0, at)).toLowerCase())
   const hex = /^[0-9a-f]*/.exec(room)[0].slice(0, 24)
-  const ev = k < 0 ? '' : t.slice(k + 1).trim().toLowerCase()
+  const ev = k < 0 ? '' : trimCode(t.slice(k + 1)).toLowerCase()
   const hosts = hex && at >= 0 ? cleanHosts(head.slice(at + 1).split(',').slice(0, 8)) : []
   return { room: hex, event: /^[0-9a-f]{64}$/.test(ev) ? ev : '', hosts }
 }

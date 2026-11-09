@@ -7,7 +7,7 @@ from test_audit_ui import CORE, ROOM, STYLE, APP, fn, needs_node, run, src
 from test_e1_ui import MESSAGE_JS
 
 TOOLS = src("52_tools.js")
-CORE_FNS = "".join(fn(CORE, n) for n in ("foldText", "fuzzyScore", "parseRoomLink", "relaysDown", "wantJump"))
+CORE_FNS = "".join(fn(CORE, n) for n in ("foldText", "fuzzyScore", "trimCode", "parseRoomLink", "relaysDown", "wantJump"))
 
 TOOLS_PRELUDE = """
 const useEnter = () => ({ current: null }); function useMemo(f) { return f() }; const useLayoutEffect = useEffect

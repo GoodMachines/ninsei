@@ -985,16 +985,19 @@ async def test_the_dial_check_resolves_code_relays_every_time_and_never_typed_on
         return answer["v"]
     monkeypatch.setattr(eng_mod, "_resolve", fake)
     e.save_settings({"relays": ["wss://typed.example.net", "ws://127.0.0.1:7777", "wss://code.example.org:8443"]}, code_added=["wss://code.example.org:8443"])
-    assert await e._dial_check("wss://code.example.org:8443") is None and asked == [("code.example.org", 8443)]
-    for bad in (["127.0.0.1"], ["10.0.0.5"], ["93.184.216.34", "192.168.1.9"], ["::1"], [], OSError("gone")):
+    assert await e._dial_check("wss://code.example.org:8443") == ("93.184.216.34", None) and asked == [("code.example.org", 8443)]
+    for bad in (["127.0.0.1"], ["10.0.0.5"], ["93.184.216.34", "192.168.1.9"], ["::1"], [], OSError("gone"), ["64:ff9b::7f00:1"]):
         answer["v"] = bad
-        assert await e._dial_check("wss://code.example.org:8443"), bad            # a reason: rest, don't dial
+        ip, why = await e._dial_check("wss://code.example.org:8443")
+        assert ip is None and why, bad                                             # a reason: rest, don't dial
     answer["v"] = ["93.184.216.34"]
-    assert await e._dial_check("wss://code.example.org:8443") is None             # public again: dials again
-    # typed relays are never looked up, whatever they point at
+    assert await e._dial_check("wss://code.example.org:8443") == ("93.184.216.34", None)   # public again: dials again
+    answer["v"] = ["2606:2800:220:1:248:1893:25c8:1946%eth0", "93.184.216.34"]
+    assert await e._dial_check("wss://code.example.org:8443") == ("2606:2800:220:1:248:1893:25c8:1946", None)   # the checked address, without a scope
+    # typed relays are never looked up or pinned, whatever they point at
     asked.clear()
     answer["v"] = ["127.0.0.1"]
-    assert await e._dial_check("wss://typed.example.net") is None and await e._dial_check("ws://127.0.0.1:7777") is None and asked == []
+    assert await e._dial_check("wss://typed.example.net") == (None, None) and await e._dial_check("ws://127.0.0.1:7777") == (None, None) and asked == []
     assert e._new_pool().dial_check == e._dial_check
 
 
@@ -1042,7 +1045,7 @@ async def test_a_refused_code_relay_rests_logs_once_and_is_dialled_when_its_name
 
         async def check(url):
             tries.append(url)
-            return verdict["v"]
+            return None, verdict["v"]
         pool = relays_mod.RelayPool([local.url], backoff_base=0.05, backoff_max=0.1)
         pool.dial_check = check
         with caplog.at_level("WARNING"):
@@ -1077,3 +1080,230 @@ async def test_a_typed_relay_on_the_local_test_relay_still_connects_without_a_lo
         finally:
             await pool.stop()
             e.store.close()
+
+
+# ---- a code relay is dialled at the address that was checked, and a redirect off it is not followed ----------------
+
+def record_dials(monkeypatch, relays_mod):
+    """Every `websockets.connect` the pool makes: (url, host, port, proxy given?). The suite's guard still sits behind it."""
+    dials = []
+    inner = relays_mod.websockets.connect
+
+    def watch(url, *a, **k):
+        dials.append((str(url), k.get("host"), k.get("port"), "proxy" in k))
+        return inner(url, *a, **k)
+    monkeypatch.setattr(relays_mod.websockets, "connect", watch)
+    return dials
+
+
+async def test_a_code_relay_is_dialled_at_the_checked_address_not_at_a_second_lookup_of_its_name(monkeypatch):
+    """The name of the relay does not resolve anywhere here: it opens only because the socket goes to the address the check
+    returned. A proxy in the environment is not used for it (a proxy would look the name up itself)."""
+    from ninsei_engine import relays as relays_mod
+    monkeypatch.setenv("ALL_PROXY", "http://127.0.0.1:9")
+    monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:9")
+    dials = record_dials(monkeypatch, relays_mod)
+    async with LocalRelay(port=0) as local:
+        url = f"ws://sneaky.example.org:{local.port}"
+        checked = []
+
+        async def check(u):
+            checked.append(u)
+            return "127.0.0.1", None
+        pool = relays_mod.RelayPool([url], backoff_base=0.05, backoff_max=0.1)
+        pool.dial_check = check
+        pool.start()
+        try:
+            assert await pool.wait_open(8) and pool.status[url].state == "open"
+            assert checked[0] == url
+            assert dials[0] == (url, "127.0.0.1", local.port, relays_mod._NO_PROXY != {})     # the name stays in the URL: TLS checks it
+        finally:
+            await pool.stop()
+
+
+async def test_a_code_relay_that_redirects_to_another_host_is_not_followed(monkeypatch):
+    """websockets follows a 3xx to any other host, with no check and a lookup of its own. Pinned to the checked address,
+    it refuses to leave the origin: the second server is never reached."""
+    from ninsei_engine import relays as relays_mod
+    reached = []
+
+    async def handler(ws):
+        reached.append(ws.request.path)
+        await asyncio.sleep(5)
+    from websockets.asyncio.server import serve
+    second = await serve(handler, "127.0.0.1", 0)
+    port_b = second.sockets[0].getsockname()[1]
+
+    async def redirect(reader, writer):
+        await reader.readuntil(b"\r\n\r\n")
+        writer.write(f"HTTP/1.1 301 Moved\r\nLocation: ws://127.0.0.1:{port_b}/private\r\nContent-Length: 0\r\n\r\n".encode())
+        await writer.drain()
+        writer.close()
+    first = await asyncio.start_server(redirect, "127.0.0.1", 0)
+    port_a = first.sockets[0].getsockname()[1]
+    try:
+        for pinned in (True, False):
+            reached.clear()
+
+            async def check(u, pinned=pinned):
+                return ("127.0.0.1", None) if pinned else (None, None)
+            pool = relays_mod.RelayPool([f"ws://localhost:{port_a}"], backoff_base=0.05, backoff_max=0.1)
+            pool.dial_check = check
+            pool.start()
+            try:
+                st = pool.status[f"ws://localhost:{port_a}"]
+                if pinned:
+                    assert await wait_for(lambda: "cross-origin redirect" in st.last_error, 8), st.last_error
+                    await asyncio.sleep(0.3)  # fixed-wait-ok: proving a negative, there is nothing to wait for
+                    assert reached == [] and st.state != "open"                    # never left the checked origin
+                else:
+                    assert await wait_for(lambda: reached, 8)                       # a typed relay keeps today's behaviour
+            finally:
+                await pool.stop()
+    finally:
+        first.close()
+        await first.wait_closed()
+        second.close()
+        await second.wait_closed()
+
+
+async def test_a_typed_relay_is_dialled_by_name_with_no_pinning(tmp_path, monkeypatch):
+    from ninsei_engine import relays as relays_mod
+    dials = record_dials(monkeypatch, relays_mod)
+    async with LocalRelay(port=0) as local:
+        e = Engine(tmp_path / "Maya", lambda: StubLLM("Ada"), relays=[local.url], lock=False, timescale=0.05)
+        e.save_settings({"relays": [local.url]})
+        pool = e._new_pool()
+        pool.start()
+        try:
+            assert await pool.wait_open(8)
+            assert dials[0] == (local.url, None, None, False)                        # the URL alone: no host, port or proxy argument
+        finally:
+            await pool.stop()
+            e.store.close()
+
+
+async def test_the_engine_hands_the_pool_the_address_it_checked_for_code_relays_only(bare, monkeypatch):
+    from ninsei_engine import engine as eng_mod
+    e, _ = bare()
+    answers = iter([["93.184.216.34"], ["93.184.216.35"]])
+
+    async def fake(host, port):
+        return next(answers)
+    monkeypatch.setattr(eng_mod, "_resolve", fake)
+    e.save_settings({"relays": ["wss://typed.example.net", "wss://code.example.org"]}, code_added=["wss://code.example.org"])
+    assert await e._dial_check("wss://code.example.org") == ("93.184.216.34", None)
+    assert await e._dial_check("wss://code.example.org") == ("93.184.216.35", None)     # looked up again each time
+    assert await e._dial_check("wss://typed.example.net") == (None, None)
+
+
+# ---- addresses: NAT64 ---------------------------------------------------------------------------------------------
+
+@pytest.mark.parametrize("addr,public", [
+    ("64:ff9b::7f00:1", False), ("64:ff9b::a00:5", False), ("64:ff9b::c0a8:109", False), ("64:ff9b::a9fe:a9fe", False),
+    ("64:ff9b::5db8:d822", True), ("64:ff9b::808:808", True), ("64:ff9b:1::5db8:d822", False), ("64:ff9b:1::1", False),
+    ("::ffff:93.184.216.34", True), ("::ffff:127.0.0.1", False), ("2606:2800:220:1:248:1893:25c8:1946", True)])
+def test_a_nat64_address_is_judged_by_the_ipv4_address_inside_it(addr, public):
+    """Python 3.11 calls 64:ff9b::/96 global and 3.14 does not; the answer must not depend on the interpreter."""
+    from ninsei_engine.engine import _public_address
+    assert _public_address(addr) is public
+
+
+# ---- the name lookups for invites are limited overall -------------------------------------------------------------
+
+class NamePool(FakePool):
+    def __init__(self, evs=()):
+        super().__init__()
+        self.evs, self.asked = list(evs), []
+
+    async def query(self, filters, timeout=4.0):
+        self.asked.append(sorted(d.rsplit("/", 1)[1] for d in filters[0]["#d"]))
+        return list(self.evs)
+
+
+async def test_name_lookups_for_invites_are_limited_in_all_batched_and_skip_invites_that_are_gone(bare):
+    e, _ = bare()
+    e.pool = NamePool()
+    k = Key("flooder")
+    befriend(e, k)
+    now = int(time.time())
+    rooms = [f"{2000 + j:016x}" for j in range(14)]
+    for j, room in enumerate(rooms):                                              # 14 invites, each a new room id
+        assert await e._dm_process(invite_wrap(e, k, room=room, now=now - 100 + j)) == dm.OK
+    await settle(e)
+    assert e.pool.asked == [[rooms[0]], [rooms[1]], [rooms[2]]]                   # three lookups, not fourteen
+    for _ in range(5):                                                            # the sidebar's summaries add nothing
+        e.dm_summary()
+    await settle(e)
+    assert len(e.pool.asked) == 3
+    # the oldest invites were evicted (10 per friend): their rooms are not asked about when a slot opens
+    assert {r["room"] for r in e.store.invites_with(k.ppk, 100)} == set(rooms[4:])
+    assert e._invite_wake is not None                                             # a timer will come back for the rest
+    e._invite_queries = [t - 61 for t in e._invite_queries]
+    e._invite_names_flush()
+    await settle(e)
+    assert len(e.pool.asked) == 4 and e.pool.asked[3] == sorted(rooms[4:])        # the rest, in one query, evicted rooms left out
+    assert len(e._invite_queries) == 1 and rooms[3] not in e.pool.asked[3]
+    e.dm_summary()
+    await settle(e)
+    assert len(e.pool.asked) == 4                                                 # asked a moment ago: not again for a minute
+
+
+async def test_the_waiting_rooms_are_asked_when_the_limit_frees_a_slot_by_itself(bare):
+    e, _ = bare()
+    e.pool = NamePool()
+    e._invite_queries = [time.monotonic() - 59.8] * 3                             # the minute's lookups are used up, for 0.2 s more
+    k = Key("patient")
+    befriend(e, k)
+    await e._dm_process(invite_wrap(e, k, room=OTHER))
+    await settle(e)
+    assert e.pool.asked == []
+    assert await wait_for(lambda: e.pool.asked == [[OTHER]], 5)                   # the timer came back and asked
+    await settle(e)
+    assert e._invite_wake is None
+
+
+async def test_a_hidden_creators_room_name_is_not_shown_in_an_invite_from_any_cache(bare):
+    e, _ = bare()
+    creator, friend = Key("maker"), Key("pal")
+    room, meta_ev = signed_meta(creator, name="Pest HQ")
+    e.pool = QPool([meta_ev])
+    befriend(e, friend)
+    await e._dm_process(invite_wrap(e, friend, room=room))
+    await settle(e)
+    assert [i["room_name"] for i in e.dm_summary()["invites"]] == ["Pest HQ"]
+    await e.hide_person(creator.ppk, "Pest")
+    assert [i["room_name"] for i in e.dm_summary()["invites"]] == ["a room"]      # the lookup's cache is not trusted after the hide
+    assert e.dm_thread(friend.ppk)["messages"][-1]["room_name"] == "a room"
+    # the cached Lobby too: its rows came from the creator's metadata whether or not I had hidden them
+    other_room, other_ev = signed_meta(creator, nonce="p2", name="Pest Lobby")
+    row = e._lobby_room(other_ev, json.loads(other_ev["content"]), f"ninsei/room/{other_room}", ["ninsei"], [])
+    e.lobby = {"rooms": [row], "people": [], "at": 1}
+    assert e._room_name_known(other_room) == "" and row["name"] == "Pest Lobby"
+    assert "creator" not in row                                                   # the key stays off what the page is sent
+    # a room whose creator I did not hide still shows its Lobby name
+    nice, nice_ev = signed_meta(Key("nice"), name="Friendly Lobby")
+    e.lobby = {"rooms": [e._lobby_room(nice_ev, json.loads(nice_ev["content"]), f"ninsei/room/{nice}", ["ninsei"], [])], "people": [], "at": 1}
+    assert e._room_name_known(nice) == "Friendly Lobby"
+
+
+async def test_the_name_cache_is_bounded_on_every_path_that_fills_it(bare):
+    from ninsei_engine import engine as eng_mod
+    e, _ = bare()
+    for j in range(eng_mod.INVITE_NAMES_KEPT + 40):
+        e._remember_invite_name(f"{j:016x}", f"room {j}", "ab" * 32)
+    assert len(e._invite_names) == eng_mod.INVITE_NAMES_KEPT and f"{0:016x}" not in e._invite_names
+    assert len(e._creators) <= eng_mod.CREATORS_KEPT
+    # a preview of many rooms (each a lookup of its own) goes through the same limit
+    e._invite_names.clear()
+    makers = [Key(f"m{j}") for j in range(eng_mod.INVITE_NAMES_KEPT + 20)]
+    evs = {}
+    for j, m in enumerate(makers):
+        room, ev = signed_meta(m, name=f"room {j}")
+        evs[room] = ev
+    e.pool = QPool()
+    for room, ev in evs.items():
+        e.pool.evs = [ev]
+        e._previews.clear()
+        await e._preview_query(room, [])
+    assert len(e._invite_names) == eng_mod.INVITE_NAMES_KEPT
