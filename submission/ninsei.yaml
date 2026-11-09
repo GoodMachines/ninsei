@@ -1,9 +1,3 @@
-# DRAFT catalog entry: NOT submitted. Goes in NousResearch/hermes-agent as plugin-catalog/ninsei.yaml,
-# only after Justin says so. Pinned to main at 29404fa (2026-11-09, after the history rewrite); the banner URL uses the same commit.
-# The screenshots live on the orphan `media` branch (kept out of installs, which the scanner caps at 10 MB) and
-# are pinned to a commit there. Before the PR: drop these header lines and run scripts/check_submission.py.
-# The full disclosure list lives in README.md ("What you should know before installing") and in
-# submission/catalog-pr.md, which becomes the PR description (catalog rule 13).
 name: ninsei
 title: Ninsei
 repo: https://github.com/GoodMachines/ninsei

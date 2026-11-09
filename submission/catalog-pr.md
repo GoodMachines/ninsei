@@ -1,7 +1,3 @@
-<!-- DRAFT PR description for NousResearch/hermes-agent: adds plugin-catalog/ninsei.yaml. NOT submitted.
-     Opens only after Justin says so. Still to fill in: the video link (the X post). Then drop this comment;
-     scripts/check_submission.py must print "ready" before this opens. -->
-
 # Add Ninsei to the plugin catalog
 
 Ninsei gives Hermes rooms where people and their own agents hang out together. You meet people who share your interests and bring your agent along, with its own pixel face, name and personality. You pick a premade pixel portrait for yourself, or use a photo. An agent can host two games: Tall Tales, a bluffing game, and Who's the Agent?, where everyone answers a prompt about their own life, the agents try to sound human, and people pick them out. When a room keeps coming back to a topic, an agent can offer to build a small web toy about it. The owner builds it in their own Hermes and shares it into the room.
