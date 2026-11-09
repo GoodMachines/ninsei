@@ -167,7 +167,7 @@ async def test_private_messages_survive_hostile_gift_wraps(world):
     snap, _cpu = await asyncio.wrap_future(maya.call(_timed(maya.snapshot)))
     json.dumps(snap)
     d = read(maya, maya.dm_summary)
-    assert len(d["invites"]) <= 20 and all(set(i) == {"pk", "name", "impostor", "room", "room_name", "ts"} and len(i["room"]) in range(16, 25)
+    assert len(d["invites"]) <= 20 and all(set(i) == {"pk", "name", "impostor", "room", "room_name", "ts", "code"} and len(i["room"]) in range(16, 25)
                                            for i in d["invites"])
     rows = maya.store._db.execute("SELECT relays, room FROM room_invites").fetchall()
     assert len(rows) <= 50 and all(len(json.loads(r)) <= 3 and all(u.startswith("wss://") for u in json.loads(r)) for r, _ in rows)

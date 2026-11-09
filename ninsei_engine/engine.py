@@ -13,6 +13,7 @@ import fcntl
 import functools
 import hashlib
 import heapq
+import ipaddress
 import json
 import logging
 import math
@@ -20,6 +21,7 @@ import os
 import random
 import re
 import secrets
+import socket
 import threading
 import time
 import unicodedata
@@ -137,6 +139,7 @@ INVITES_SHOWN = 20         # waiting invites the sidebar carries
 INVITE_LINES = 20          # invite lines one conversation carries
 INVITE_NAME_GAP = 60.0     # seconds between lookups of one room's name for an invite (the creator's own metadata)
 INVITE_NAMES_PER_ASK = 10  # rooms one name lookup asks about
+RESOLVE_TIMEOUT = 4.0      # seconds a code's relay hosts get to resolve before "Add and look again" gives up on them
 PREVIEW_COOLDOWN = 5.0     # seconds: a second preview of one room inside this returns the last answer, without a query
 PREVIEW_WAIT_RELAYS = 3.0  # seconds a preview waits for relays the owner just added to connect
 PREVIEWS_KEPT = 20
@@ -280,6 +283,26 @@ def _model_short(v) -> str:
 def room_id_for(creator_pk: str, nonce: str) -> str:
     """A room id commits to its creator, so only the creator's metadata is accepted for it."""
     return hashlib.sha256(f"ninsei-room:{creator_pk}:{nonce}".encode()).hexdigest()[:16]
+
+
+async def _resolve(host: str, port: int) -> list[str]:
+    """Every address `host` resolves to, as text. Runs on the loop's resolver (a thread), so it never blocks the engine;
+    the caller bounds the wait. Kept as one small function so tests can stand in for the network's DNS."""
+    infos = await asyncio.get_running_loop().getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    return [str(i[4][0]) for i in infos]
+
+
+def _public_address(addr: str) -> bool:
+    """True only for a globally routable address: not loopback, private, link-local, CGNAT, multicast, reserved or
+    unspecified (what `ipaddress` calls not `is_global`). An IPv4 address wrapped in IPv6 is judged as the IPv4 one."""
+    try:
+        ip = ipaddress.ip_address(addr.split("%", 1)[0])
+    except ValueError:
+        return False
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped
+    # (`is_global` alone lets some multicast ranges through, so those are refused by name as well)
+    return ip.is_global and not (ip.is_multicast or ip.is_loopback or ip.is_private or ip.is_link_local or ip.is_reserved or ip.is_unspecified)
 
 
 def _load_commons(path: Optional[Path] = None) -> tuple[Optional[dict], str]:
@@ -5330,7 +5353,8 @@ class Engine:
         for i in inv:
             info = book.get(i["peer"]) or {"name": "", "flag": None}
             invites.append({"pk": i["peer"], "name": self._dm_label(i["peer"], info), "impostor": bool(info["flag"]),
-                            "room": i["room"], "room_name": self._room_name_known(i["room"]) or "a room", "ts": i["at"]})
+                            "room": i["room"], "room_name": self._room_name_known(i["room"]) or "a room", "ts": i["at"],
+                            "code": self._code_of(i["room"], i["relays"])})
         self._invite_names_ask([i["room"] for i in inv])
         rel = {pk: "friend" for pk in lists["friends"]}
         rel.update({pk: "sent" for pk in lists["sent"]})
@@ -5373,7 +5397,8 @@ class Engine:
                     out.append({"id": f"inv:{inv['from_pk'][:12]}:{inv['room']}", "ts": inv["at"], "t": "invite", "mine": sent,
                                 "name": "You" if sent else self._dm_label(pk, info), "room": inv["room"],
                                 "room_name": (inv["name"] if sent else "") or self._room_name_known(inv["room"]) or "a room",
-                                "status": inv["status"], "in_room": inv["room"] in self.store.rooms()})
+                                "status": inv["status"], "in_room": inv["room"] in self.store.rooms(),
+                                "code": self._code_of(inv["room"], inv["relays"])})
         for m in rows:
             mine = m["sender"] == ident["person_pk"]
             item = {"id": m["id"], "ts": m["created_at"], "t": "msg", "pk": m["sender"], "role": "person", "mine": mine,
@@ -5604,6 +5629,12 @@ class Engine:
         hosts = self._share_hosts(room)
         return f"ninsei:{room}" + (("@" + ",".join(hosts)) if hosts else "")
 
+    @staticmethod
+    def _code_of(room: str, urls: Any) -> str:
+        """The code for a room and the relay addresses an invite carried (already checked when it was stored)."""
+        hosts = codes.clean_hosts(h for h in (codes.relay_url_host(u) for u in (urls if isinstance(urls, list) else [])) if h)
+        return f"ninsei:{room}" + (("@" + ",".join(hosts)) if hosts else "")
+
     def _room_name_known(self, room: str, mine_only: bool = False) -> str:
         """The name of a room as far as this install knows it: from a room I'm in, else (unless `mine_only`) the
         creator-signed metadata a lookup or the cached Lobby and Browse lists found. "" when not known (shown as "a room")."""
@@ -5731,11 +5762,29 @@ class Engine:
             raise ValueError("You have no relays set, so Ninsei is offline. Add relays in Settings, Relays.")
         if len(mine) + len(new) > 8:
             raise ValueError(f"You use {len(mine)} relays and Ninsei takes up to 8. Remove one in Settings, Relays, then try again.")
+        await self._check_public_relays(new)
         self.save_settings({"relays": list(mine) + new})
         await self.reconnect()
         self._previews.pop(room, None)   # the next preview asks again, including the new relays
         self._bump()
         return {"added": new, "relays": self.relays()}
+
+    async def _check_public_relays(self, urls: list[str]) -> None:
+        """A relay a code or an invite names is added only if every address its host resolves to is public. The name
+        rules in codes.py can't see that a public-looking name points at 127.0.0.1, 10.x or 169.254.x (a stranger can
+        make one), and Ninsei would then connect to the owner's own network. Resolved here, with a short bound, before
+        anything is saved; a host that won't resolve isn't added either. (A name can change what it points at after
+        this check: that is not guarded, and the pool connects to what is in Settings, as it does for typed relays.
+        Relays typed in Settings are never checked: a local relay there is legitimate.)"""
+        async def one(url: str) -> None:
+            host, _, port = url[6:].partition(":")
+            try:
+                addrs = await asyncio.wait_for(_resolve(host, int(port or 443)), RESOLVE_TIMEOUT)
+            except (OSError, asyncio.TimeoutError, ValueError):
+                raise ValueError(f"Ninsei couldn't find {host}, so it wasn't added. Check the code, or add the relay in Settings, Relays.") from None
+            if not addrs or not all(_public_address(a) for a in addrs):
+                raise ValueError("That relay points at a private network address, so Ninsei won't add it.")
+        await asyncio.gather(*(one(u) for u in urls))
 
     async def room_invite(self, room: str, friends: Any) -> dict:
         """Invite friends to a room I'm in: one private invite each (two wraps: theirs and my copy, like a message,

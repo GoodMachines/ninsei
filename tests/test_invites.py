@@ -20,6 +20,16 @@ from test_engine import StubLLM, read, run, setup_room, wait_for, world  # noqa:
 from test_hostile import FakePool, Key, ROOM, bare  # noqa: F401  (fixture re-export)
 from test_hostile import settle as settle_tasks
 
+@pytest.fixture(autouse=True)
+def public_dns(monkeypatch):
+    """No test asks a real resolver: every name resolves to a public address unless a test says otherwise."""
+    from ninsei_engine import engine as eng_mod
+
+    async def fake(host, port):
+        return ["93.184.216.34"]
+    monkeypatch.setattr(eng_mod, "_resolve", fake)
+
+
 OTHER = "0123456789abcdef"          # a room the bare engine is not in
 HOSTS = ["nos.lol", "relay.damus.io", "relay.primal.net"]
 
@@ -185,8 +195,9 @@ async def test_a_friends_invite_is_stored_and_shown_with_who_and_which_room_and_
     befriend(e, k)
     assert await e._dm_process(invite_wrap(e, k, relays=["wss://nos.lol", "wss://relay.damus.io"])) == dm.OK
     [inv] = e.dm_summary()["invites"]
-    assert set(inv) == {"pk", "name", "impostor", "room", "room_name", "ts"}
+    assert set(inv) == {"pk", "name", "impostor", "room", "room_name", "ts", "code"}
     assert (inv["pk"], inv["room"], inv["room_name"], inv["impostor"]) == (k.ppk, OTHER, "a room", False)
+    assert inv["code"] == f"ninsei:{OTHER}@nos.lol,relay.damus.io"                 # what the Join preview reads its hosts from
     row = e.store.invite_get(k.ppk, k.ppk, OTHER)
     assert row["status"] == "new" and row["relays"] == ["wss://nos.lol", "wss://relay.damus.io"]
     assert e.store.dm_counts() == {"messages": 0, "peers": 0}                     # an invite is not a message
@@ -682,6 +693,73 @@ async def test_add_and_look_again_refuses_offline_a_full_list_and_a_bad_code(bar
     with pytest.raises(ValueError, match="up to 8"):
         await e.add_code_relays(f"ninsei:{OTHER}@relay.example.org")
     assert len(e.settings()["relays"]) == 8
+
+
+def dns(monkeypatch, table):
+    from ninsei_engine import engine as eng_mod
+
+    async def fake(host, port):
+        got = table[host]
+        if isinstance(got, Exception):
+            raise got
+        if got == "hang":
+            await asyncio.sleep(60)
+        return got
+    monkeypatch.setattr(eng_mod, "_resolve", fake)
+
+
+@pytest.mark.parametrize("answer,words", [
+    (["127.0.0.1"], "private network"), (["10.0.0.5"], "private network"), (["169.254.169.254"], "private network"),
+    (["100.64.0.1"], "private network"), (["::1"], "private network"), (["fe80::1%en0"], "private network"), (["::ffff:127.0.0.1"], "private network"),
+    (["0.0.0.0"], "private network"), (["224.0.0.1"], "private network"),
+    (["93.184.216.34", "10.0.0.5"], "private network"), (["2606:2800:220:1::1", "192.168.1.9"], "private network"),   # one private answer is enough
+    ([], "private network"), (OSError("no such host"), "couldn't find"), ("hang", "couldn't find")])
+async def test_a_host_that_resolves_to_a_private_address_is_never_added(bare, monkeypatch, answer, words):
+    from ninsei_engine import engine as eng_mod
+    e, _ = bare()
+    reconnects = []
+
+    async def fake_reconnect():
+        reconnects.append(1)
+    monkeypatch.setattr(e, "reconnect", fake_reconnect)
+    monkeypatch.setattr(eng_mod, "RESOLVE_TIMEOUT", 0.2)
+    dns(monkeypatch, {"sneaky.example.org": answer, "fine.example.org": ["93.184.216.34"]})
+    mine = list(e.settings()["relays"])
+    with pytest.raises(ValueError, match=words):
+        await e.add_code_relays(f"ninsei:{OTHER}@fine.example.org,sneaky.example.org")
+    assert e.settings()["relays"] == mine and reconnects == []                    # nothing added, not even the good one
+    # the same code is previewed without any lookup: reading never resolves a name
+    seen = []
+
+    async def spy(host, port):
+        seen.append(host)
+        return ["93.184.216.34"]
+    monkeypatch.setattr(eng_mod, "_resolve", spy)
+    e.pool = QPool()
+    out = await e.room_preview(f"ninsei:{OTHER}@fine.example.org,sneaky.example.org")
+    assert len(out["unknown_relays"]) == 2 and seen == []
+
+
+async def test_public_addresses_pass_and_the_port_is_what_is_resolved(bare, monkeypatch):
+    e, _ = bare()
+    asked = []
+    from ninsei_engine import engine as eng_mod
+
+    async def spy(host, port):
+        asked.append((host, port))
+        return ["93.184.216.34", "2606:2800:220:1:248:1893:25c8:1946"]
+    monkeypatch.setattr(eng_mod, "_resolve", spy)
+
+    async def fake_reconnect():
+        pass
+    monkeypatch.setattr(e, "reconnect", fake_reconnect)
+    out = await e.add_code_relays(f"ninsei:{OTHER}@relay.example.org:8443,other.example.net")
+    assert sorted(asked) == [("other.example.net", 443), ("relay.example.org", 8443)]
+    assert out["added"] == ["wss://relay.example.org:8443", "wss://other.example.net"]
+    # relays typed in Settings are never resolved or checked: a local one is fine there
+    asked.clear()
+    e.save_settings({"relays": ["ws://127.0.0.1:7777", "wss://10.0.0.5"]})
+    assert e.settings()["relays"] == ["ws://127.0.0.1:7777", "wss://10.0.0.5"] and asked == []
 
 
 # ---- Share code and the invite link ------------------------------------------------------------------------------
