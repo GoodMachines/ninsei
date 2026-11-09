@@ -31,11 +31,17 @@ function budgetOption(n, b, msgsCap) {
   const cap = msgsCap != null ? msgsCap : (b && b.msgs && b.msgs.limit != null ? Number(b.msgs.limit) : null)
   const byTokens = repliesFor(n, b)
   const capped = cap != null && cap < byTokens
-  return { id: n, label: jsxs('span', { className: 'h-seg-two', children: [
+  return { id: n, replies: capped ? cap : byTokens, label: jsxs('span', { className: 'h-seg-two', children: [
     jsx('span', { children: capFirst(repliesWords(capped ? cap : byTokens)) }),
     jsx('span', { className: 'h-vh', children: ', ' }),
     jsx('span', { className: 'h-seg-sub', children: fmtTokens(n) + ' tokens' + (capped ? ', message limit' : '') })
   ] }) }
+}
+// The presets worth offering: one the message limit already caps buys no more replies than a cheaper one, so two
+// buttons would say the same "About 60 replies a day". Only the cheapest of equals stays, plus the one picked.
+function budgetOptions(b, msgsCap, picked) {
+  const all = BUDGET_PRESETS.map(n => budgetOption(n, b, msgsCap))
+  return all.filter((o, i) => o.id === Number(picked) || !all.slice(0, i).some(p => p.replies === o.replies))
 }
 
 // What a missing field keeps the Create button waiting for, said next to the button (aria-describedby).
@@ -119,7 +125,7 @@ function Onboarding(props) {
       jsx('div', { className: 'h-welcome-face', children: jsx(Face, { face: form.face, pk: agentPk, state: busy ? 'activity: working' : 'activity: idle', size: 72 }) }),
       jsx('h1', { children: 'Welcome to Ninsei' }),
       jsx('div', { className: 'h-muted', style: { maxWidth: 420 }, children:
-        'Rooms where people and their own agents hang out. Your agent comes with you, speaks politely, and only spends the budget you give it.' })
+        'Rooms where people and their own agents hang out. Your agent comes with you, takes instructions only from you, and only spends the budget you give it.' })
     ] }),
     jsx(HermesPicker, { onPick: p => applyProposal(p, set, setPick) }),
     jsxs('div', { className: 'h-two', children: [
@@ -153,7 +159,7 @@ function Onboarding(props) {
       children: jsx(InterestInput, { id: 'h-on-int', value: form.interests, onChange: interests => set({ interests }) }) }),
     jsx(Field, { label: 'Daily budget for room chatter', hint: 'Reserved before every model call, settled after. At the limit your agent rests until tomorrow.',
       children: jsx(Seg, { label: 'Daily budget', value: form.budget_daily, onChange: v => set({ budget_daily: v }),
-        options: BUDGET_PRESETS.map(n => budgetOption(n, snap.budget)) }) }),
+        options: budgetOptions(snap.budget, null, form.budget_daily) }) }),
     jsx(Notice, { icon: 'globe', children: 'Finishing setup puts you and ' + (form.agent_name.trim() || 'your agent') +
       ' in Commons, a public room where everyone starts. Your names are signed and posted to public Nostr relays, and anyone can read them. You can leave Commons any time.' }),
     jsxs('div', { className: 'h-actions', style: { justifyContent: 'flex-end' }, children: [
@@ -297,7 +303,7 @@ function SettingsForm(props) {
       jsx(Field, { label: 'Daily limit', id: 'h-s-budget', error: budgetErr, hint: budgetErr ? undefined : budgetHint, hintId: 'h-s-budget-hint',
         children: jsxs('div', { className: 'h-row', style: { flexWrap: 'wrap' }, children: [
         jsx(Seg, { label: 'Budget presets', value: Number(form.budget_daily), onChange: v => set({ budget_daily: v }),
-          options: BUDGET_PRESETS.map(n => budgetOption(n, snap.budget, msgsCap)) }),
+          options: budgetOptions(snap.budget, msgsCap, form.budget_daily) }),
         jsxs('span', { className: 'h-row', style: { gap: 6 }, children: [
           jsx(K.Input, { id: 'h-s-budget', type: 'number', min: 0, step: 1000, value: form.budget_daily, style: { width: 120 }, 'aria-label': 'Daily limit in tokens',
             'aria-invalid': budgetErr ? true : undefined, 'aria-describedby': budgetErr ? 'h-s-budget-err' : 'h-s-budget-hint', onChange: e => set({ budget_daily: e.target.value }) }),

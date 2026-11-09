@@ -123,8 +123,8 @@ out({ id: o.id, main: text(main), gap: [gap.props.className, text(gap)], sub: te
     assert r["gap"] == ["h-vh", ", "]
     assert r["guess"] == "About 20 replies a day, 20k tokens"
     assert r["ring"] == "12k of 40k tokens today (about 47 replies a day)"
-    assert "BUDGET_PRESETS.map(n => budgetOption(n, snap.budget))" in fn(SETUP, "Onboarding")
-    assert "BUDGET_PRESETS.map(n => budgetOption(n, snap.budget, msgsCap))" in fn(SETUP, "SettingsForm")
+    assert "budgetOptions(snap.budget, null, form.budget_daily)" in fn(SETUP, "Onboarding")
+    assert "budgetOptions(snap.budget, msgsCap, form.budget_daily)" in fn(SETUP, "SettingsForm")
     assert ".h-seg-sub{" in STYLE
 
 
@@ -142,6 +142,29 @@ out({ saved: words(saved), typed: words(typed), under: words(under) })
     assert r["typed"] == "About 30 replies a day, 40k tokens, message limit"
     assert r["under"] == "About 43 replies a day, 20k tokens"
 
+
+
+@needs_node
+def test_presets_the_message_limit_caps_alike_show_once_unless_picked():
+    # 2026-11-08, filming: with a settled reply of ~450 tokens both 40k and 100k said "About 60 replies a day"
+    r = run(BUDGET_JS + const(CORE, "BUDGET_PRESETS") + fn(SETUP, "budgetOptions") + """
+const b = { reply_tokens: 456, msgs: { limit: 60 } }
+const ids = os => os.map(o => o.id)
+out({ capped: ids(budgetOptions(b, null, 40000)), picked: ids(budgetOptions(b, null, 100000)),
+      roomy: ids(budgetOptions(b, 500, 40000)), fresh: ids(budgetOptions(undefined, null, 40000)),
+      typed: ids(budgetOptions(b, 30, '40000')) })
+""")
+    assert r["capped"] == [20000, 40000]             # 100k buys the same 60 replies as 40k: one button
+    assert r["picked"] == [20000, 40000, 100000]     # a saved 100k still shows as picked
+    assert r["roomy"] == [20000, 40000, 100000]      # a higher message limit brings it back
+    assert r["fresh"] == [20000, 40000, 100000]      # before any reply settles: 20, 40, 100 at the guess
+    assert r["typed"] == [20000, 40000]              # 20k is 43 replies, capped at 30 like 40k; 40k stays as picked
+
+
+def test_welcome_promises_only_what_the_code_enforces():
+    on = fn(SETUP, "Onboarding")
+    assert "speaks politely" not in on               # nothing enforces manners
+    assert "takes instructions only from you" in on  # the owner-signature check does
 
 @needs_node
 def test_settings_daily_limit_says_what_a_typed_number_buys_and_when_messages_stop_it_first():

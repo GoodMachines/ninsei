@@ -204,7 +204,7 @@ def test_offer_cards_have_copy_for_expired_and_dropped():
 # --- 4: an empty relay list is offline, and Settings says so -------------------------------------------------------
 
 SETTINGS_JS = lambda: (fn(SETUP, "parseCount") + const(SETUP, "BUDGET_MAX") + const(SETUP, "MSGS_MAX")
-                       + fn(SETUP, "limitError") + fn(SETUP, "SettingsForm") + fn(SETUP, "capFirst") + fn(SETUP, "budgetOption")
+                       + fn(SETUP, "limitError") + fn(SETUP, "SettingsForm") + fn(SETUP, "capFirst") + fn(SETUP, "budgetOption") + fn(SETUP, "budgetOptions")
                        + fn(SETUP, "useKeepAboveBar") + fn(CORE, "repliesFor") + fn(CORE, "repliesWords") + fn(CORE, "repliesLeftWords") + const(CORE, "REPLY_TOKENS_GUESS") + """
 function Field() {}; function Seg() {}; function VibePresets() {}; function IdCard() {}; function FacePicker() {}; function BudgetRing() {}; const AWAY_CHOICES = []; const OTHERS_SPENT = ''; function othersLine() { return '' }
 function InterestInput() {}; function Notice() {}; function PersonLook() {}; const cleanAvatar = a => a || null

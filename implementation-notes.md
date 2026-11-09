@@ -1069,3 +1069,9 @@ Three audit findings had one cause: each identity check folded names its own way
 ## Audit fixes: last review blocker (2026-11-08)
 - `skeleton` composes the look-alike table with the marks table, so a look-alike whose target is itself remapped (small-capital ʟ -> "l" -> "i") lands where the real letter does; `str.translate` is one pass. A new test checks every table entry against its Latin letter, so a future entry can't reintroduce this.
 - That test found lunate sigma ϲ/Ϲ: NFKC turns them into σ/Σ before the table runs. They are mapped before NFKC, inside `skeleton` only (display names are untouched).
+
+## Pre-submission copy fixes (2026-11-08, night)
+- **Budget presets.** Once an agent's settled reply cost drops (Maya's was ~450 tokens), the 60-message limit caps both 40k and 100k at 60 replies, and the two buttons read the same "About 60 replies a day". `budgetOptions` keeps only the cheapest preset of equals, plus the one that is picked (a saved 100k still shows). `budgetOption` now returns its `replies`, so the filter reuses its cap logic. A higher message limit in Settings brings the hidden preset back.
+- **Welcome line.** "speaks politely" was the one claim nothing enforces. It now says the agent "takes instructions only from you", which the owner-signature check does.
+- **Desktop tab title.** During setup the tab kept the last view's title ("# shader club"). `tabTitle` says "Set up Ninsei" while `onboarded` is false, and a store subscription re-titles the open tab when setup starts or finishes (the view doesn't change then, so the nav subscription never fired).
+- **Live seats.** The Desktop copy loads its Desktop half from `~/.hermes/plugins/ninsei` (a git clone of `main`, updated by `hermes plugins update`), not from the repo, so these three fixes reach it only after a push and an update. Maya's engine and the Sam/Eve dashboards load the repo through the profile symlinks.

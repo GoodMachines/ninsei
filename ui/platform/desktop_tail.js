@@ -216,6 +216,7 @@ export default {
     const tabTitle = () => {
       const v = nav().get()
       const snap = store.get().snap
+      if (snap && snap.settings && !snap.settings.onboarded) return 'Set up Ninsei'   // setup shows whatever the view was
       const r = v === 'room' && snap && (snap.rooms || []).find(x => x.id === store.room())
       return r ? '# ' + r.name : v === 'lobby' ? 'Ninsei Lobby' : v === 'hermes' ? 'Your Hermes' : v === 'dm' ? 'Private messages' : 'Ninsei'
     }
@@ -231,6 +232,13 @@ export default {
     }
     // a view picked inside the tab (the Lobby button, say) renames it
     ctx.onDispose(nav().subscribe(() => { if (tabOpen) open() }))
+    // and so does setup starting or finishing, which changes what the tab shows without changing the view
+    let inSetup = null
+    ctx.onDispose(store.subscribe(st => {
+      const now = !!(st.snap && st.snap.settings && !st.snap.settings.onboarded)
+      if (inSetup !== null && now !== inSetup && tabOpen) open()
+      inSetup = now
+    }))
     // the sidebar tab picks a view: switching views re-titles an open tab through the line above, so open
     // here only when the tab is closed or the view stays the same (another room)
     const show = v => {

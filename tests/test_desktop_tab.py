@@ -81,3 +81,36 @@ def test_sidebar_tab_docks_beside_sessions_and_opens_rooms_beside_chats(tmp_path
     assert got["opened"] == [{"id": "ninsei", "title": "Ninsei Lobby", "embedded": True, "app": "App"},
                              {"id": "ninsei", "title": "# shader club", "embedded": True, "app": "App"}]
     assert got["navs"] == [] and got["view"] == "room" and got["room"] == "r1"
+
+
+
+# setup: the same harness up to registering, with a first run's /state, then "Open Ninsei" from the palette
+SETUP_HARNESS = (HARNESS.split("const tab = regs.find")[0]
+                 .replace("settings: { onboarded: true }", "settings: { onboarded: false }")
+                 .replace("onDispose() {}, onEvent() {},", "onDispose() {}, onEvent(n, f) { events[n] = f },")
+                 .replace("const store = {}", "const store = {}, events = {}")) + """
+regs.find(c => c.id === 'open').data.run()
+const titles = [opened[opened.length - 1].title]
+snap.settings.onboarded = true                      // the save lands; the backend pushes a change
+events['plugin.ninsei.changed']()
+await new Promise(r => setTimeout(r, 20))
+titles.push(opened[opened.length - 1].title)
+console.log(JSON.stringify({ titles, opens: opened.length }))
+"""
+
+
+def test_tab_says_set_up_during_setup_and_renames_when_it_finishes(tmp_path):
+    # 2026-11-08, filming: setup ran under a tab still called "# shader club", the last room's name
+    src = (ROOT / "desktop" / "plugin.js").read_text()
+    src = (src.replace("import * as sdk from '@hermes/plugin-sdk'", "const sdk = globalThis.__SDK__")
+              .replace("import { jsx, jsxs } from 'react/jsx-runtime'", "const { jsx, jsxs } = globalThis.__JSX__"))
+    src, n = re.subn(r"^import (\{[^}]*\}) from 'react'$", r"const \1 = globalThis.__REACT__", src, count=1, flags=re.M)
+    assert n == 1
+    plugin = tmp_path / "plugin.mjs"
+    plugin.write_text(src)
+    harness = tmp_path / "harness.mjs"
+    harness.write_text(SETUP_HARNESS)
+    out = subprocess.run([NODE, str(harness), plugin.as_uri()], capture_output=True, text=True, timeout=30)
+    assert out.returncode == 0, out.stderr[-2000:]
+    got = json.loads(out.stdout.strip().splitlines()[-1])
+    assert got["titles"] == ["Set up Ninsei", "Ninsei"] and got["opens"] == 2
