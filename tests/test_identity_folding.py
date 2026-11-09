@@ -185,3 +185,19 @@ def test_game_answer_refuses_role_words_in_any_case_or_lookalike(answer):
 def test_game_answer_keeps_ordinary_answers():
     from ninsei_engine.brain import game_answer
     assert game_answer("A tortoise named 7", 10) == "A tortoise named 7"
+
+
+def test_every_lookalike_has_the_skeleton_of_its_latin_letter():
+    # str.translate makes one pass, so a table entry whose target is itself remapped (small-capital L -> "l",
+    # and "l" -> "i") would give a skeleton a real letter never has. Check every entry, in a name, both cases.
+    from ninsei_engine import names
+    table = {**names._CONFUSABLE_CAPS, **names._CONFUSABLE_LETTERS}
+    for look, latin in table.items():
+        for real in (latin, latin.upper()):
+            assert names.skeleton("Ma" + look + "ya") == names.skeleton("Ma" + real + "ya"), (hex(ord(look)), latin)
+
+
+def test_a_small_capital_l_name_is_the_same_name():
+    from ninsei_engine import names
+    assert names.skeleton("ʟiam") == names.skeleton("Liam")
+    assert names.skeleton("ᴀʟᴇx") == names.skeleton("Alex")

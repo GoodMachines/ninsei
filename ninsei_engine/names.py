@@ -71,14 +71,18 @@ _CONFUSABLE_LETTERS = {
 # these are punctuation the sanitizer has its own rules for.
 _CONFUSABLE_MARKS = {"0": "o", "1": "i", "l": "i", "|": "i", "!": "i", "3": "e", "5": "s", "$": "s", "@": "a"}
 _CAPS = str.maketrans(_CONFUSABLE_CAPS)
-_SKELETON = str.maketrans({**_CONFUSABLE_LETTERS, **_CONFUSABLE_MARKS})
+# Look-alikes that NFKC would turn into something that no longer looks Latin (lunate sigma ϲ/Ϲ -> σ/Σ): mapped first.
+_BEFORE_NFKC = str.maketrans({"\u03f2": "c", "\u03f9": "C"})
+# One pass of str.translate, so a look-alike's target goes through the marks too: small-capital ʟ -> "l" -> "i",
+# the same as a real L. tests/test_identity_folding.py checks every entry against its Latin letter.
+_SKELETON = str.maketrans({**{k: _CONFUSABLE_MARKS.get(v, v) for k, v in _CONFUSABLE_LETTERS.items()}, **_CONFUSABLE_MARKS})
 
 
 def skeleton(name) -> str:
     """The comparable form of a display name: NFKC, nothing invisible, no combining or separator characters,
     casefolded, look-alike letters mapped to Latin, separators dropped. Two names with the same skeleton are
     the same name to a reader, so impostor and name-holder checks compare these, never raw strings."""
-    s = unicodedata.normalize("NFKC", strip_invisible(str(name or "")))
+    s = unicodedata.normalize("NFKC", strip_invisible(str(name or "")).translate(_BEFORE_NFKC))
     s = unicodedata.normalize("NFKD", s)  # split accents off so they can be dropped below
     s = "".join(ch for ch in s if unicodedata.category(ch)[0] not in ("C", "M", "Z") and not ch.isspace()
                 and not invisible(ch))
