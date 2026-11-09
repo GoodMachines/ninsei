@@ -35,7 +35,7 @@ EOF
 SHA=$(sed -n 's/^sha: "\([0-9a-f]\{40\}\)".*/\1/p' submission/ninsei.yaml)
 git merge-base --is-ancestor "$SHA" origin/main || { echo "pinned sha $SHA is not on origin/main"; exit 1; }
 ME=$(gh api user --jq .login)
-printf '%s\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n' "$(cat "$WORK/catalog-pr.md")" > "$WORK/body.md"
+cp "$WORK/catalog-pr.md" "$WORK/body.md"   # the PR text exactly as catalog-pr.md has it, no tool credit
 
 if [[ "$DRY" == "--dry-run" ]]; then
   echo "dry run OK: would commit the link, fork $UPSTREAM as $ME, put plugin-catalog/ninsei.yaml on $ME:$BRANCH, open \"$TITLE\""
