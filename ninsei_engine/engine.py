@@ -131,6 +131,7 @@ DM_CLOCK_SLACK = 60        # seconds two installs' clocks may differ when histor
 DM_DEFER_MAX = 200        # non-friends' wraps from a history pass kept (sealed, in memory) until that pass ends
 DM_SINCE_MARGIN = 3 * 86400  # wraps are dated up to 2 days before they were sent: ask this far before "last online"
 DM_PACE_S = 0.05           # between wraps the worker opens: a flood of them costs a fraction of one core
+REJOIN_QUIET_S = 600      # a rejoin inside this many seconds of my last join message posts no new one
 DM_SEND_PER_MIN = 10       # private messages one install sends a minute (each is two wraps)
 DM_SNIPPET = 60            # how much of a new private message the sidebar carries, for the alert
 DM_THREAD_MESSAGES = 200   # messages of one conversation the UI loads
@@ -3767,6 +3768,7 @@ class Engine:
                     meta, found_meta = m, True
         else:
             found_meta = True
+        was_member = room in self.store.rooms()
         self.store.save_room(room, meta)
         self._left_forget(room)   # joined again: no longer in the Rejoin list
         if self.store.invites_joined(room, self._identity()["person_pk"]):
@@ -3781,8 +3783,13 @@ class Engine:
         for ev in sorted(hist, key=lambda e: (e.get("created_at") if isinstance(e.get("created_at"), int) else 0,
                                               str(e.get("id")))):
             await self._on_event(ev, "history")
-        if not any(self._content(e).get("t") == "join" and e["pubkey"] == self._identity()["person_pk"]
-                   for e in self.events[room].values()):
+        # A join message goes out on a real join, a rejoin after leaving included (the room should hear you're back,
+        # and its creator gets "joined" for it), but not twice inside REJOIN_QUIET_S, so leave-and-rejoin can't spam
+        # the room. Called for a room I'm already in, it only repairs a join that never went out.
+        me = self._identity()["person_pk"]
+        my_joins = [e["created_at"] for e in self.events[room].values()
+                    if e["pubkey"] == me and self._content(e).get("t") == "join" and isinstance(e.get("created_at"), int)]
+        if not my_joins or (not was_member and max(my_joins) < _now() - REJOIN_QUIET_S):
             await self._publish_room(room, False, {"t": "join"})
             await self._publish_room(room, True, {"t": "join"})
         await self._presence_once()

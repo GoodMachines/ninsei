@@ -1307,3 +1307,38 @@ async def test_the_name_cache_is_bounded_on_every_path_that_fills_it(bare):
         e._previews.clear()
         await e._preview_query(room, [])
     assert len(e._invite_names) == eng_mod.INVITE_NAMES_KEPT
+
+
+async def test_rejoining_after_leaving_posts_a_fresh_join_but_not_twice_inside_ten_minutes(bare, monkeypatch):
+    """A rejoin is a join: the room hears you're back (and its creator gets "joined"). Before, my old join in the
+    room's history suppressed it. A rejoin within REJOIN_QUIET_S of my last join message posts nothing."""
+    from ninsei_engine import engine as engine_mod
+    e, _ = bare()
+    posted = []
+
+    async def noop(*a, **kw):
+        return None
+
+    async def publish(room, agent, content):
+        posted.append((room, agent, content.get("t")))
+    monkeypatch.setattr(e, "_resubscribe", noop)
+    monkeypatch.setattr(e, "_presence_once", noop)
+    monkeypatch.setattr(e, "_publish_room", publish)
+    me = e._identity()
+    room = "ab" * 8
+    old = nostr.build_event(me["person_sk"], 4242, json.dumps({"t": "join", "at": time.time() - 3600}), [["h", room]],
+                            created_at=int(time.time()) - 3600)
+    e.pool = QPool([old])
+    meta = {"id": room, "name": "synth corner", "about": "", "interests": []}
+    await e.join_room(room, dict(meta))
+    assert [p[2] for p in posted] == ["join", "join"]          # person and agent: a rejoin an hour after my last join
+    posted.clear()
+    await e.join_room(room, dict(meta))                        # already a member: nothing to repair, nothing posted
+    assert posted == []
+    await e.leave_room(room)
+    recent = nostr.build_event(me["person_sk"], 4242, json.dumps({"t": "join", "at": time.time() - 60}), [["h", room]],
+                               created_at=int(time.time()) - 60)
+    e.pool = QPool([recent])
+    await e.join_room(room, dict(meta))
+    assert posted == []                                        # left and came back inside ten minutes: quiet
+    assert engine_mod.REJOIN_QUIET_S == 600

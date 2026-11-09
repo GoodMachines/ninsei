@@ -1107,3 +1107,9 @@ Built from `docs/invites.md` sections 1, 2, 3 and 5 (section 4's web page is ano
 - **Name cache bound.** One `_remember_invite_name` for the lookup and the preview (`INVITE_NAMES_KEPT` = 100); the preview path wrote without trimming.
 - **NAT64.** `_public_address` judges `64:ff9b::/96` by the IPv4 address inside it (Python 3.11 calls the range global, 3.14 does not) and refuses `64:ff9b:1::/48` (RFC 8215, local use). Checked on 3.11, 3.12, 3.13 and 3.14.
 - **Docs.** The `_dm_gate` note above, the `InviteLine` comment and `docs/invites.md` section 3 now say what the name is: the inviter's own words when they made the room, at most 32 characters, invisible characters stripped.
+
+## Invites: live check on the seats (2026-11-09)
+- **Live, public relays, Sam and Kit dashboards on `invites`:** friend request and accept; Sam's invite reached Kit in 1.6 s with the room's signed name; the preview found the room and joined nothing; a code naming a relay Kit doesn't use listed it and added nothing; joining cleared the invite; the Rejoin list kept the room and dropped it on rejoin; Kit's rejoin of a room Sam made toasted on Sam's side in 1.6 s.
+- **Rejoin posts a join.** `join_room` used to skip the join message whenever my old join was in the room's history, so a rejoin (the usual case after an invite) told nobody, and the creator's "joined" toast never fired. Now a real join (not already a member) posts one unless my last join is under `REJOIN_QUIET_S` (600 s) old; a call for a room I'm in only repairs a missing one.
+- **A join that lands right after a restart doesn't toast:** the relays are still replaying, and those events count as history. Intended.
+- **Rough edges seen, not fixed:** the Invite dialog showed Kit as "in this room" a few seconds after he left (presence lingers up to 150 s); an invite's Join opens the dialog titled "Join by code" with the code field, where "Sam invited you to pixel arcade" would read better.
