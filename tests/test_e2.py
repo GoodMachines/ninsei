@@ -93,13 +93,13 @@ async def test_a_rooms_own_chattiness_beats_the_global_one_in_both_directions(wo
 
 def test_a_room_link_reads_as_a_room_and_an_optional_message():
     room, ev = "203f22bcfd1b4b2f", "a" * 64
-    assert parse_room_link(f"ninsei:{room}") == (room, "")
-    assert parse_room_link(f"ninsei:{room}#{ev}") == (room, ev)
-    assert parse_room_link(f"  NINSEI:{room.upper()}#{ev.upper()} ") == (room, ev)
-    assert parse_room_link(room) == (room, "")
-    assert parse_room_link(f"ninsei:{room}#nothex") == (room, "")
-    assert parse_room_link(f"ninsei:{room}#{'a' * 63}") == (room, "")
-    assert parse_room_link(None) == ("", "") and parse_room_link("zzz # nothing") == ("", "")
+    assert parse_room_link(f"ninsei:{room}") == (room, "", [])
+    assert parse_room_link(f"ninsei:{room}#{ev}") == (room, ev, [])
+    assert parse_room_link(f"  NINSEI:{room.upper()}#{ev.upper()} ") == (room, ev, [])
+    assert parse_room_link(room) == (room, "", [])
+    assert parse_room_link(f"ninsei:{room}#nothex") == (room, "", [])
+    assert parse_room_link(f"ninsei:{room}#{'a' * 63}") == (room, "", [])
+    assert parse_room_link(None) == ("", "", []) and parse_room_link("zzz # nothing") == ("", "", [])
     assert parse_room_link("x" * 10_000)[0] == ""                    # bounded, never an error
 
 

@@ -261,12 +261,12 @@ async def test_discarding_a_message_also_drops_my_agents_undelivered_reply_and_r
 # ---- 8: pasted room links, future read marks --------------------------------------------------------------------
 
 def test_parse_room_link_cuts_at_the_first_character_that_is_not_hex():
-    assert parse_room_link("ninsei:0123456789abcdef please join") == ("0123456789abcdef", "")
+    assert parse_room_link("ninsei:0123456789abcdef please join") == ("0123456789abcdef", "", [])
     assert parse_room_link("  0123456789ABCDEF  ")[0] == "0123456789abcdef"
     assert parse_room_link("ninsei:0123456789abcdefzzabc")[0] == "0123456789abcdef"
-    assert parse_room_link("hello") == ("", "")
+    assert parse_room_link("hello") == ("", "", [])
     ev = "ab" * 32
-    assert parse_room_link(f"ninsei:0123456789abcdef#{ev}") == ("0123456789abcdef", ev)
+    assert parse_room_link(f"ninsei:0123456789abcdef#{ev}") == ("0123456789abcdef", ev, [])
 
 
 async def test_a_future_dated_message_never_pushes_the_read_mark_past_now(bare):

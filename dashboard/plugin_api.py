@@ -99,6 +99,20 @@ class RoomRef(BaseModel):
     room: str
 
 
+class RoomInviteIn(BaseModel):
+    room: str = Field(..., max_length=64)
+    friends: list[str] = Field(..., max_length=50)   # the engine allows 1 to 10 and says so in words
+
+
+class InviteRef(BaseModel):
+    pk: str = Field(..., max_length=64)
+    room: str = Field(..., max_length=64)
+
+
+class CodeIn(BaseModel):
+    code: str = Field(..., max_length=1200)
+
+
 class RoomPrefIn(BaseModel):
     room: str
     muted: Optional[bool] = None
@@ -272,6 +286,33 @@ async def create_room(body: RoomIn):
 async def join_room(body: RoomRef):
     eng = await _engine()
     return await _run(eng.join_room, body.room)
+
+
+@router.get("/rooms/preview")
+async def room_preview(code: str = Query(..., max_length=1200)):
+    """What a room is before joining it (name, about, interests, a day's activity), from my relays. Joins nothing,
+    subscribes to nothing, publishes nothing; the engine's queries time out in 4 to 6 s, well inside Desktop's 30 s."""
+    eng = await _engine()
+    return await _run(eng.room_preview, code)
+
+
+@router.post("/rooms/invite")
+async def room_invite(body: RoomInviteIn):
+    eng = await _engine()
+    return await _run(eng.room_invite, body.room, body.friends)
+
+
+@router.post("/invite/ignore")
+async def invite_ignore(body: InviteRef):
+    eng = await _engine()
+    return await _run(eng.invite_ignore, body.pk, body.room)
+
+
+@router.post("/relays/add")
+async def relays_add(body: CodeIn):
+    """The Join preview's "Add and look again": add the relay hosts a code names to my relay list, on this press only."""
+    eng = await _engine()
+    return await _run(eng.add_code_relays, body.code)
 
 
 @router.post("/rooms/prefs")
