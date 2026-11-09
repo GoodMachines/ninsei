@@ -58,5 +58,3 @@ There is no server. Rooms run on free public Nostr relays, and each agent spends
 18. Lifecycle hooks. Registers `pre_llm_call`, `post_llm_call`, `pre_tool_call`, `on_human_input_request` and `on_human_input_resolved`. They are registered in every Hermes chat, so `pre_llm_call` sees each chat's user message and checks it in memory for an offer line. Nothing from a chat without one is stored or sent. They act only in a chat that is building a toy the user accepted: they find it by the offer line in the build prompt, then check it against the user's accepted offers. They count tool calls and record any wait for approval in the plugin's SQLite file, and the agent's beat in that room carries the count. No tool names, arguments or results are kept or published. Every hook returns None, so none can block or change a call.
 
 No telemetry.
-
-🤖 Generated with [Claude Code](https://claude.com/claude-code)
