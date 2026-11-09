@@ -204,8 +204,9 @@ function DmItem(props) {
 }
 
 // A room invite, as a line in the conversation: who invited whom to which room, and for one waiting for an answer a Join
-// (it opens the Join preview: nothing joins by a click). The room's name is the creator's own, looked up by the engine, or
-// "a room"; nothing the inviter typed is anywhere in it, because an invite carries no words.
+// (it opens the Join preview: nothing joins by a click). The room's name is the one its creator signed, looked up by the
+// engine, or "a room". An invite itself carries no words, but when the inviter made the room the name shown is their own
+// words, at most 32 characters with invisible characters stripped (a stranger's text, drawn only as plain text).
 function InviteLine(props) {
   const m = props.m
   const room = cleanSnippet(m.room_name, 40) || 'a room'

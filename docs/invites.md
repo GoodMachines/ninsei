@@ -62,8 +62,11 @@ the room is, then a Join button.
   first, then the oldest. Ignore is local and silent. Joining the room (any way) marks its invites `joined`.
   Unfriending someone drops their `new` invites. Hiding drops all of theirs.
 - **Room name.** An invite carries no name. The receiver looks the name up from the room's creator-signed
-  metadata on its own relays (the cached Lobby, else one query, at most one per room per minute) and shows
-  "a room" until it is found. Nothing the inviter chose is ever shown except who they are.
+  metadata on its own relays (the cached Lobby, else a query) and shows "a room" until it is found. Lookups are
+  limited to 3 a minute in all, whoever the invites are from; the rooms waiting go in one query, and a room whose
+  invite is gone is not asked about. When the inviter made the room, the name shown is their own words: what they
+  typed as the room's name, cut to 32 characters with invisible characters removed. Nothing else they chose is
+  shown, only who they are; a room made by someone I hid shows "a room".
 - **UI.**
   - Room header: **Invite** next to Share code. A dialog lists my friends (checkboxes, a filter box past 8),
     and below it **Copy invite link** (section 4). Friends already in the room show "in this room" and no box.

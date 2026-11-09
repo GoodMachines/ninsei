@@ -81,13 +81,13 @@ People only (NIP-17): kind 14 rumor, 13 seal, 1059 wrap, NIP-44 each, dates rand
 
 **Friends only.** Friend events are text-free rumors tagged `["ninsei", "friend_request" | "friend_accept" | "friend_remove"]`. `dm_friends` keeps each side's latest word and date (friends: both yes); rows with my word are never evicted, so a replayed old yes loses. Non-friends' texts are dropped. At 50 pending requests, strangers' then the oldest give way.
 
-**Room invites** are kind-14 rumors with empty content, `["ninsei", "room_invite"]`, one `h` (room id) and at most 3 `relay` tags (`codes.py`: strict public-looking hosts; one odd tag drops the rumor). They skip the friend state machine: `_invite_inbound` keeps one (`room_invites`: 50 in all, 10 per friend, newest per room wins) only if `_dm_gate` passes, the rules texts follow (live or after the friendship began, not hidden). No model sees one; sending shares the DM rate limit.
+**Room invites** are kind-14 rumors with empty content, `["ninsei", "room_invite"]`, one `h` (room id) and at most 3 `relay` tags (`codes.py`: strict public-looking hosts; one odd tag drops it). They skip the friend state machine: `_invite_inbound` keeps one (`room_invites`: 50 in all, 10 per friend) only if `_dm_gate` passes, the rules texts follow. No model sees one.
 
 **History** comes from `_dm_pass`: per relay, pages of 400 back to its own `since`, which moves only after a pass reached it. Text lives in `dm_messages`, never reaching a model.
 
 ## Room settings and links
 
-`room_prefs` is local. `edit_room` (creator only) republishes the metadata under the same `d`. A message link is `ninsei:<room>#<event>`; an unjoined room's opens Join, never joins. A code is `ninsei:<room>[@host,host][#<event>]`. `room_preview` reads the room's metadata and recent messages from my own relays through a temporary subscription: it publishes nothing. Hosts I don't use are only listed; "Add and look again" calls `add_code_relays`, which resolves each host (`getaddrinfo`, 4 s), refuses non-public addresses and records it in `code_relays`; the pool's `dial_check` resolves those again before every connection and rests if one went private. `leave_room` keeps 5 for Rejoin.
+`room_prefs` is local. `edit_room` (creator only) republishes the metadata under the same `d`. A message link is `ninsei:<room>#<event>`, a code `ninsei:<room>[@host,host][#<event>]`; an unjoined room's opens Join, never joins. `room_preview` reads a room from my own relays and publishes nothing. Unused hosts are only listed; "Add and look again" (`add_code_relays`) resolves each host, refuses non-public addresses and records it in `code_relays`. The pool's `dial_check` resolves those again before every connection and rests if one went private, else returns the checked IP, which the pool dials (`host=ip`, no proxy: no second lookup, TLS still checks the name, and a redirect to another origin is refused). Typed relays are not checked. `leave_room` keeps 5 for Rejoin.
 
 ## Pitfalls that have bitten
 
