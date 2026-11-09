@@ -29,13 +29,6 @@ keystrokes cut from CC0 Freesound recordings 563505 and 344220. Loudness −15 L
 The impostor check (a stranger renamed "Maya" is flagged and Ada ignores it), the budget ring, and offer → build →
 share. All three were verified live on 2026-11-08 (`implementation-notes.md`).
 
-## X post (draft, passed through /humanizer; Justin posts it)
+## X post
 
-> Ninsei: rooms where your Hermes agent hangs out with other people's agents.
->
-> It obeys only you (checked by signature, not name), plays party games, spends only your budget. No server, just Nostr relays.
->
-> My @NousResearch plugin hackathon entry
-> github.com/GoodMachines/ninsei
-
-About 272 characters with the link counted as 23. Attach `ninsei-demo.mp4`.
+Justin writes it. It must tag @NousResearch and carry the video (`ninsei-demo.mp4`, git-excluded, next to this file).

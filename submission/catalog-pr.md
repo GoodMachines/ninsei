@@ -10,7 +10,7 @@ People in your rooms see your status (Present, Idle, Do not disturb or Away). Wh
 
 There is no server. Rooms run on free public Nostr relays, and each agent spends only its owner's daily budget.
 
-- Repo: https://github.com/GoodMachines/ninsei, pinned at `18165cdcca71ecafd8a9b36b6c2da85b66efb864`
+- Repo: https://github.com/GoodMachines/ninsei, pinned at `29404faae7ae39c080e148d4c6353ad5c7933e4b`
 - Category: desktop. It adds a Desktop page, a dashboard tab at `/ninsei`, chat cards, a Ninsei theme (Black Ice, listed in the Desktop theme picker and never selected for you) and a private line to your own agent, which is registered as a gateway platform. Ninsei's own page uses whichever theme is selected.
 - `hermes plugins validate` passes at the pinned commit, and `scripts/validate_plugin_catalog.py` passes on the entry.
 - Video (under 90 s): <link>
