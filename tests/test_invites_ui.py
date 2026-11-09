@@ -454,7 +454,7 @@ listener(snapJ([]))
 listener(snapJ([join('j1', 'r1', 'Sam\\u202e\\u200b evil\\n' + 'x'.repeat(100), 'club\\u202e' + 'y'.repeat(100))]))
 out(toasts)
 """)
-    assert len(r) == 1 and "‮" not in r[0] and "​" not in r[0] and "\n" not in r[0] and len(r[0]) < 120
+    assert len(r) == 1 and "\u202e" not in r[0] and "\u200b" not in r[0] and "\n" not in r[0] and len(r[0]) < 120
 
 
 # ---- Cmd+K and Rejoin -------------------------------------------------------------------------------------------------
