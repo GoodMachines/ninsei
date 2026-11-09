@@ -177,6 +177,17 @@ function fmtAgo(ts) {
   return Math.floor(s / 86400) + ' d ago'
 }
 
+// The Join preview's one activity line, from the engine's counts: "4 people talked today · last message 12 min ago", or
+// "Quiet lately" when nobody did. No names of people: the engine sends none for a room you haven't joined.
+function previewActivity(d) {
+  const n = d && Number.isInteger(d.talkers) ? d.talkers : 0
+  if (!d || !(d.msgs > 0) || n < 1) return 'Quiet lately'
+  return (n === 1 ? '1 person talked today' : n + ' people talked today') + (d.last > 0 ? ' · last message ' + fmtAgo(d.last) : '')
+}
+
+// A relay address (wss://host) as the host a person recognises.
+function relayHost(url) { return String(url == null ? '' : url).replace(/^wss:\/\//i, '') }
+
 function joinNames(names) {
   if (names.length <= 1) return names[0] || ''
   return names.slice(0, -1).join(', ') + ' and ' + names[names.length - 1]
@@ -857,14 +868,28 @@ function hereSignals(store) {
   }
 }
 
+const INVITE_TOAST_MS = 30000   // one invite toast per sender in this long (the sidebar still lists every invite)
+const JOIN_TOAST_MS = 30000     // joins of one room inside this long are told once, as a count
+
 function mentionAlerts(store) {
   let seen = null
   let dmSeen = null
   let reqSeen = null
+  let invSeen = null
+  let joinSeen = null
   const told = {}
   const dmTold = {}
   const reqTold = {}
-  return store.subscribe(st => {
+  const invTold = {}    // invite key -> true (announced once)
+  const invAt = {}      // sender -> when one of their invites was last announced
+  const joinTold = {}   // join id -> true
+  const joinWin = {}    // room -> { at, told, n, name, off }: the open window of joins, how many the last toast covered
+  const joinFlush = (room, w) => {
+    w.off = null
+    if (w.n > w.told) P.toast('info', w.n + ' people joined ' + w.name)
+    w.at = 0; w.n = 0; w.told = 0
+  }
+  const off = store.subscribe(st => {
     const snap = st && st.snap
     if (!snap) return
     // Do not disturb: no toast and no OS notification (the badges and counts stay). Everything is still marked as
@@ -926,8 +951,59 @@ function mentionAlerts(store) {
       if (P.osNotify) P.osNotify({ title, body: 'Open Ninsei to answer.', onActivate: () => { store.setDm('requests'); nav().set('dm') } })
     }
     reqSeen = rnext
+    // A room invite from a friend: who and which room (the name is the room creator's own, or "a room"). Announced once,
+    // and for one sender at most once in INVITE_TOAST_MS; several at once make one toast with a count. The OS
+    // notification says no more than the toast does and is shown only while you are away.
+    const inext = {}
+    const newInv = []
+    for (const i of (snap.dms && snap.dms.invites) || []) {
+      const key = i.pk + ':' + i.room + ':' + i.ts
+      inext[key] = 1
+      if (invSeen === null || key in invSeen || invTold[key]) continue
+      invTold[key] = 1
+      newInv.push(i)
+    }
+    if (newInv.length && !dnd) {
+      const now = Date.now()
+      const ready = newInv.filter(i => !(invAt[i.pk] && now - invAt[i.pk] < INVITE_TOAST_MS))
+      for (const i of ready) invAt[i.pk] = now
+      if (ready.length) {
+        const i = ready[0]
+        const who = cleanSnippet(i.name, 32)
+        const title = ready.length > 1 ? ready.length + ' room invites'
+          : (i.impostor ? 'Someone not verified (' + who + ')' : who) + ' invited you to ' + cleanSnippet(i.room_name, 40)
+        P.toast('info', title)
+        if (P.osNotify) P.osNotify({ title, body: 'Open Ninsei to answer.', onActivate: () => { store.setDm('invites'); nav().set('dm') } })
+      }
+    }
+    invSeen = inext
+    // Someone joined a room you made (the engine lists only live joins of people, in rooms you created). A toast, never
+    // an OS notification, and none for a muted room. The first join in a quiet spell is told by name; others inside
+    // JOIN_TOAST_MS are counted and told together when the spell ends ("3 people joined shader club").
+    const muted = new Set((snap.rooms || []).filter(r => r.muted).map(r => r.id))
+    const byRoom = {}
+    for (const j of snap.joins || []) {
+      if (joinTold[j.id]) continue
+      joinTold[j.id] = 1
+      if (joinSeen === null || dnd || muted.has(j.room)) continue
+      ;(byRoom[j.room] = byRoom[j.room] || []).push(j)
+    }
+    joinSeen = true
+    for (const room of Object.keys(byRoom)) {
+      const list = byRoom[room]
+      const w = joinWin[room] || (joinWin[room] = { at: 0, told: 0, n: 0, name: '', off: null })
+      const now = Date.now()
+      w.name = cleanSnippet(list[0].room_name, 40)
+      if (w.at && now - w.at < JOIN_TOAST_MS) { w.n += list.length; continue }
+      w.at = now
+      w.n = w.told = list.length
+      P.toast('info', list.length > 1 ? list.length + ' people joined ' + w.name : cleanSnippet(list[0].name, 32) + ' joined ' + w.name)
+      if (w.off) w.off()
+      w.off = P.setTimeout(() => joinFlush(room, w), JOIN_TOAST_MS)
+    }
     dmSeen = dnext
   })
+  return () => { off(); for (const w of Object.values(joinWin)) if (w.off) w.off() }
 }
 
 // Which Ninsei view is showing (room, lobby, hermes, dm, settings). One shared value, so in Desktop the
@@ -1085,18 +1161,57 @@ function linkAt(text, i) {
 // the link itself, like every other link, and it opens inside Ninsei, never a browser.
 function roomLinkAt(text, i) {
   if (i > 0 && /[\p{L}\p{N}]/u.test(text.charAt(i - 1))) return null
-  const m = /^ninsei:([0-9a-f]{16})(?:#([0-9a-f]{64}))?(?![0-9a-f])/i.exec(text.slice(i, i + 90))
-  return m ? { text: m[0], room: m[1].toLowerCase(), event: m[2] ? m[2].toLowerCase() : '' } : null
+  // `ninsei:<room>`, `ninsei:<room>@host,host`, either with `#<message>`. A sentence's closing full stop or comma
+  // after the hosts is not part of the link (when a message id follows, the hosts end at the `#`, so nothing is cut).
+  const m = /^ninsei:([0-9a-f]{16})(?:@([a-z0-9.:,-]{1,800}))?(?:#([0-9a-f]{64}))?(?![0-9a-f])/i.exec(text.slice(i, i + 900))
+  if (!m) return null
+  const hostText = m[2] && !m[3] ? m[2].replace(/[.,:-]+$/, '') : (m[2] || '')
+  const link = m[0].slice(0, m[0].length - (m[2] || '').length + hostText.length)
+  const hosts = hostText ? cleanHosts(hostText.split(',')) : []
+  return { text: link, room: m[1].toLowerCase(), event: m[3] ? m[3].toLowerCase() : '', hosts }
 }
 
-// What a pasted code or link names: { room, event } ('' when absent); the same reading as the engine's parse_room_link.
+// A relay host a code or invite may carry: `host` or `host:port`, lowercased, or null. The same rules as the engine's
+// codes.clean_host: dotted DNS labels, a lettered top-level name that is not a private one, at most 253 characters,
+// no IP address of any spelling, no `localhost`, nothing that isn't a name (a code is pasted from anywhere, and must
+// not aim an install at its own network). Connecting to a relay shows it your IP, so a code never connects by itself.
+const PRIVATE_SUFFIXES = new Set(['localhost', 'local', 'localdomain', 'internal', 'lan', 'home', 'corp', 'intranet', 'private', 'arpa', 'onion',
+  'invalid', 'test', 'example'])
+function cleanHost(host) {
+  if (typeof host !== 'string') return null
+  const h = host.toLowerCase()
+  if (!h || h.length > 253) return null
+  const parts = h.split(':')
+  if (parts.length > 2) return null
+  if (parts.length === 2 && !(/^[0-9]{1,5}$/.test(parts[1]) && +parts[1] >= 1 && +parts[1] <= 65535)) return null
+  const labels = parts[0].split('.')
+  if (labels.length < 2) return null
+  for (const l of labels.slice(0, -1)) if (!/^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/.test(l)) return null
+  const tld = labels[labels.length - 1]
+  if (!/^([a-z]{2,63}|xn--[a-z0-9-]{1,59})$/.test(tld) || PRIVATE_SUFFIXES.has(tld)) return null
+  return h
+}
+function cleanHosts(list, limit) {
+  const out = []
+  for (const x of list || []) {
+    const h = cleanHost(typeof x === 'string' ? x.trim() : x)
+    if (h && !out.includes(h)) { out.push(h); if (out.length >= (limit || 3)) break }
+  }
+  return out
+}
+
+// What a pasted code or link names: { room, event, hosts } ('' and [] when absent; `hosts` are up to 3 clean relay hosts,
+// bad ones dropped); the same reading as the engine's parse_room_link.
 function parseRoomLink(s) {
-  const t = String(s == null ? '' : s).trim().slice(0, 200).replace(/^ninsei:/i, '')
+  const t = String(s == null ? '' : s).trim().slice(0, 1200).replace(/^ninsei:/i, '')
   const k = t.indexOf('#')
-  const room = (k < 0 ? t : t.slice(0, k)).toLowerCase().trim()
+  const head = k < 0 ? t : t.slice(0, k)
+  const at = head.indexOf('@')
+  const room = (at < 0 ? head : head.slice(0, at)).toLowerCase().trim()
   const hex = /^[0-9a-f]*/.exec(room)[0].slice(0, 24)
   const ev = k < 0 ? '' : t.slice(k + 1).trim().toLowerCase()
-  return { room: hex, event: /^[0-9a-f]{64}$/.test(ev) ? ev : '' }
+  const hosts = hex && at >= 0 ? cleanHosts(head.slice(at + 1).split(',').slice(0, 8)) : []
+  return { room: hex, event: /^[0-9a-f]{64}$/.test(ev) ? ev : '', hosts }
 }
 
 // A message to scroll to once its room is open (from a pasted or clicked message link).
@@ -4222,7 +4337,7 @@ function ProfileLayer(props) {
   const close = useCallback(() => { shown.current = false; setWho(null) }, [])
   return jsxs(ProfileContext.Provider, { value: open, children: [
     props.children,
-    who && jsx(ProfileSheet, { who, room: props.room, snap: props.snap, store: props.store, openSettings: props.openSettings, openDm: props.openDm,
+    who && jsx(ProfileSheet, { who, room: props.room, snap: props.snap, store: props.store, openSettings: props.openSettings, openDm: props.openDm, openInvite: props.openInvite,
       opener, onClose: close, onOpen: open, key: who.pk })
   ] })
 }
@@ -4343,6 +4458,12 @@ function ProfileSheet(props) {
     props.onClose()
     props.openDm(act.message.pk)
   }
+  const inviteThem = () => {
+    if (!act.message || !props.openInvite) return
+    keepFocus.current = true
+    props.onClose()
+    props.openInvite(act.message.pk, act.message.name)
+  }
   const hideThem = async () => {
     if (!act.hide || !props.store) return
     try {
@@ -4365,6 +4486,8 @@ function ProfileSheet(props) {
         saveBtn, copyBtn,
         act.message && jsx(FriendAction, { rel: ((snap.dms || {}).rel || {})[act.message.pk] || '', name: act.message.name, pk: act.message.pk,
           store: props.store, onMessage: props.openDm ? messageThem : null }, 'friend'),
+        act.message && props.openInvite && ((snap.dms || {}).rel || {})[act.message.pk] === 'friend' && jsx(K.Button, { variant: 'secondary', size: 'sm', onClick: inviteThem,
+          children: [jsx(K.Icon, { name: 'organization', size: 13 }, 'i'), 'Invite to a room'] }, 'invite'),
         act.edit && jsx(K.Button, { variant: 'ghost', size: 'sm', onClick: editFace, children: [jsx(K.Icon, { name: 'edit', size: 13 }, 'i'), 'Edit face'] }, 'edit'),
         act.hide && props.store && jsx(K.Button, { variant: 'ghost', size: 'sm', onClick: hideThem, children: [jsx(K.Icon, { name: 'eye-closed', size: 13 }, 'i'),
           jsx('span', { className: 'h-trunc', style: { maxWidth: 190 }, children: 'Hide ' + act.hide.name }, 't')] }, 'hide')
@@ -5570,9 +5693,21 @@ function RoomView(props) {
 }
 
 // The code people use to join a room, to the clipboard (the header's button, the starter panel, the Games menu).
+// The code is the engine's: the room's id and up to 3 relays it lives on (`ninsei:<room>@host,host`), so someone on other
+// relays can find it. Copying it connects nowhere, and whoever pastes it sees the hosts before anything is added.
 async function copyRoomCode(room) {
-  const ok = await P.copy('ninsei:' + room.id)
-  P.toast(ok ? 'info' : 'error', ok ? 'Room code copied. Anyone with it can join; rooms are public.' : 'Could not reach the clipboard. The code is ninsei:' + room.id)
+  const code = room.code || 'ninsei:' + room.id
+  const ok = await P.copy(code)
+  P.toast(ok ? 'info' : 'error', ok ? 'Room code copied. Anyone with it can join; rooms are public.' : 'Could not reach the clipboard. The code is ' + code)
+}
+
+// The same code as a link to the Ninsei page on goodmachines.ai, for someone who doesn't have Ninsei yet. The part after
+// # never reaches that server.
+async function copyInviteLink(room) {
+  const link = room.invite_link || ''
+  if (!link) return
+  const ok = await P.copy(link)
+  P.toast(ok ? 'info' : 'error', ok ? 'Invite link copied. It shows how to get Ninsei, then how to join this room.' : 'Could not reach the clipboard. The link is ' + link)
 }
 
 function RoomHeader(props) {
@@ -5586,6 +5721,7 @@ function RoomHeader(props) {
   const mine = new Set((snap.settings && snap.settings.interests) || [])
   const online = (room.members || []).filter(isHere).length
   const copyCode = () => copyRoomCode(room)
+  const [inviting, setInviting] = useState(false)
   return jsxs('div', { className: 'h-head', children: [
     jsxs('div', { className: 'h-grow h-col', style: { gap: 3 }, children: [
       jsxs('div', { className: 'h-row', children: [
@@ -5602,6 +5738,9 @@ function RoomHeader(props) {
       'aria-expanded': !!props.searching, 'data-search-btn': true, onClick: props.onSearch, children: jsx(K.Icon, { name: 'search', size: 14 }) }) }),
     jsx(K.Tip, { label: 'Copy the code people use to join', children: jsx(K.Button, { variant: 'ghost', size: 'sm', onClick: copyCode,
       children: jsxs(Fragment, { children: [jsx(K.Icon, { name: 'link', size: 13 }), 'Share code'] }) }) }),
+    jsx(K.Tip, { label: 'Invite friends to this room', children: jsx(K.Button, { variant: 'ghost', size: 'sm', onClick: () => setInviting(true),
+      children: jsxs(Fragment, { children: [jsx(K.Icon, { name: 'organization', size: 13 }), 'Invite'] }) }) }),
+    inviting && jsx(InviteDialog, { store, snap, room, onClose: () => setInviting(false) }),
     props.onPeople && jsx(K.Button, { variant: 'ghost', size: 'icon', 'aria-label': 'People', onClick: props.onPeople, className: 'h-peoplebtn',
       children: jsx(K.Icon, { name: 'organization', size: 14 }) }),
     jsxs('div', { className: 'h-menuwrap', children: [
@@ -5619,6 +5758,58 @@ function RoomHeader(props) {
         jsx(K.Button, { variant: 'danger', onClick: () => { setConfirm(false); store.post('/rooms/leave', { room: room.id }); store.setRoom('') }, children: 'Leave' }, 'l')
       ] })
   ] })
+}
+
+// Invite friends to this room: a private invite to each (the room's id and where it lives, nothing you type), friends only,
+// up to 10 a time. Friends already in the room show "in this room" and no box. Below the list, the same invite as a web link
+// to copy, for someone who isn't a friend yet or doesn't have Ninsei.
+const INVITE_FILTER_FROM = 8   // more friends than this and a filter box appears
+const INVITE_MAX = 10
+function InviteDialog(props) {
+  const { store, snap, room } = props
+  const [picked, setPicked] = useState([])
+  const [q, setQ] = useState('')
+  const [busy, setBusy] = useState(false)
+  const inRoom = new Set((room.members || []).map(p => p.pk))
+  const friends = ((snap.dms && snap.dms.threads) || []).filter(t => t.friend)
+  const term = q.trim().toLowerCase()
+  const shown = term ? friends.filter(t => String(t.name || '').toLowerCase().includes(term)) : friends
+  const toggle = pk => setPicked(p => p.includes(pk) ? p.filter(x => x !== pk) : p.length >= INVITE_MAX ? p : p.concat(pk))
+  const send = async () => {
+    setBusy(true)
+    try {
+      const out = await store.post('/rooms/invite', { room: room.id, friends: picked })
+      P.toast('info', out.sent === 1 ? 'Invite sent.' : out.sent + ' invites sent.')
+      props.onClose()
+    } catch (_) { setBusy(false) }
+  }
+  return jsx(Modal, { open: true, onClose: props.onClose, title: 'Invite to ' + room.name,
+    description: 'Friends get a private invite with this room’s code. It carries no message, and your agent never sees it.',
+    footer: [
+      jsx(K.Button, { variant: 'ghost', onClick: props.onClose, children: 'Cancel' }, 'c'),
+      jsx(K.Button, { variant: 'primary', disabled: busy || picked.length === 0, onClick: send,
+        children: busy ? 'Sending…' : picked.length > 1 ? 'Send ' + picked.length + ' invites' : 'Send invite' }, 's')
+    ],
+    children: jsxs('div', { className: 'h-col', style: { gap: 10 }, children: [
+      friends.length > INVITE_FILTER_FROM && jsx(K.Input, { value: q, placeholder: 'Find a friend', 'aria-label': 'Find a friend', maxLength: 60, onChange: e => setQ(e.target.value) }),
+      friends.length === 0 && jsx('div', { className: 'h-faint h-small', children: 'No friends yet. Open someone’s card and press Add friend; once they accept you can invite them.' }),
+      friends.length > 0 && shown.length === 0 && jsx('div', { className: 'h-faint h-small', role: 'status', children: 'No friend called that.' }),
+      jsx('div', { className: 'h-list', role: 'group', 'aria-label': 'Friends', style: { maxHeight: 260, overflowY: 'auto' }, children: shown.map(t => {
+        const here = inRoom.has(t.pk)
+        return jsxs('label', { className: 'h-row', style: { gap: 10, padding: '5px 2px', opacity: here ? 0.6 : 1 }, children: [
+          here ? jsx('span', { style: { width: 16 } }) : jsx('input', { type: 'checkbox', checked: picked.includes(t.pk), disabled: !picked.includes(t.pk) && picked.length >= INVITE_MAX,
+            'aria-label': 'Invite ' + t.name, onChange: () => toggle(t.pk) }),
+          jsx(PersonMark, { pk: t.pk, name: t.name, size: 20, flagged: !!t.impostor }),
+          jsx('span', { className: 'h-grow h-trunc', children: t.name }),
+          here && jsx('span', { className: 'h-faint h-small', children: 'in this room' })
+        ] }, t.pk)
+      }) }),
+      picked.length >= INVITE_MAX && jsx('div', { className: 'h-faint h-small', children: 'Up to ' + INVITE_MAX + ' at a time.' }),
+      room.invite_link && jsxs('div', { className: 'h-row', style: { gap: 8, justifyContent: 'space-between', borderTop: '1px solid var(--h-line2)', paddingTop: 10 }, children: [
+        jsx('span', { className: 'h-faint h-small', children: 'Not a friend yet, or no Ninsei? Send a link.' }),
+        jsx(K.Button, { variant: 'secondary', size: 'sm', onClick: () => copyInviteLink(room), children: 'Copy invite link' })
+      ] })
+    ] }) })
 }
 
 // ---- timeline -------------------------------------------------------------------------------
@@ -5959,7 +6150,7 @@ function TimelineItem(props) {
     jsx(Face, { face: m.face, pk: m.pk, state: 'system: waiting', size: 20 }),
     jsx('span', { children: m.text || (m.name + ' is resting: out of budget for today') })
   ] })
-  else if (it.kind === 'msg') body = jsx(Message, { m, first: it.first, book, store, roomId: room.id, onReply: props.onReply, onJump: props.onJump,
+  else if (it.kind === 'msg') body = jsx(Message, { m, first: it.first, book, store, roomId: room.id, roomCode: room.code, onReply: props.onReply, onJump: props.onJump,
     onRetry: props.onRetry, onDiscard: props.onDiscard, editReq: props.editReq, onEditDone: props.onEditDone, onFocusComposer: props.onFocusComposer })
   else if (it.kind === 'offer') body = jsx(OfferCard, { m, store, snap, room })
   else if (it.kind === 'offer_state') body = jsxs('div', { className: 'h-line', children: [offerStateLine(m, room), m.impostor && ' ', m.impostor && jsx(ImpostorChip, { imp: m.impostor })] })
@@ -6075,7 +6266,7 @@ function Message(props) {
     P.toast(ok ? 'info' : 'error', ok ? 'Message text copied.' : 'Could not reach the clipboard.')
   }
   const copyLink = async () => {
-    const link = 'ninsei:' + props.roomId + '#' + m.id
+    const link = (props.roomCode || 'ninsei:' + props.roomId) + '#' + m.id
     const ok = await P.copy(link)
     P.toast(ok ? 'info' : 'error', ok ? 'Link to this message copied. Anyone in the room can open it in Ninsei.' : 'Could not reach the clipboard. The link is ' + link)
   }
@@ -6308,7 +6499,7 @@ function richNode(t, i) {
 function RoomLink(props) {
   const open = useContext(LinkContext)
   return jsx('button', { type: 'button', className: 'h-link h-roomlink', title: props.event ? 'Open this message' : 'Open this room',
-    onClick: e => { e.preventDefault(); if (open) open(props.room, props.event) }, children: props.text })
+    onClick: e => { e.preventDefault(); if (open) open(props.room, props.event, props.text) }, children: props.text })
 }
 
 // A link shows the address itself, never other words. Desktop hands it to the system browser through the host
@@ -7197,14 +7388,17 @@ function switcherItems(snap) {
   for (const r of snap.rooms || []) out.push({ key: 'r-' + r.id, kind: 'room', id: r.id, icon: 'hash', label: r.name || 'Room', sub: r.muted ? 'Room, muted' : 'Room' })
   const dms = snap.dms || {}
   for (const t of dms.threads || []) out.push({ key: 'd-' + t.pk, kind: 'dm', id: t.pk, icon: 'person', label: t.name || 'Someone', sub: t.friend === false ? 'Not friends' : 'Friend' })
+  if ((dms.invites || []).length > 0) out.push({ key: 'invites', kind: 'invites', icon: 'link', label: 'Room invites', sub: dms.invites.length + ' waiting' })
   if (dms.requests > 0) out.push({ key: 'requests', kind: 'requests', icon: 'organization', label: 'Friend requests', sub: dms.requests + (dms.requests === 1 ? ' waiting' : ' waiting') })
+  // Rooms you left, last, so you can come back: picking one opens the Join preview with its code
+  for (const r of snap.left || []) out.push({ key: 'rj-' + r.id, kind: 'rejoin', code: r.code, icon: 'hash', label: 'Rejoin ' + (r.name || 'a room'), match: r.name || 'a room', sub: 'Left room' })
   return out
 }
 
 function filterSwitcher(items, q) {
   const term = String(q || '').trim()
   if (!term) return items
-  return items.map(it => ({ it, s: fuzzyScore(term, it.label) })).filter(x => x.s >= 0).sort((a, b) => b.s - a.s).map(x => x.it)
+  return items.map(it => ({ it, s: fuzzyScore(term, it.match || it.label) })).filter(x => x.s >= 0).sort((a, b) => (a.it.kind === 'rejoin') - (b.it.kind === 'rejoin') || b.s - a.s).map(x => x.it)
 }
 
 // Cmd/Ctrl+K: type a few letters, arrows move, Enter goes, Escape closes. Opens on a spring.
@@ -7490,6 +7684,7 @@ function LineAbout(props) {
 
 const NO_MSGS = []  // a stable empty list, so a conversation that hasn't loaded doesn't look like a new snapshot each render
 const DM_REQUESTS = 'requests'  // store.dm() value that opens the Requests list instead of one conversation
+const DM_INVITES = 'invites'    // ...and this one opens the room invites waiting for you
 const DM_POLL_MS = 2000  // how often an open conversation re-asks while a message of mine is still on its way
 
 // The sidebar's "Direct messages": your friends (and any old conversation), then Requests (if any) as one row.
@@ -7502,7 +7697,7 @@ function DmRail(props) {
   return jsxs(Fragment, { children: [
     jsx('div', { className: 'h-navhead', children: jsx('span', { className: 'h-sec', children: 'Direct messages' }) }),
     jsxs('div', { className: 'h-nav', children: [
-      list.length === 0 && !dms.requests && !(dms.sent || []).length && jsx('div', { className: 'h-faint h-small', style: { padding: '2px 8px' }, children: 'Open someone’s card and press Add friend. Once they accept, you can message each other.' }),
+      list.length === 0 && !dms.requests && !(dms.sent || []).length && !(dms.invites || []).length && jsx('div', { className: 'h-faint h-small', style: { padding: '2px 8px' }, children: 'Open someone’s card and press Add friend. Once they accept, you can message each other.' }),
       list.map(t => jsxs('button', { type: 'button', className: 'h-navrow', 'data-on': cur === t.pk, 'aria-current': cur === t.pk ? 'page' : undefined,
         onClick: () => open(t.pk), children: [
           jsx(PersonMark, { pk: t.pk, name: t.name, size: 18, flagged: !!t.impostor }),
@@ -7522,6 +7717,12 @@ function DmRail(props) {
         jsx(K.Icon, { name: 'organization', size: 12 }),
         jsx('span', { className: 'h-grow h-trunc', children: 'Requests' }),
         jsx('span', { className: 'h-mentions', 'aria-label': dms.requests + (dms.requests === 1 ? ' friend request' : ' friend requests'), children: dms.requests > 9 ? '9+' : dms.requests })
+      ] }),
+      // Room invites from friends, waiting for an answer: one row like Requests, with the count. It opens the list.
+      (dms.invites || []).length > 0 && jsxs('button', { type: 'button', className: 'h-navrow', 'data-on': cur === DM_INVITES, onClick: () => open(DM_INVITES), children: [
+        jsx(K.Icon, { name: 'link', size: 12 }),
+        jsx('span', { className: 'h-grow h-trunc', children: 'Invites' }),
+        jsx('span', { className: 'h-mentions', 'aria-label': dms.invites.length + (dms.invites.length === 1 ? ' room invite' : ' room invites'), children: dms.invites.length > 9 ? '9+' : dms.invites.length })
       ] })
     ] })
   ] })
@@ -7628,6 +7829,8 @@ function DmView(props) {
         ] }),
         jsx('div', { className: 'h-faint h-small h-trunc', children: 'Only the two of you can read this. Your agent never sees it.' })
       ] }),
+      data && data.friend && props.onInvite && jsx(K.Tip, { label: 'Invite ' + name + ' to a room', children: jsx(K.Button, { variant: 'ghost', size: 'icon', 'aria-label': 'Invite ' + name + ' to a room',
+        onClick: () => props.onInvite(pk, name), children: jsx(K.Icon, { name: 'organization', size: 14 }) }) }),
       data && data.friend && jsx(K.Tip, { label: 'Remove ' + name + ' from your friends', children: jsx(K.Button, { variant: 'ghost', size: 'icon', 'aria-label': 'Remove ' + name + ' from your friends',
         onClick: () => setRemoving(true), children: jsx(K.Icon, { name: 'close', size: 14 }) }) }),
       props.onPeople && jsx(K.Button, { variant: 'ghost', size: 'icon', 'aria-label': 'About private messages', onClick: props.onPeople, className: 'h-peoplebtn',
@@ -7653,7 +7856,7 @@ function DmView(props) {
       !data && !err && jsx('div', { className: 'h-empty', children: 'Opening the conversation…' }),
       data && data.friend && msgs.length === 0 && mine.length === 0 && jsx(EmptyState, { icon: 'lock', title: 'Say hello to ' + name,
         hint: 'Only the two of you can read what you write here. It is encrypted on its way, and your agent never sees it.' }),
-      items.map(it => (it.kind === 'day' ? jsx(DmItem, { it, animate: false }, it.key) : it.kind === 'msg' && jsx(DmItem, { it, animate: fresh(it.key), onRetry: retry, onDiscard: discard }, it.key)))
+      items.map(it => (it.kind === 'day' ? jsx(DmItem, { it, animate: false }, it.key) : (it.kind === 'msg' || it.kind === 'invite') && jsx(DmItem, { it, animate: fresh(it.key), onRetry: retry, onDiscard: discard, onJoin: props.onJoin, friend: name }, it.key)))
     ] }) }),
     data && data.friend && jsx('div', { className: 'h-composer', children: jsx(Composer, { store, room: composeRoom, snap, dm: dmSend }) }),
     jsx(Modal, { open: removing, onClose: () => setRemoving(false), title: 'Remove ' + name + ' from your friends?',
@@ -7674,7 +7877,44 @@ function DmView(props) {
 function DmItem(props) {
   const ref = useEnter(props.animate)
   if (props.it.kind === 'day') return jsx(DayLine, { ts: props.it.ts })
+  if (props.it.kind === 'invite') return jsx('div', { ref, children: jsx(InviteLine, { m: props.it.m, friend: props.friend, onJoin: props.onJoin }) })
   return jsx('div', { ref, children: jsx(Message, { m: props.it.m, first: props.it.first, book: {}, onRetry: props.onRetry, onDiscard: props.onDiscard }) })
+}
+
+// A room invite, as a line in the conversation: who invited whom to which room, and for one waiting for an answer a Join
+// (it opens the Join preview: nothing joins by a click). The room's name is the creator's own, looked up by the engine, or
+// "a room"; nothing the inviter typed is anywhere in it, because an invite carries no words.
+function InviteLine(props) {
+  const m = props.m
+  const room = cleanSnippet(m.room_name, 40) || 'a room'
+  return jsxs('div', { className: 'h-system', role: 'status', 'data-invite': m.status, children: [
+    jsx(K.Icon, { name: 'link', size: 13 }),
+    jsx('span', { className: 'h-grow', children: m.mine ? 'You invited ' + cleanSnippet(props.friend, 32) + ' to ' + room : cleanSnippet(m.name, 32) + ' invited you to ' + room }),
+    !m.mine && m.status === 'new' && props.onJoin && jsx(K.Button, { variant: 'secondary', size: 'sm', 'aria-label': 'Join ' + room, onClick: () => props.onJoin(m.code, m.room), children: 'Join' })
+  ] })
+}
+
+// Room invites waiting for an answer. Each is who sent it and which room, nothing more: an invite has no message. Join
+// opens the Join preview (what the room is, and the relays it lives on, before anything connects); Ignore is private,
+// they aren't told.
+function DmInvites(props) {
+  const { store, snap } = props
+  const list = (snap.dms && snap.dms.invites) || []
+  const ignore = async i => { try { await store.post('/invite/ignore', { pk: i.pk, room: i.room }, 'Ignored. ' + i.name + ' isn’t told.') } catch (_) { /* toasted */ } }
+  return jsx('div', { className: 'h-scroll', children: jsxs('div', { className: 'h-pane', style: { maxWidth: 560 }, children: [
+    jsx('h1', { children: 'Room invites' }),
+    jsx('div', { className: 'h-muted', children: 'Friends who invited you to a room. An invite has no message, only who sent it and which room. Join shows what the room is first. Ignore is private: they aren’t told.' }),
+    list.length === 0 && jsx('div', { className: 'h-faint', style: { marginTop: 14 }, children: 'No invites right now.' }),
+    jsx('div', { className: 'h-list', children: list.map(i => jsxs('div', { className: 'h-row', style: { gap: 10, padding: '8px 0' }, children: [
+      jsx(PersonMark, { pk: i.pk, name: i.name, size: 28, flagged: !!i.impostor }),
+      jsxs('div', { className: 'h-grow h-col', style: { gap: 2, minWidth: 0 }, children: [
+        jsx('b', { className: 'h-trunc', children: cleanSnippet(i.room_name, 40) || 'a room' }),
+        jsx('span', { className: 'h-faint h-small', children: (i.impostor ? 'not verified · ' : '') + 'from ' + cleanSnippet(i.name, 32) + ' · ' + fmtAgo(i.ts) })
+      ] }),
+      props.onJoin && jsx(K.Button, { variant: 'primary', size: 'sm', 'aria-label': 'Join ' + i.room_name, onClick: () => props.onJoin(i.code, i.room), children: 'Join' }),
+      jsx(K.Button, { variant: 'ghost', size: 'sm', 'aria-label': 'Ignore the invite from ' + i.name, onClick: () => ignore(i), children: 'Ignore' })
+    ] }, i.pk + i.room)) })
+  ] }) })
 }
 
 // Friend requests. There is nothing to read: a request has no message, only who is asking (by the name your rooms
@@ -8570,6 +8810,7 @@ function App(props) {
   const switchingRef = useRef(false)
   switchingRef.current = switching
   const [joinFor, setJoinFor] = useState('')
+  const [inviteFor, setInviteFor] = useState(null)   // { pk, name }: pick a room to invite this friend to
   const rootRef = useRef(null)
   const live = useRef(false)
   // Cmd/Ctrl+K and Cmd/Ctrl+F belong to Ninsei only while focus (or your last click) is inside it, so the host's own
@@ -8595,9 +8836,10 @@ function App(props) {
   // "Message" on a person's card: their private conversation, in the centre
   const openDm = pk => { store.setDm(pk); go('dm') }
   // a `ninsei:` link in a message: a room you are in opens (at the message, if it names one); any other opens the Join dialog
-  const openLink = (room, event) => {
+  // `code` is the link as written (it may name relays: the Join preview lists the ones you don't use yet)
+  const openLink = (room, event, code) => {
     const joined = ((store.get().snap || {}).rooms || []).some(r => r.id === room)
-    if (!joined) { setJoinFor(room + (event ? '#' + event : '')); return }
+    if (!joined) { setJoinFor(code || room + (event ? '#' + event : '')); return }
     if (event) wantJump(room, event)
     store.setRoom(room); go('room')
   }
@@ -8606,6 +8848,8 @@ function App(props) {
     if (it.kind === 'room') { store.setRoom(it.id); go('room') }
     else if (it.kind === 'dm') { store.setDm(it.id); go('dm') }
     else if (it.kind === 'requests') { store.setDm(DM_REQUESTS); go('dm') }
+    else if (it.kind === 'invites') { store.setDm(DM_INVITES); go('dm') }
+    else if (it.kind === 'rejoin') setJoinFor(it.code)
     else if (it.kind === 'settings') openSettings()
     else go(it.kind)
   }
@@ -8630,7 +8874,8 @@ function App(props) {
     let center
     const dmPk = store.dm()
     if (view === 'hermes') center = jsx(LineView, { store, snap })
-    else if (view === 'dm') center = dmPk === DM_REQUESTS ? jsx(DmRequests, { store, snap }) : dmPk ? jsx(DmView, { store, snap, pk: dmPk, onPeople: togglePeople }, dmPk) : jsx(DmEmpty, { snap })
+    else if (view === 'dm') center = dmPk === DM_REQUESTS ? jsx(DmRequests, { store, snap }) : dmPk === DM_INVITES ? jsx(DmInvites, { store, snap, onJoin: (code, room) => openLink(room, '', code) })
+      : dmPk ? jsx(DmView, { store, snap, pk: dmPk, onPeople: togglePeople, onInvite: (pk, name) => setInviteFor({ pk, name }), onJoin: (code, room) => openLink(room, '', code) }, dmPk) : jsx(DmEmpty, { snap })
     else if (view === 'settings') center = jsx('div', { className: 'h-scroll', children: jsxs('div', { className: 'h-pane', children: [jsx('h1', { children: 'Settings' }, 'h'), jsx(SettingsForm, { store, snap, inset: true }, 's')] }) })
     else if (showRoom && room) center = jsx(RoomView, { store, snap, room, onPeople: togglePeople }, room.id)
     else if (showRoom) center = jsx('div', { className: 'h-empty', children: 'Opening the room…' })
@@ -8639,7 +8884,7 @@ function App(props) {
 
     // ProfileLayer: a click on a name or face, in the room or the people column, opens that card
     const down = !st.error ? relaysDown(snap) : null
-    inner = jsx(LinkContext.Provider, { value: openLink, children: jsx(PeopleContext.Provider, { value: looks, children: jsx(RoomReactions, { snap, room: showRoom ? room : null, children: jsx(ProfileLayer, { room: showRoom ? room : null, snap, store, openSettings, openDm, children: jsxs('div', { className: 'h-grid', 'data-people': people ? 'open' : 'closed', 'data-nav': drawer ? 'open' : 'closed', 'data-embedded': embedded || undefined, children: [
+    inner = jsx(LinkContext.Provider, { value: openLink, children: jsx(PeopleContext.Provider, { value: looks, children: jsx(RoomReactions, { snap, room: showRoom ? room : null, children: jsx(ProfileLayer, { room: showRoom ? room : null, snap, store, openSettings, openDm, openInvite: (pk, name) => setInviteFor({ pk, name }), children: jsxs('div', { className: 'h-grid', 'data-people': people ? 'open' : 'closed', 'data-nav': drawer ? 'open' : 'closed', 'data-embedded': embedded || undefined, children: [
       !embedded && jsx('nav', { className: 'h-left', ref: leftRef, 'aria-label': 'Ninsei rooms', children: jsx(Rail, { store, snap, view, go, roomId }) }),
       drawer && jsx('div', { className: 'h-scrim h-scrim-nav', 'aria-hidden': true, onClick: () => setDrawer(false) }),
       jsxs('main', { className: 'h-center', children: [
@@ -8664,6 +8909,7 @@ function App(props) {
     P.inlineStyle && jsx('style', { children: CSS }),
     inner,
     snap && snap.settings.onboarded && switching && jsx(QuickSwitcher, { snap, onPick: pick, onClose: () => setSwitching(false) }),
+    snap && snap.settings.onboarded && inviteFor && jsx(InviteToRoomDialog, { store, snap, pk: inviteFor.pk, name: inviteFor.name, onClose: () => setInviteFor(null) }),
     snap && snap.settings.onboarded && joinFor && jsx(JoinDialog, { store, initial: joinFor, onClose: () => setJoinFor(''), onDone: id => { setJoinFor(''); store.setRoom(id); go('room') } })
   ] })
 }
@@ -8843,13 +9089,37 @@ function NewRoomDialog(props) {
     ] }) })
 }
 
+// Join by code, a pasted or clicked link to a room you haven't joined, or an invite's Join. It first shows what the room is
+// (the engine asks your relays; nothing joins, subscribes or publishes), then the Join button. Hosts a code names that you
+// don't use yet are listed ("Also on: ...") with a button; nothing connects to them until you press it. The preview is
+// advice: Join works without it (a code names a room, and the engine joins by its id).
 function JoinDialog(props) {
   const [code, setCode] = useState(props.initial || '')
   const [busy, setBusy] = useState(false)
+  const [pv, setPv] = useState(null)   // { code, state: 'loading' | 'done' | 'error', data }
+  const [adding, setAdding] = useState(false)
+  const ticket = useRef(0)
+  const link = parseRoomLink(code)
+  const looks = link.room.length >= 16   // a code that could name a room (the engine says what is not one)
+  const look = async text => {
+    const mine = ++ticket.current
+    setPv({ code: text, state: 'loading', data: null })
+    try {
+      const data = await P.rest('/rooms/preview?code=' + encodeURIComponent(text.trim()))
+      if (ticket.current === mine) setPv({ code: text, state: 'done', data })
+    } catch (e) { if (ticket.current === mine) setPv({ code: text, state: 'error', data: null }) }
+  }
+  useEffect(() => {
+    if (!looks) { ticket.current++; setPv(null); return undefined }
+    return P.setTimeout(() => look(code), pv ? 450 : 0)   // the first look is at once (a link or an invite); typing waits for a pause
+  }, [code])
+  const shown = pv && pv.code === code ? pv : null
+  const d = shown && shown.data
+  const joined = !!(d && d.joined)
   const join = async () => {
+    if (joined) { props.onDone(d.id); return }
     setBusy(true)
     try {
-      const link = parseRoomLink(code)
       const meta = await props.store.post('/rooms/join', { room: code.trim() })
       if (link.event) wantJump(meta.id, link.event)
       // a code names a room, not where it lives: nothing on my relays means a typo or different relays
@@ -8857,15 +9127,70 @@ function JoinDialog(props) {
       props.onDone(meta.id)
     } catch (_) { setBusy(false) }
   }
+  const addAndLook = async () => {
+    setAdding(true)
+    try {
+      const out = await props.store.post('/relays/add', { code: code.trim() })
+      P.toast('info', out.added.length === 1 ? 'Added ' + relayHost(out.added[0]) + ' to your relays.' : 'Added ' + out.added.length + ' relays.')
+      await look(code)
+    } catch (_) { /* toasted */ }
+    setAdding(false)
+  }
+  const also = d && (d.unknown_relays || []).length > 0 ? d.unknown_relays : []
+  let body = null
+  if (shown && shown.state === 'loading') body = jsx('div', { className: 'h-faint h-small', role: 'status', children: 'Looking on your relays…' })
+  else if (shown && shown.state === 'error') body = jsx('div', { className: 'h-faint h-small', role: 'status', children: 'Couldn’t look the room up. You can still join.' })
+  else if (d && d.found) body = jsxs('div', { className: 'h-col', style: { gap: 6 }, role: 'status', 'data-preview': 'found', children: [
+    jsx('b', { children: cleanSnippet(d.name, 60) }),
+    d.about && jsx('div', { className: 'h-muted h-small', children: cleanSnippet(d.about, 200) }),
+    (d.interests || []).length > 0 && jsx(Chips, { items: d.interests.map(t => cleanSnippet(t, 24)) }),
+    jsx('div', { className: 'h-faint h-small', children: previewActivity(d) }),
+    joined && jsx('div', { className: 'h-faint h-small', children: 'You are already in this room.' })
+  ] })
+  else if (d) body = jsx('div', { className: 'h-faint h-small', role: 'status', 'data-preview': 'none', children: d.reached === false
+    ? 'Couldn’t reach your relays. Check your connection, then try again.' : 'Nothing on your relays for this code.' })
   return jsx(Modal, { open: true, onClose: props.onClose, title: 'Join by code', description: 'Paste a code like ninsei:203f22bcfd1b4b2f, or a link to a message in a room.',
     footer: [
       !code.trim() && jsx('span', { id: 'h-jn-need', className: 'h-faint h-small', children: 'Paste a code to join.' }, 'n'),
       jsx(K.Button, { variant: 'ghost', onClick: props.onClose, children: 'Cancel' }, 'c'),
       jsx(K.Button, { variant: 'primary', disabled: busy || !code.trim(), onClick: join, 'aria-describedby': code.trim() ? undefined : 'h-jn-need',
-        children: busy ? 'Joining…' : 'Join' }, 'j')
+        children: busy ? 'Joining…' : joined ? 'Open' : 'Join' }, 'j')
     ],
-    children: jsx(K.Input, { value: code, autoFocus: true, placeholder: 'ninsei:…', 'aria-label': 'Room code', onChange: e => setCode(e.target.value),
-      onKeyDown: e => { if (e.key === 'Enter' && code.trim() && !busy) join() } }) })
+    children: jsxs('div', { className: 'h-col', style: { gap: 12 }, children: [
+      jsx(K.Input, { value: code, autoFocus: true, placeholder: 'ninsei:…', 'aria-label': 'Room code', onChange: e => setCode(e.target.value),
+        onKeyDown: e => { if (e.key === 'Enter' && code.trim() && !busy) join() } }),
+      body,
+      also.length > 0 && jsxs('div', { className: 'h-row', style: { gap: 8, justifyContent: 'space-between', flexWrap: 'wrap' }, 'data-also': true, children: [
+        jsx('span', { className: 'h-small', children: 'Also on: ' + also.map(relayHost).join(', ') }),
+        jsx(K.Button, { variant: 'secondary', size: 'sm', disabled: adding, onClick: addAndLook, children: adding ? 'Adding…' : 'Add and look again' })
+      ] }),
+      also.length > 0 && jsx('div', { className: 'h-faint h-small', children: 'Connecting to a relay shows it your IP address. Nothing connects to these until you press the button.' })
+    ] }) })
+}
+
+// Pick one of your rooms to invite one friend to (a friend's card, or the header of your conversation with them). The
+// same private invite as the room's Invite button: the room's id and where it lives, nothing you type.
+function InviteToRoomDialog(props) {
+  const { store, snap, pk, name } = props
+  const [busy, setBusy] = useState('')
+  const rooms = snap.rooms || []
+  const send = async r => {
+    setBusy(r.id)
+    try {
+      await store.post('/rooms/invite', { room: r.id, friends: [pk] }, 'Invited ' + name + ' to ' + r.name + '.')
+      props.onClose()
+    } catch (_) { setBusy('') }
+  }
+  return jsx(Modal, { open: true, onClose: props.onClose, title: 'Invite ' + cleanSnippet(name, 32) + ' to a room',
+    description: 'They get a private invite with the room’s code. It carries no message, and your agent never sees it.',
+    footer: [jsx(K.Button, { variant: 'ghost', onClick: props.onClose, children: 'Cancel' }, 'c')],
+    children: jsx('div', { className: 'h-list', role: 'group', 'aria-label': 'Your rooms', style: { maxHeight: 280, overflowY: 'auto' }, children: rooms.length === 0
+      ? jsx('div', { className: 'h-faint h-small', children: 'You aren’t in any rooms yet.' })
+      : rooms.map(r => jsxs('button', { type: 'button', className: 'h-navrow', disabled: !!busy, onClick: () => send(r), children: [
+        jsx('span', { className: 'h-hash', children: '#' }),
+        jsx('span', { className: 'h-grow h-trunc', children: r.name }),
+        busy === r.id && jsx('span', { className: 'h-faint h-small', children: 'Sending…' })
+      ] }, r.id)) }) })
 }
 
 // ---- Desktop status bar chip ------------------------------------------------------------------

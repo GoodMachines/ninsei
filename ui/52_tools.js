@@ -240,14 +240,17 @@ function switcherItems(snap) {
   for (const r of snap.rooms || []) out.push({ key: 'r-' + r.id, kind: 'room', id: r.id, icon: 'hash', label: r.name || 'Room', sub: r.muted ? 'Room, muted' : 'Room' })
   const dms = snap.dms || {}
   for (const t of dms.threads || []) out.push({ key: 'd-' + t.pk, kind: 'dm', id: t.pk, icon: 'person', label: t.name || 'Someone', sub: t.friend === false ? 'Not friends' : 'Friend' })
+  if ((dms.invites || []).length > 0) out.push({ key: 'invites', kind: 'invites', icon: 'link', label: 'Room invites', sub: dms.invites.length + ' waiting' })
   if (dms.requests > 0) out.push({ key: 'requests', kind: 'requests', icon: 'organization', label: 'Friend requests', sub: dms.requests + (dms.requests === 1 ? ' waiting' : ' waiting') })
+  // Rooms you left, last, so you can come back: picking one opens the Join preview with its code
+  for (const r of snap.left || []) out.push({ key: 'rj-' + r.id, kind: 'rejoin', code: r.code, icon: 'hash', label: 'Rejoin ' + (r.name || 'a room'), match: r.name || 'a room', sub: 'Left room' })
   return out
 }
 
 function filterSwitcher(items, q) {
   const term = String(q || '').trim()
   if (!term) return items
-  return items.map(it => ({ it, s: fuzzyScore(term, it.label) })).filter(x => x.s >= 0).sort((a, b) => b.s - a.s).map(x => x.it)
+  return items.map(it => ({ it, s: fuzzyScore(term, it.match || it.label) })).filter(x => x.s >= 0).sort((a, b) => (a.it.kind === 'rejoin') - (b.it.kind === 'rejoin') || b.s - a.s).map(x => x.it)
 }
 
 // Cmd/Ctrl+K: type a few letters, arrows move, Enter goes, Escape closes. Opens on a spring.

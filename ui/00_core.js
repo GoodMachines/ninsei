@@ -124,6 +124,17 @@ function fmtAgo(ts) {
   return Math.floor(s / 86400) + ' d ago'
 }
 
+// The Join preview's one activity line, from the engine's counts: "4 people talked today · last message 12 min ago", or
+// "Quiet lately" when nobody did. No names of people: the engine sends none for a room you haven't joined.
+function previewActivity(d) {
+  const n = d && Number.isInteger(d.talkers) ? d.talkers : 0
+  if (!d || !(d.msgs > 0) || n < 1) return 'Quiet lately'
+  return (n === 1 ? '1 person talked today' : n + ' people talked today') + (d.last > 0 ? ' · last message ' + fmtAgo(d.last) : '')
+}
+
+// A relay address (wss://host) as the host a person recognises.
+function relayHost(url) { return String(url == null ? '' : url).replace(/^wss:\/\//i, '') }
+
 function joinNames(names) {
   if (names.length <= 1) return names[0] || ''
   return names.slice(0, -1).join(', ') + ' and ' + names[names.length - 1]
@@ -804,14 +815,28 @@ function hereSignals(store) {
   }
 }
 
+const INVITE_TOAST_MS = 30000   // one invite toast per sender in this long (the sidebar still lists every invite)
+const JOIN_TOAST_MS = 30000     // joins of one room inside this long are told once, as a count
+
 function mentionAlerts(store) {
   let seen = null
   let dmSeen = null
   let reqSeen = null
+  let invSeen = null
+  let joinSeen = null
   const told = {}
   const dmTold = {}
   const reqTold = {}
-  return store.subscribe(st => {
+  const invTold = {}    // invite key -> true (announced once)
+  const invAt = {}      // sender -> when one of their invites was last announced
+  const joinTold = {}   // join id -> true
+  const joinWin = {}    // room -> { at, told, n, name, off }: the open window of joins, how many the last toast covered
+  const joinFlush = (room, w) => {
+    w.off = null
+    if (w.n > w.told) P.toast('info', w.n + ' people joined ' + w.name)
+    w.at = 0; w.n = 0; w.told = 0
+  }
+  const off = store.subscribe(st => {
     const snap = st && st.snap
     if (!snap) return
     // Do not disturb: no toast and no OS notification (the badges and counts stay). Everything is still marked as
@@ -873,8 +898,59 @@ function mentionAlerts(store) {
       if (P.osNotify) P.osNotify({ title, body: 'Open Ninsei to answer.', onActivate: () => { store.setDm('requests'); nav().set('dm') } })
     }
     reqSeen = rnext
+    // A room invite from a friend: who and which room (the name is the room creator's own, or "a room"). Announced once,
+    // and for one sender at most once in INVITE_TOAST_MS; several at once make one toast with a count. The OS
+    // notification says no more than the toast does and is shown only while you are away.
+    const inext = {}
+    const newInv = []
+    for (const i of (snap.dms && snap.dms.invites) || []) {
+      const key = i.pk + ':' + i.room + ':' + i.ts
+      inext[key] = 1
+      if (invSeen === null || key in invSeen || invTold[key]) continue
+      invTold[key] = 1
+      newInv.push(i)
+    }
+    if (newInv.length && !dnd) {
+      const now = Date.now()
+      const ready = newInv.filter(i => !(invAt[i.pk] && now - invAt[i.pk] < INVITE_TOAST_MS))
+      for (const i of ready) invAt[i.pk] = now
+      if (ready.length) {
+        const i = ready[0]
+        const who = cleanSnippet(i.name, 32)
+        const title = ready.length > 1 ? ready.length + ' room invites'
+          : (i.impostor ? 'Someone not verified (' + who + ')' : who) + ' invited you to ' + cleanSnippet(i.room_name, 40)
+        P.toast('info', title)
+        if (P.osNotify) P.osNotify({ title, body: 'Open Ninsei to answer.', onActivate: () => { store.setDm('invites'); nav().set('dm') } })
+      }
+    }
+    invSeen = inext
+    // Someone joined a room you made (the engine lists only live joins of people, in rooms you created). A toast, never
+    // an OS notification, and none for a muted room. The first join in a quiet spell is told by name; others inside
+    // JOIN_TOAST_MS are counted and told together when the spell ends ("3 people joined shader club").
+    const muted = new Set((snap.rooms || []).filter(r => r.muted).map(r => r.id))
+    const byRoom = {}
+    for (const j of snap.joins || []) {
+      if (joinTold[j.id]) continue
+      joinTold[j.id] = 1
+      if (joinSeen === null || dnd || muted.has(j.room)) continue
+      ;(byRoom[j.room] = byRoom[j.room] || []).push(j)
+    }
+    joinSeen = true
+    for (const room of Object.keys(byRoom)) {
+      const list = byRoom[room]
+      const w = joinWin[room] || (joinWin[room] = { at: 0, told: 0, n: 0, name: '', off: null })
+      const now = Date.now()
+      w.name = cleanSnippet(list[0].room_name, 40)
+      if (w.at && now - w.at < JOIN_TOAST_MS) { w.n += list.length; continue }
+      w.at = now
+      w.n = w.told = list.length
+      P.toast('info', list.length > 1 ? list.length + ' people joined ' + w.name : cleanSnippet(list[0].name, 32) + ' joined ' + w.name)
+      if (w.off) w.off()
+      w.off = P.setTimeout(() => joinFlush(room, w), JOIN_TOAST_MS)
+    }
     dmSeen = dnext
   })
+  return () => { off(); for (const w of Object.values(joinWin)) if (w.off) w.off() }
 }
 
 // Which Ninsei view is showing (room, lobby, hermes, dm, settings). One shared value, so in Desktop the
@@ -1032,18 +1108,57 @@ function linkAt(text, i) {
 // the link itself, like every other link, and it opens inside Ninsei, never a browser.
 function roomLinkAt(text, i) {
   if (i > 0 && /[\p{L}\p{N}]/u.test(text.charAt(i - 1))) return null
-  const m = /^ninsei:([0-9a-f]{16})(?:#([0-9a-f]{64}))?(?![0-9a-f])/i.exec(text.slice(i, i + 90))
-  return m ? { text: m[0], room: m[1].toLowerCase(), event: m[2] ? m[2].toLowerCase() : '' } : null
+  // `ninsei:<room>`, `ninsei:<room>@host,host`, either with `#<message>`. A sentence's closing full stop or comma
+  // after the hosts is not part of the link (when a message id follows, the hosts end at the `#`, so nothing is cut).
+  const m = /^ninsei:([0-9a-f]{16})(?:@([a-z0-9.:,-]{1,800}))?(?:#([0-9a-f]{64}))?(?![0-9a-f])/i.exec(text.slice(i, i + 900))
+  if (!m) return null
+  const hostText = m[2] && !m[3] ? m[2].replace(/[.,:-]+$/, '') : (m[2] || '')
+  const link = m[0].slice(0, m[0].length - (m[2] || '').length + hostText.length)
+  const hosts = hostText ? cleanHosts(hostText.split(',')) : []
+  return { text: link, room: m[1].toLowerCase(), event: m[3] ? m[3].toLowerCase() : '', hosts }
 }
 
-// What a pasted code or link names: { room, event } ('' when absent); the same reading as the engine's parse_room_link.
+// A relay host a code or invite may carry: `host` or `host:port`, lowercased, or null. The same rules as the engine's
+// codes.clean_host: dotted DNS labels, a lettered top-level name that is not a private one, at most 253 characters,
+// no IP address of any spelling, no `localhost`, nothing that isn't a name (a code is pasted from anywhere, and must
+// not aim an install at its own network). Connecting to a relay shows it your IP, so a code never connects by itself.
+const PRIVATE_SUFFIXES = new Set(['localhost', 'local', 'localdomain', 'internal', 'lan', 'home', 'corp', 'intranet', 'private', 'arpa', 'onion',
+  'invalid', 'test', 'example'])
+function cleanHost(host) {
+  if (typeof host !== 'string') return null
+  const h = host.toLowerCase()
+  if (!h || h.length > 253) return null
+  const parts = h.split(':')
+  if (parts.length > 2) return null
+  if (parts.length === 2 && !(/^[0-9]{1,5}$/.test(parts[1]) && +parts[1] >= 1 && +parts[1] <= 65535)) return null
+  const labels = parts[0].split('.')
+  if (labels.length < 2) return null
+  for (const l of labels.slice(0, -1)) if (!/^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/.test(l)) return null
+  const tld = labels[labels.length - 1]
+  if (!/^([a-z]{2,63}|xn--[a-z0-9-]{1,59})$/.test(tld) || PRIVATE_SUFFIXES.has(tld)) return null
+  return h
+}
+function cleanHosts(list, limit) {
+  const out = []
+  for (const x of list || []) {
+    const h = cleanHost(typeof x === 'string' ? x.trim() : x)
+    if (h && !out.includes(h)) { out.push(h); if (out.length >= (limit || 3)) break }
+  }
+  return out
+}
+
+// What a pasted code or link names: { room, event, hosts } ('' and [] when absent; `hosts` are up to 3 clean relay hosts,
+// bad ones dropped); the same reading as the engine's parse_room_link.
 function parseRoomLink(s) {
-  const t = String(s == null ? '' : s).trim().slice(0, 200).replace(/^ninsei:/i, '')
+  const t = String(s == null ? '' : s).trim().slice(0, 1200).replace(/^ninsei:/i, '')
   const k = t.indexOf('#')
-  const room = (k < 0 ? t : t.slice(0, k)).toLowerCase().trim()
+  const head = k < 0 ? t : t.slice(0, k)
+  const at = head.indexOf('@')
+  const room = (at < 0 ? head : head.slice(0, at)).toLowerCase().trim()
   const hex = /^[0-9a-f]*/.exec(room)[0].slice(0, 24)
   const ev = k < 0 ? '' : t.slice(k + 1).trim().toLowerCase()
-  return { room: hex, event: /^[0-9a-f]{64}$/.test(ev) ? ev : '' }
+  const hosts = hex && at >= 0 ? cleanHosts(head.slice(at + 1).split(',').slice(0, 8)) : []
+  return { room: hex, event: /^[0-9a-f]{64}$/.test(ev) ? ev : '', hosts }
 }
 
 // A message to scroll to once its room is open (from a pasted or clicked message link).

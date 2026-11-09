@@ -6,6 +6,7 @@
 
 const NO_MSGS = []  // a stable empty list, so a conversation that hasn't loaded doesn't look like a new snapshot each render
 const DM_REQUESTS = 'requests'  // store.dm() value that opens the Requests list instead of one conversation
+const DM_INVITES = 'invites'    // ...and this one opens the room invites waiting for you
 const DM_POLL_MS = 2000  // how often an open conversation re-asks while a message of mine is still on its way
 
 // The sidebar's "Direct messages": your friends (and any old conversation), then Requests (if any) as one row.
@@ -18,7 +19,7 @@ function DmRail(props) {
   return jsxs(Fragment, { children: [
     jsx('div', { className: 'h-navhead', children: jsx('span', { className: 'h-sec', children: 'Direct messages' }) }),
     jsxs('div', { className: 'h-nav', children: [
-      list.length === 0 && !dms.requests && !(dms.sent || []).length && jsx('div', { className: 'h-faint h-small', style: { padding: '2px 8px' }, children: 'Open someone’s card and press Add friend. Once they accept, you can message each other.' }),
+      list.length === 0 && !dms.requests && !(dms.sent || []).length && !(dms.invites || []).length && jsx('div', { className: 'h-faint h-small', style: { padding: '2px 8px' }, children: 'Open someone’s card and press Add friend. Once they accept, you can message each other.' }),
       list.map(t => jsxs('button', { type: 'button', className: 'h-navrow', 'data-on': cur === t.pk, 'aria-current': cur === t.pk ? 'page' : undefined,
         onClick: () => open(t.pk), children: [
           jsx(PersonMark, { pk: t.pk, name: t.name, size: 18, flagged: !!t.impostor }),
@@ -38,6 +39,12 @@ function DmRail(props) {
         jsx(K.Icon, { name: 'organization', size: 12 }),
         jsx('span', { className: 'h-grow h-trunc', children: 'Requests' }),
         jsx('span', { className: 'h-mentions', 'aria-label': dms.requests + (dms.requests === 1 ? ' friend request' : ' friend requests'), children: dms.requests > 9 ? '9+' : dms.requests })
+      ] }),
+      // Room invites from friends, waiting for an answer: one row like Requests, with the count. It opens the list.
+      (dms.invites || []).length > 0 && jsxs('button', { type: 'button', className: 'h-navrow', 'data-on': cur === DM_INVITES, onClick: () => open(DM_INVITES), children: [
+        jsx(K.Icon, { name: 'link', size: 12 }),
+        jsx('span', { className: 'h-grow h-trunc', children: 'Invites' }),
+        jsx('span', { className: 'h-mentions', 'aria-label': dms.invites.length + (dms.invites.length === 1 ? ' room invite' : ' room invites'), children: dms.invites.length > 9 ? '9+' : dms.invites.length })
       ] })
     ] })
   ] })
@@ -144,6 +151,8 @@ function DmView(props) {
         ] }),
         jsx('div', { className: 'h-faint h-small h-trunc', children: 'Only the two of you can read this. Your agent never sees it.' })
       ] }),
+      data && data.friend && props.onInvite && jsx(K.Tip, { label: 'Invite ' + name + ' to a room', children: jsx(K.Button, { variant: 'ghost', size: 'icon', 'aria-label': 'Invite ' + name + ' to a room',
+        onClick: () => props.onInvite(pk, name), children: jsx(K.Icon, { name: 'organization', size: 14 }) }) }),
       data && data.friend && jsx(K.Tip, { label: 'Remove ' + name + ' from your friends', children: jsx(K.Button, { variant: 'ghost', size: 'icon', 'aria-label': 'Remove ' + name + ' from your friends',
         onClick: () => setRemoving(true), children: jsx(K.Icon, { name: 'close', size: 14 }) }) }),
       props.onPeople && jsx(K.Button, { variant: 'ghost', size: 'icon', 'aria-label': 'About private messages', onClick: props.onPeople, className: 'h-peoplebtn',
@@ -169,7 +178,7 @@ function DmView(props) {
       !data && !err && jsx('div', { className: 'h-empty', children: 'Opening the conversation…' }),
       data && data.friend && msgs.length === 0 && mine.length === 0 && jsx(EmptyState, { icon: 'lock', title: 'Say hello to ' + name,
         hint: 'Only the two of you can read what you write here. It is encrypted on its way, and your agent never sees it.' }),
-      items.map(it => (it.kind === 'day' ? jsx(DmItem, { it, animate: false }, it.key) : it.kind === 'msg' && jsx(DmItem, { it, animate: fresh(it.key), onRetry: retry, onDiscard: discard }, it.key)))
+      items.map(it => (it.kind === 'day' ? jsx(DmItem, { it, animate: false }, it.key) : (it.kind === 'msg' || it.kind === 'invite') && jsx(DmItem, { it, animate: fresh(it.key), onRetry: retry, onDiscard: discard, onJoin: props.onJoin, friend: name }, it.key)))
     ] }) }),
     data && data.friend && jsx('div', { className: 'h-composer', children: jsx(Composer, { store, room: composeRoom, snap, dm: dmSend }) }),
     jsx(Modal, { open: removing, onClose: () => setRemoving(false), title: 'Remove ' + name + ' from your friends?',
@@ -190,7 +199,44 @@ function DmView(props) {
 function DmItem(props) {
   const ref = useEnter(props.animate)
   if (props.it.kind === 'day') return jsx(DayLine, { ts: props.it.ts })
+  if (props.it.kind === 'invite') return jsx('div', { ref, children: jsx(InviteLine, { m: props.it.m, friend: props.friend, onJoin: props.onJoin }) })
   return jsx('div', { ref, children: jsx(Message, { m: props.it.m, first: props.it.first, book: {}, onRetry: props.onRetry, onDiscard: props.onDiscard }) })
+}
+
+// A room invite, as a line in the conversation: who invited whom to which room, and for one waiting for an answer a Join
+// (it opens the Join preview: nothing joins by a click). The room's name is the creator's own, looked up by the engine, or
+// "a room"; nothing the inviter typed is anywhere in it, because an invite carries no words.
+function InviteLine(props) {
+  const m = props.m
+  const room = cleanSnippet(m.room_name, 40) || 'a room'
+  return jsxs('div', { className: 'h-system', role: 'status', 'data-invite': m.status, children: [
+    jsx(K.Icon, { name: 'link', size: 13 }),
+    jsx('span', { className: 'h-grow', children: m.mine ? 'You invited ' + cleanSnippet(props.friend, 32) + ' to ' + room : cleanSnippet(m.name, 32) + ' invited you to ' + room }),
+    !m.mine && m.status === 'new' && props.onJoin && jsx(K.Button, { variant: 'secondary', size: 'sm', 'aria-label': 'Join ' + room, onClick: () => props.onJoin(m.code, m.room), children: 'Join' })
+  ] })
+}
+
+// Room invites waiting for an answer. Each is who sent it and which room, nothing more: an invite has no message. Join
+// opens the Join preview (what the room is, and the relays it lives on, before anything connects); Ignore is private,
+// they aren't told.
+function DmInvites(props) {
+  const { store, snap } = props
+  const list = (snap.dms && snap.dms.invites) || []
+  const ignore = async i => { try { await store.post('/invite/ignore', { pk: i.pk, room: i.room }, 'Ignored. ' + i.name + ' isn’t told.') } catch (_) { /* toasted */ } }
+  return jsx('div', { className: 'h-scroll', children: jsxs('div', { className: 'h-pane', style: { maxWidth: 560 }, children: [
+    jsx('h1', { children: 'Room invites' }),
+    jsx('div', { className: 'h-muted', children: 'Friends who invited you to a room. An invite has no message, only who sent it and which room. Join shows what the room is first. Ignore is private: they aren’t told.' }),
+    list.length === 0 && jsx('div', { className: 'h-faint', style: { marginTop: 14 }, children: 'No invites right now.' }),
+    jsx('div', { className: 'h-list', children: list.map(i => jsxs('div', { className: 'h-row', style: { gap: 10, padding: '8px 0' }, children: [
+      jsx(PersonMark, { pk: i.pk, name: i.name, size: 28, flagged: !!i.impostor }),
+      jsxs('div', { className: 'h-grow h-col', style: { gap: 2, minWidth: 0 }, children: [
+        jsx('b', { className: 'h-trunc', children: cleanSnippet(i.room_name, 40) || 'a room' }),
+        jsx('span', { className: 'h-faint h-small', children: (i.impostor ? 'not verified · ' : '') + 'from ' + cleanSnippet(i.name, 32) + ' · ' + fmtAgo(i.ts) })
+      ] }),
+      props.onJoin && jsx(K.Button, { variant: 'primary', size: 'sm', 'aria-label': 'Join ' + i.room_name, onClick: () => props.onJoin(i.code, i.room), children: 'Join' }),
+      jsx(K.Button, { variant: 'ghost', size: 'sm', 'aria-label': 'Ignore the invite from ' + i.name, onClick: () => ignore(i), children: 'Ignore' })
+    ] }, i.pk + i.room)) })
+  ] }) })
 }
 
 // Friend requests. There is nothing to read: a request has no message, only who is asking (by the name your rooms

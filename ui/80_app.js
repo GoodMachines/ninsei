@@ -72,6 +72,7 @@ function App(props) {
   const switchingRef = useRef(false)
   switchingRef.current = switching
   const [joinFor, setJoinFor] = useState('')
+  const [inviteFor, setInviteFor] = useState(null)   // { pk, name }: pick a room to invite this friend to
   const rootRef = useRef(null)
   const live = useRef(false)
   // Cmd/Ctrl+K and Cmd/Ctrl+F belong to Ninsei only while focus (or your last click) is inside it, so the host's own
@@ -97,9 +98,10 @@ function App(props) {
   // "Message" on a person's card: their private conversation, in the centre
   const openDm = pk => { store.setDm(pk); go('dm') }
   // a `ninsei:` link in a message: a room you are in opens (at the message, if it names one); any other opens the Join dialog
-  const openLink = (room, event) => {
+  // `code` is the link as written (it may name relays: the Join preview lists the ones you don't use yet)
+  const openLink = (room, event, code) => {
     const joined = ((store.get().snap || {}).rooms || []).some(r => r.id === room)
-    if (!joined) { setJoinFor(room + (event ? '#' + event : '')); return }
+    if (!joined) { setJoinFor(code || room + (event ? '#' + event : '')); return }
     if (event) wantJump(room, event)
     store.setRoom(room); go('room')
   }
@@ -108,6 +110,8 @@ function App(props) {
     if (it.kind === 'room') { store.setRoom(it.id); go('room') }
     else if (it.kind === 'dm') { store.setDm(it.id); go('dm') }
     else if (it.kind === 'requests') { store.setDm(DM_REQUESTS); go('dm') }
+    else if (it.kind === 'invites') { store.setDm(DM_INVITES); go('dm') }
+    else if (it.kind === 'rejoin') setJoinFor(it.code)
     else if (it.kind === 'settings') openSettings()
     else go(it.kind)
   }
@@ -132,7 +136,8 @@ function App(props) {
     let center
     const dmPk = store.dm()
     if (view === 'hermes') center = jsx(LineView, { store, snap })
-    else if (view === 'dm') center = dmPk === DM_REQUESTS ? jsx(DmRequests, { store, snap }) : dmPk ? jsx(DmView, { store, snap, pk: dmPk, onPeople: togglePeople }, dmPk) : jsx(DmEmpty, { snap })
+    else if (view === 'dm') center = dmPk === DM_REQUESTS ? jsx(DmRequests, { store, snap }) : dmPk === DM_INVITES ? jsx(DmInvites, { store, snap, onJoin: (code, room) => openLink(room, '', code) })
+      : dmPk ? jsx(DmView, { store, snap, pk: dmPk, onPeople: togglePeople, onInvite: (pk, name) => setInviteFor({ pk, name }), onJoin: (code, room) => openLink(room, '', code) }, dmPk) : jsx(DmEmpty, { snap })
     else if (view === 'settings') center = jsx('div', { className: 'h-scroll', children: jsxs('div', { className: 'h-pane', children: [jsx('h1', { children: 'Settings' }, 'h'), jsx(SettingsForm, { store, snap, inset: true }, 's')] }) })
     else if (showRoom && room) center = jsx(RoomView, { store, snap, room, onPeople: togglePeople }, room.id)
     else if (showRoom) center = jsx('div', { className: 'h-empty', children: 'Opening the room…' })
@@ -141,7 +146,7 @@ function App(props) {
 
     // ProfileLayer: a click on a name or face, in the room or the people column, opens that card
     const down = !st.error ? relaysDown(snap) : null
-    inner = jsx(LinkContext.Provider, { value: openLink, children: jsx(PeopleContext.Provider, { value: looks, children: jsx(RoomReactions, { snap, room: showRoom ? room : null, children: jsx(ProfileLayer, { room: showRoom ? room : null, snap, store, openSettings, openDm, children: jsxs('div', { className: 'h-grid', 'data-people': people ? 'open' : 'closed', 'data-nav': drawer ? 'open' : 'closed', 'data-embedded': embedded || undefined, children: [
+    inner = jsx(LinkContext.Provider, { value: openLink, children: jsx(PeopleContext.Provider, { value: looks, children: jsx(RoomReactions, { snap, room: showRoom ? room : null, children: jsx(ProfileLayer, { room: showRoom ? room : null, snap, store, openSettings, openDm, openInvite: (pk, name) => setInviteFor({ pk, name }), children: jsxs('div', { className: 'h-grid', 'data-people': people ? 'open' : 'closed', 'data-nav': drawer ? 'open' : 'closed', 'data-embedded': embedded || undefined, children: [
       !embedded && jsx('nav', { className: 'h-left', ref: leftRef, 'aria-label': 'Ninsei rooms', children: jsx(Rail, { store, snap, view, go, roomId }) }),
       drawer && jsx('div', { className: 'h-scrim h-scrim-nav', 'aria-hidden': true, onClick: () => setDrawer(false) }),
       jsxs('main', { className: 'h-center', children: [
@@ -166,6 +171,7 @@ function App(props) {
     P.inlineStyle && jsx('style', { children: CSS }),
     inner,
     snap && snap.settings.onboarded && switching && jsx(QuickSwitcher, { snap, onPick: pick, onClose: () => setSwitching(false) }),
+    snap && snap.settings.onboarded && inviteFor && jsx(InviteToRoomDialog, { store, snap, pk: inviteFor.pk, name: inviteFor.name, onClose: () => setInviteFor(null) }),
     snap && snap.settings.onboarded && joinFor && jsx(JoinDialog, { store, initial: joinFor, onClose: () => setJoinFor(''), onDone: id => { setJoinFor(''); store.setRoom(id); go('room') } })
   ] })
 }
@@ -345,13 +351,37 @@ function NewRoomDialog(props) {
     ] }) })
 }
 
+// Join by code, a pasted or clicked link to a room you haven't joined, or an invite's Join. It first shows what the room is
+// (the engine asks your relays; nothing joins, subscribes or publishes), then the Join button. Hosts a code names that you
+// don't use yet are listed ("Also on: ...") with a button; nothing connects to them until you press it. The preview is
+// advice: Join works without it (a code names a room, and the engine joins by its id).
 function JoinDialog(props) {
   const [code, setCode] = useState(props.initial || '')
   const [busy, setBusy] = useState(false)
+  const [pv, setPv] = useState(null)   // { code, state: 'loading' | 'done' | 'error', data }
+  const [adding, setAdding] = useState(false)
+  const ticket = useRef(0)
+  const link = parseRoomLink(code)
+  const looks = link.room.length >= 16   // a code that could name a room (the engine says what is not one)
+  const look = async text => {
+    const mine = ++ticket.current
+    setPv({ code: text, state: 'loading', data: null })
+    try {
+      const data = await P.rest('/rooms/preview?code=' + encodeURIComponent(text.trim()))
+      if (ticket.current === mine) setPv({ code: text, state: 'done', data })
+    } catch (e) { if (ticket.current === mine) setPv({ code: text, state: 'error', data: null }) }
+  }
+  useEffect(() => {
+    if (!looks) { ticket.current++; setPv(null); return undefined }
+    return P.setTimeout(() => look(code), pv ? 450 : 0)   // the first look is at once (a link or an invite); typing waits for a pause
+  }, [code])
+  const shown = pv && pv.code === code ? pv : null
+  const d = shown && shown.data
+  const joined = !!(d && d.joined)
   const join = async () => {
+    if (joined) { props.onDone(d.id); return }
     setBusy(true)
     try {
-      const link = parseRoomLink(code)
       const meta = await props.store.post('/rooms/join', { room: code.trim() })
       if (link.event) wantJump(meta.id, link.event)
       // a code names a room, not where it lives: nothing on my relays means a typo or different relays
@@ -359,15 +389,70 @@ function JoinDialog(props) {
       props.onDone(meta.id)
     } catch (_) { setBusy(false) }
   }
+  const addAndLook = async () => {
+    setAdding(true)
+    try {
+      const out = await props.store.post('/relays/add', { code: code.trim() })
+      P.toast('info', out.added.length === 1 ? 'Added ' + relayHost(out.added[0]) + ' to your relays.' : 'Added ' + out.added.length + ' relays.')
+      await look(code)
+    } catch (_) { /* toasted */ }
+    setAdding(false)
+  }
+  const also = d && (d.unknown_relays || []).length > 0 ? d.unknown_relays : []
+  let body = null
+  if (shown && shown.state === 'loading') body = jsx('div', { className: 'h-faint h-small', role: 'status', children: 'Looking on your relays…' })
+  else if (shown && shown.state === 'error') body = jsx('div', { className: 'h-faint h-small', role: 'status', children: 'Couldn’t look the room up. You can still join.' })
+  else if (d && d.found) body = jsxs('div', { className: 'h-col', style: { gap: 6 }, role: 'status', 'data-preview': 'found', children: [
+    jsx('b', { children: cleanSnippet(d.name, 60) }),
+    d.about && jsx('div', { className: 'h-muted h-small', children: cleanSnippet(d.about, 200) }),
+    (d.interests || []).length > 0 && jsx(Chips, { items: d.interests.map(t => cleanSnippet(t, 24)) }),
+    jsx('div', { className: 'h-faint h-small', children: previewActivity(d) }),
+    joined && jsx('div', { className: 'h-faint h-small', children: 'You are already in this room.' })
+  ] })
+  else if (d) body = jsx('div', { className: 'h-faint h-small', role: 'status', 'data-preview': 'none', children: d.reached === false
+    ? 'Couldn’t reach your relays. Check your connection, then try again.' : 'Nothing on your relays for this code.' })
   return jsx(Modal, { open: true, onClose: props.onClose, title: 'Join by code', description: 'Paste a code like ninsei:203f22bcfd1b4b2f, or a link to a message in a room.',
     footer: [
       !code.trim() && jsx('span', { id: 'h-jn-need', className: 'h-faint h-small', children: 'Paste a code to join.' }, 'n'),
       jsx(K.Button, { variant: 'ghost', onClick: props.onClose, children: 'Cancel' }, 'c'),
       jsx(K.Button, { variant: 'primary', disabled: busy || !code.trim(), onClick: join, 'aria-describedby': code.trim() ? undefined : 'h-jn-need',
-        children: busy ? 'Joining…' : 'Join' }, 'j')
+        children: busy ? 'Joining…' : joined ? 'Open' : 'Join' }, 'j')
     ],
-    children: jsx(K.Input, { value: code, autoFocus: true, placeholder: 'ninsei:…', 'aria-label': 'Room code', onChange: e => setCode(e.target.value),
-      onKeyDown: e => { if (e.key === 'Enter' && code.trim() && !busy) join() } }) })
+    children: jsxs('div', { className: 'h-col', style: { gap: 12 }, children: [
+      jsx(K.Input, { value: code, autoFocus: true, placeholder: 'ninsei:…', 'aria-label': 'Room code', onChange: e => setCode(e.target.value),
+        onKeyDown: e => { if (e.key === 'Enter' && code.trim() && !busy) join() } }),
+      body,
+      also.length > 0 && jsxs('div', { className: 'h-row', style: { gap: 8, justifyContent: 'space-between', flexWrap: 'wrap' }, 'data-also': true, children: [
+        jsx('span', { className: 'h-small', children: 'Also on: ' + also.map(relayHost).join(', ') }),
+        jsx(K.Button, { variant: 'secondary', size: 'sm', disabled: adding, onClick: addAndLook, children: adding ? 'Adding…' : 'Add and look again' })
+      ] }),
+      also.length > 0 && jsx('div', { className: 'h-faint h-small', children: 'Connecting to a relay shows it your IP address. Nothing connects to these until you press the button.' })
+    ] }) })
+}
+
+// Pick one of your rooms to invite one friend to (a friend's card, or the header of your conversation with them). The
+// same private invite as the room's Invite button: the room's id and where it lives, nothing you type.
+function InviteToRoomDialog(props) {
+  const { store, snap, pk, name } = props
+  const [busy, setBusy] = useState('')
+  const rooms = snap.rooms || []
+  const send = async r => {
+    setBusy(r.id)
+    try {
+      await store.post('/rooms/invite', { room: r.id, friends: [pk] }, 'Invited ' + name + ' to ' + r.name + '.')
+      props.onClose()
+    } catch (_) { setBusy('') }
+  }
+  return jsx(Modal, { open: true, onClose: props.onClose, title: 'Invite ' + cleanSnippet(name, 32) + ' to a room',
+    description: 'They get a private invite with the room’s code. It carries no message, and your agent never sees it.',
+    footer: [jsx(K.Button, { variant: 'ghost', onClick: props.onClose, children: 'Cancel' }, 'c')],
+    children: jsx('div', { className: 'h-list', role: 'group', 'aria-label': 'Your rooms', style: { maxHeight: 280, overflowY: 'auto' }, children: rooms.length === 0
+      ? jsx('div', { className: 'h-faint h-small', children: 'You aren’t in any rooms yet.' })
+      : rooms.map(r => jsxs('button', { type: 'button', className: 'h-navrow', disabled: !!busy, onClick: () => send(r), children: [
+        jsx('span', { className: 'h-hash', children: '#' }),
+        jsx('span', { className: 'h-grow h-trunc', children: r.name }),
+        busy === r.id && jsx('span', { className: 'h-faint h-small', children: 'Sending…' })
+      ] }, r.id)) }) })
 }
 
 // ---- Desktop status bar chip ------------------------------------------------------------------
