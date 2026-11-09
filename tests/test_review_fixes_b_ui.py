@@ -34,8 +34,8 @@ const ev = 'ab'.repeat(32)
 out({ a: parseRoomLink('ninsei:0123456789abcdef please join'), b: parseRoomLink('  0123456789ABCDEF  '), c: parseRoomLink('hello'),
       d: parseRoomLink('ninsei:0123456789abcdef#' + ev), e: parseRoomLink('ninsei:0123456789abcdefzzabc') })
 """)
-    assert r["a"] == {"room": "0123456789abcdef", "event": ""} and r["b"]["room"] == "0123456789abcdef"
-    assert r["c"] == {"room": "", "event": ""} and r["d"]["event"] == "ab" * 32
+    assert r["a"] == {"room": "0123456789abcdef", "event": "", "hosts": []} and r["b"]["room"] == "0123456789abcdef"
+    assert r["c"] == {"room": "", "event": "", "hosts": []} and r["d"]["event"] == "ab" * 32
     assert r["e"]["room"] == "0123456789abcdef"
 
 

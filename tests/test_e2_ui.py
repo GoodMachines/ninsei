@@ -53,14 +53,14 @@ out({ a: parseRoomLink('ninsei:' + room), b: parseRoomLink(' ninsei:' + room + '
       e: parseRoomLink(null), f: parseRoomLink('x'.repeat(5000)).room })
 """)
     room, ev = "203f22bcfd1b4b2f", "b" * 64
-    assert r["a"] == {"room": room, "event": ""} and r["b"] == {"room": room, "event": ev} and r["c"]["room"] == room
-    assert r["d"] == {"room": room, "event": ""} and r["e"] == {"room": "", "event": ""} and r["f"] == ""
+    assert r["a"] == {"room": room, "event": "", "hosts": []} and r["b"] == {"room": room, "event": ev, "hosts": []} and r["c"]["room"] == room
+    assert r["d"] == {"room": room, "event": "", "hosts": []} and r["e"] == {"room": "", "event": "", "hosts": []} and r["f"] == ""
 
 
 def test_room_links_open_inside_ninsei_and_a_stranger_room_only_opens_the_join_dialog():
     assert "t.t === 'room'" in fn(ROOM, "richNode") and "useContext(LinkContext)" in fn(ROOM, "RoomLink")
     link = fn(APP, "App")
-    assert "setJoinFor(room" in link and "if (!joined)" in link                            # never joins on a click
+    assert "setJoinFor(code || room" in link and "if (!joined)" in link                            # never joins on a click
     assert "wantJump(room, event)" in link and "wantJump(meta.id, link.event)" in fn(APP, "JoinDialog")
 
 
