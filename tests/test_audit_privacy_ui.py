@@ -36,7 +36,7 @@ async def test_a_model_path_is_published_as_its_last_segment(bare, monkeypatch):
     await e._presence_once()
     live = [c for c in sent if c.get("t") == "presence"]
     assert live and live[-1]["model"] == "qwen3-8b.gguf"
-    assert "justinperea" not in json.dumps(sent)
+    assert "/Users/jane" not in json.dumps(sent)
     e.store.set("model_last", "nous/hermes-5")
     await e._presence_once()
     assert [c for c in sent if c.get("t") == "presence"][-1]["model"] == "hermes-5"

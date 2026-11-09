@@ -236,7 +236,8 @@ export default {
     let inSetup = null
     ctx.onDispose(store.subscribe(st => {
       const now = !!(st.snap && st.snap.settings && !st.snap.settings.onboarded)
-      if (inSetup !== null && now !== inSetup && tabOpen) open()
+      // the first snapshot counts too: a tab opened before it arrived was titled without knowing
+      if (tabOpen && (inSetup === null ? now : now !== inSetup)) open()
       inSetup = now
     }))
     // the sidebar tab picks a view: switching views re-titles an open tab through the line above, so open

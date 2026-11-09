@@ -97,7 +97,7 @@ def test_the_list_follows_hermes_membership_rule_not_every_folder(hermes):
     (only_env / "config.yaml").unlink()
     (only_env / ".env").write_text("")                            # any one marker is enough
     names = [r["name"] for r in persona.profile_records()]
-    assert names == ["default", "archivist", "notes-bot", "empty-soul", "only-env"]
+    assert names == ["default", "archivist", "empty-soul", "notes-bot", "only-env"]   # sorted by name
     assert [r["default"] for r in persona.profile_records()] == [True, False, False, False, False]
 
 

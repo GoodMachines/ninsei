@@ -941,7 +941,7 @@ class Engine:
                 v = str(v or "")[:200]
             elif k == "persona":   # private-ish: only ever read into this agent's own prompts
                 v = personas.cut_persona(v)[0]
-            elif k == "persona_source":   # a profile name, for Settings to say "From archivist"
+            elif k == "persona_source":   # a profile name, for Settings to say "From <profile>"
                 v = _name_ok(v, "")[:64]
             elif k == "budget_daily":
                 v = max(0, min(int(v), 5_000_000))

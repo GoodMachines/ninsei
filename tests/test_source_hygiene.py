@@ -46,3 +46,31 @@ def test_no_tracked_text_file_has_a_literal_invisible_character():
             if bad:
                 found.append(f"{p.relative_to(ROOT)}:{i}: {', '.join(bad)}")
     assert not found, "write these as \\u escapes:\n" + "\n".join(found)
+
+
+# The maintainer's own Hermes profile names and home folder never go into the public repo (test fixtures use
+# made-up names, and paths use /Users/jane). Stored as hashes so this file doesn't list them either.
+PRIVATE_WORDS = {"444b759c5264422e", "39b31d48f652419a", "9776c6b12201eb18", "a7960ec5372a1ef0", "fceac367216ad8d1",
+                 "36ea4bac609301a4", "27025be73b764e96", "7de273d68ac059b3"}
+PRIVATE_HOME = "2ee6900dade796a4"   # the home folder's name, flagged after /Users/ (the GitHub handle itself is public)
+
+
+def _h(word: str) -> str:
+    import hashlib
+    return hashlib.sha256(word.lower().encode()).hexdigest()[:16]
+
+
+def test_no_tracked_file_names_the_maintainers_profiles_or_home_folder():
+    import re
+    found = []
+    for p in _tracked():
+        try:
+            text = p.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, OSError):
+            continue
+        for i, line in enumerate(text.splitlines(), 1):
+            words = {w for w in re.findall(r"(?<![\w-])[a-z][a-z-]{2,20}(?![\w-])", line, re.I) if _h(w) in PRIVATE_WORDS}
+            homes = {h for h in re.findall(r"/Users/([^/\s\"'`]+)", line) if _h(h) == PRIVATE_HOME}
+            if words or homes:
+                found.append(f"{p.relative_to(ROOT)}:{i}")
+    assert not found, "private names in public files:\n" + "\n".join(found)

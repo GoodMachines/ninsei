@@ -2684,7 +2684,9 @@ function HermesPicker(props) {
           ] }),
           hermesSub(p) && jsx('span', { className: 'h-hermes-sub', children: hermesSub(p) })
         ] }, p.name)) }),
-      jsx('div', { className: 'h-hint', children: 'Reads that agent’s personality file (SOUL.md) and name once, and never changes it. Nothing is saved until you press Save.' })
+      // setup has no Save button: it ends with "Bring <agent> in", which is what saves
+      jsx('div', { className: 'h-hint', children: 'Reads that agent’s personality file (SOUL.md) and name once, and never changes it. ' +
+        (props.collapsible ? 'Nothing is saved until you press Save.' : 'Nothing is saved until you bring your agent in.') })
     ] })
   ] })
 }

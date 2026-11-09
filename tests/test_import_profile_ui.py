@@ -37,11 +37,12 @@ const empty = (setupRest([], null), mount(HermesPicker, { onPick: () => {} })); 
 const failed = (setupRest(null, null), mount(HermesPicker, { onPick: () => {} })); await settle()
 out({ label: text(root.tree).includes('Start from one of your Hermes agents'), n: items.length, texts: items.map(text),
       here: items.filter(b => b.props['data-here']).map(text), titles: items.map(b => b.props.title), tree: empty.tree, failedTree: failed.tree,
-      hint: text(root.tree).includes('Nothing is saved until you press Save') })
+      hint: text(root.tree).includes('Nothing is saved until you bring your agent in') })
 """)
-    assert r["label"] and r["n"] == 3 and r["hint"]
-    assert r["texts"][0] == "Archie the Watcherthis oneKeeps an eye on things"      # the profile in use leads the row
-    assert r["texts"][1] == "default" and r["texts"][2] == "bookmark-botNo personality set"
+    assert r["label"] and r["n"] == 3 and r["hint"]   # setup's button is "Bring <agent> in", not Save
+    assert "props.collapsible ? 'Nothing is saved until you press Save.'" in fn(PARTS, "HermesPicker")   # Settings has Save
+    assert r["texts"][0] == "Archie the Keeperthis oneKeeps an eye on things"      # the profile in use leads the row
+    assert r["texts"][1] == "default" and r["texts"][2] == "notes-botNo personality set"
     assert r["here"] == [r["texts"][0]]
     assert r["tree"] is None and r["failedTree"] is None          # no profiles, or the list failed: the row is simply not there
 
@@ -78,7 +79,7 @@ out({ t, max: ta.props.maxLength, changes, flagsAfter })
     assert "Personality · from archivist" in t
     assert "Your agent uses this in every room it’s in, and people there could get it to repeat it. Remove anything private." in t
     assert "Looks like an email: a@b.co" in t and "Looks like a path on your computer: ~/vault." in t
-    assert "42 / 1,500" in t and "Cut to 1,500 characters" in t
+    assert "43 / 1,500" in t and "Cut to 1,500 characters" in t
     assert r["max"] == 1500 and r["changes"] == [{"persona": "new text"}]
     assert "Looks like" not in r["flagsAfter"]                   # the text was removed from the box, so its warning goes
 

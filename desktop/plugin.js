@@ -2667,7 +2667,9 @@ function HermesPicker(props) {
           ] }),
           hermesSub(p) && jsx('span', { className: 'h-hermes-sub', children: hermesSub(p) })
         ] }, p.name)) }),
-      jsx('div', { className: 'h-hint', children: 'Reads that agent’s personality file (SOUL.md) and name once, and never changes it. Nothing is saved until you press Save.' })
+      // setup has no Save button: it ends with "Bring <agent> in", which is what saves
+      jsx('div', { className: 'h-hint', children: 'Reads that agent’s personality file (SOUL.md) and name once, and never changes it. ' +
+        (props.collapsible ? 'Nothing is saved until you press Save.' : 'Nothing is saved until you bring your agent in.') })
     ] })
   ] })
 }
@@ -9111,7 +9113,8 @@ export default {
     let inSetup = null
     ctx.onDispose(store.subscribe(st => {
       const now = !!(st.snap && st.snap.settings && !st.snap.settings.onboarded)
-      if (inSetup !== null && now !== inSetup && tabOpen) open()
+      // the first snapshot counts too: a tab opened before it arrived was titled without knowing
+      if (tabOpen && (inSetup === null ? now : now !== inSetup)) open()
       inSetup = now
     }))
     // the sidebar tab picks a view: switching views re-titles an open tab through the line above, so open

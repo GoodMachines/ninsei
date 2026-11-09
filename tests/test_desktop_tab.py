@@ -114,3 +114,31 @@ def test_tab_says_set_up_during_setup_and_renames_when_it_finishes(tmp_path):
     assert out.returncode == 0, out.stderr[-2000:]
     got = json.loads(out.stdout.strip().splitlines()[-1])
     assert got["titles"] == ["Set up Ninsei", "Ninsei"] and got["opens"] == 2
+
+
+# the tab opened before the first /state arrives: it re-titles once that first snapshot says setup
+EARLY_HARNESS = (HARNESS.split("const tab = regs.find")[0]
+                 .replace("settings: { onboarded: true }", "settings: { onboarded: false }")
+                 .replace("rest: async () => snap", "rest: async () => { await gate; return snap }")
+                 .replace("const store = {}", "let release; const gate = new Promise(r => { release = r }); const store = {}")) + """
+regs.find(c => c.id === 'open').data.run()
+const titles = [opened[opened.length - 1].title]
+release()
+await new Promise(r => setTimeout(r, 20))
+titles.push(opened[opened.length - 1].title)
+console.log(JSON.stringify({ titles }))
+"""
+
+
+def test_tab_opened_before_the_first_snapshot_is_retitled_for_setup(tmp_path):
+    src = (ROOT / "desktop" / "plugin.js").read_text()
+    src = (src.replace("import * as sdk from '@hermes/plugin-sdk'", "const sdk = globalThis.__SDK__")
+              .replace("import { jsx, jsxs } from 'react/jsx-runtime'", "const { jsx, jsxs } = globalThis.__JSX__"))
+    src = re.sub(r"^import (\{[^}]*\}) from 'react'$", r"const \1 = globalThis.__REACT__", src, count=1, flags=re.M)
+    plugin = tmp_path / "plugin.mjs"
+    plugin.write_text(src)
+    harness = tmp_path / "harness.mjs"
+    harness.write_text(EARLY_HARNESS)
+    out = subprocess.run([NODE, str(harness), plugin.as_uri()], capture_output=True, text=True, timeout=30)
+    assert out.returncode == 0, out.stderr[-2000:]
+    assert json.loads(out.stdout.strip().splitlines()[-1])["titles"] == ["Ninsei", "Set up Ninsei"]
