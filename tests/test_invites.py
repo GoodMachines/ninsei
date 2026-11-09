@@ -19,6 +19,7 @@ from test_dm import befriend, friend_wrap, settle, speak, wrap_to
 from test_engine import StubLLM, read, run, setup_room, wait_for, world  # noqa: F401  (fixture re-export)
 from test_hostile import FakePool, Key, ROOM, bare  # noqa: F401  (fixture re-export)
 from test_hostile import settle as settle_tasks
+from local_relay import LocalRelay
 
 @pytest.fixture(autouse=True)
 def public_dns(monkeypatch):
@@ -941,3 +942,138 @@ async def test_my_own_invite_copy_reaches_a_second_install_as_sent_there(world):
         assert read(third, third.dm_summary)["invites"] == []                  # sent there, never waiting for me there
     finally:
         await asyncio.to_thread(third.stop)
+
+
+# ---- relays from a code are resolved again before every connection ----------------------------------------------------
+
+async def test_a_relay_added_from_a_code_is_remembered_and_only_while_it_stays_on_the_list(bare, monkeypatch):
+    from ninsei_engine import engine as eng_mod
+    e, _ = bare()
+
+    async def fake_reconnect():
+        pass
+    monkeypatch.setattr(e, "reconnect", fake_reconnect)
+    e.save_settings({"relays": ["wss://typed.example.net", "ws://127.0.0.1:7777"]})
+    assert e.settings()["code_relays"] == []                                      # typed in Settings: never a code relay
+    out = await e.add_code_relays(f"ninsei:{OTHER}@a.example.org,b.example.org")
+    assert e.settings()["code_relays"] == ["wss://a.example.org", "wss://b.example.org"] == out["added"]
+    # saving the list unchanged (the Settings form does) keeps them; a request can't write the field itself
+    e.save_settings({"relays": e.settings()["relays"], "code_relays": ["ws://127.0.0.1:7777"]})
+    assert e.settings()["code_relays"] == ["wss://a.example.org", "wss://b.example.org"]
+    # taken out in Settings: gone from it, and typed in again by hand afterwards it is an ordinary typed relay
+    e.save_settings({"relays": [u for u in e.settings()["relays"] if u != "wss://a.example.org"]})
+    assert e.settings()["code_relays"] == ["wss://b.example.org"]
+    e.save_settings({"relays": e.settings()["relays"] + ["wss://a.example.org"]})
+    assert e.settings()["code_relays"] == ["wss://b.example.org"]
+    e.save_settings({"relays": ["wss://typed.example.net"]})
+    assert e.settings()["code_relays"] == []
+    # a hand-edited settings file can't make a relay that isn't on the list a code relay, or repeat one
+    e.store.set("settings", {**e.settings(), "code_relays": ["wss://nowhere.example.org", "wss://typed.example.net", "wss://typed.example.net", 7]})
+    assert e.settings()["code_relays"] == ["wss://typed.example.net"]
+
+
+async def test_the_dial_check_resolves_code_relays_every_time_and_never_typed_ones(bare, monkeypatch):
+    from ninsei_engine import engine as eng_mod
+    e, _ = bare()
+    asked = []
+    answer = {"v": ["93.184.216.34"]}
+
+    async def fake(host, port):
+        asked.append((host, port))
+        if isinstance(answer["v"], Exception):
+            raise answer["v"]
+        return answer["v"]
+    monkeypatch.setattr(eng_mod, "_resolve", fake)
+    e.save_settings({"relays": ["wss://typed.example.net", "ws://127.0.0.1:7777", "wss://code.example.org:8443"]}, code_added=["wss://code.example.org:8443"])
+    assert await e._dial_check("wss://code.example.org:8443") is None and asked == [("code.example.org", 8443)]
+    for bad in (["127.0.0.1"], ["10.0.0.5"], ["93.184.216.34", "192.168.1.9"], ["::1"], [], OSError("gone")):
+        answer["v"] = bad
+        assert await e._dial_check("wss://code.example.org:8443"), bad            # a reason: rest, don't dial
+    answer["v"] = ["93.184.216.34"]
+    assert await e._dial_check("wss://code.example.org:8443") is None             # public again: dials again
+    # typed relays are never looked up, whatever they point at
+    asked.clear()
+    answer["v"] = ["127.0.0.1"]
+    assert await e._dial_check("wss://typed.example.net") is None and await e._dial_check("ws://127.0.0.1:7777") is None and asked == []
+    assert e._new_pool().dial_check == e._dial_check
+
+
+async def test_a_code_relay_that_was_public_when_added_and_is_private_at_connect_time_is_not_dialled(tmp_path, monkeypatch):
+    """The whole path: Add and look again passes the check, the pool is rebuilt, and the name now points at 127.0.0.1.
+    The pool must rest without opening a socket (the suite's guard fails the test if anything dials a non-local host)."""
+    from ninsei_engine import engine as eng_mod, relays as relays_mod
+    async with LocalRelay(port=0) as local:
+        e = Engine(tmp_path / "Maya", lambda: StubLLM("Ada"), lock=False, timescale=0.05)
+        e.save_settings({"display_name": "Maya", "agent_name": "Ada", "onboarded": True, "relays": [local.url]})
+        asked = []
+
+        async def fake(host, port):
+            asked.append(host)
+            return ["93.184.216.34"] if len(asked) == 1 else ["127.0.0.1"]       # public for the add, private ever after
+        monkeypatch.setattr(eng_mod, "_resolve", fake)
+        dialled = []
+        real = relays_mod.websockets.connect
+
+        def watch(url, *a, **k):
+            dialled.append(str(url))
+            return real(url, *a, **k)
+        monkeypatch.setattr(relays_mod.websockets, "connect", watch)
+        e.pool = e._new_pool()
+        e.pool.start()
+        try:
+            assert await e.pool.wait_open(8)
+            out = await e.add_code_relays(f"ninsei:{OTHER}@sneaky.example.org")
+            assert out["added"] == ["wss://sneaky.example.org"] and e.settings()["code_relays"] == out["added"]
+            st = e.pool.status["wss://sneaky.example.org"]
+            assert await wait_for(lambda: len(asked) >= 2 and st.last_error.startswith("not connected"), 15)    # asked again at connect time
+            assert st.state != "open"
+            assert not any("sneaky" in u for u in dialled)                        # nothing was opened to it
+            assert e.pool.status[local.url].state == "open"                       # the typed local relay is untouched
+        finally:
+            await e.pool.stop()
+            e.store.close()
+
+
+async def test_a_refused_code_relay_rests_logs_once_and_is_dialled_when_its_name_is_public_again(tmp_path, monkeypatch, caplog):
+    from ninsei_engine import relays as relays_mod
+    async with LocalRelay(port=0) as local:
+        verdict = {"v": "its name now points at a private network address"}
+        tries = []
+
+        async def check(url):
+            tries.append(url)
+            return verdict["v"]
+        pool = relays_mod.RelayPool([local.url], backoff_base=0.05, backoff_max=0.1)
+        pool.dial_check = check
+        with caplog.at_level("WARNING"):
+            pool.start()
+            try:
+                assert await wait_for(lambda: len(tries) >= 3, 15)                   # several tries, one line in the log
+                st = pool.status[local.url]
+                assert st.state != "open" and st.last_error == "not connected: " + verdict["v"] and not local._conns
+                assert len([r for r in caplog.records if "not connecting to" in r.getMessage()]) == 1   # once, not every try
+                verdict["v"] = None
+                assert await pool.wait_open(5) and pool.status[local.url].state == "open"
+                assert pool._refused == set()
+            finally:
+                await pool.stop()
+
+
+async def test_a_typed_relay_on_the_local_test_relay_still_connects_without_a_lookup(tmp_path, monkeypatch):
+    from ninsei_engine import engine as eng_mod
+    async with LocalRelay(port=0) as local:
+        asked = []
+
+        async def fake(host, port):
+            asked.append(host)
+            return ["127.0.0.1"]
+        monkeypatch.setattr(eng_mod, "_resolve", fake)
+        e = Engine(tmp_path / "Maya", lambda: StubLLM("Ada"), relays=[local.url], lock=False, timescale=0.05)
+        e.save_settings({"relays": [local.url]})
+        pool = e._new_pool()
+        pool.start()
+        try:
+            assert await pool.wait_open(8) and pool.status[local.url].state == "open" and asked == []
+        finally:
+            await pool.stop()
+            e.store.close()

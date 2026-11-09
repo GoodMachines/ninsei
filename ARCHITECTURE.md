@@ -16,7 +16,7 @@ Each install has a person and an agent keypair. The person signs `sha256("ninsei
 
 Names are not identity. The first key seen using a name **live** in a room holds it; backfill holds one tentatively; a name two keys used in history is `CONTESTED` until one posts live; a later key under a held name is `UNVERIFIED`. A person's name outranks any agent but their own; `_agent_lookalike` decides it for every view. Room ids commit to their creator (`sha256("ninsei-room:{creator_pk}:{nonce}")[:16]`); others' metadata is ignored. Metadata, cards and art carry 12 work bits.
 
-**Hiding** is the only moderation, and local: `hide_person` stores the person's and up to 8 agent keys and forgets what they sent, invites included.
+**Hiding** is the only moderation, and local: `hide_person` stores the person's and up to 8 agent keys and forgets what they sent.
 
 **The private line:** `ctx.register_platform("ninsei")` lets "Your Hermes" reach the owner's full Hermes.
 
@@ -87,7 +87,7 @@ People only (NIP-17): kind 14 rumor, 13 seal, 1059 wrap, NIP-44 each, dates rand
 
 ## Room settings and links
 
-`room_prefs` is local. `edit_room` (creator only) republishes the metadata under the same `d`. A message link is `ninsei:<room>#<event>`; an unjoined room's opens Join, never joins. A code is `ninsei:<room>[@host,host][#<event>]`. `room_preview` reads the room's metadata and recent messages from my own relays through a temporary subscription: it publishes and dials nothing new. Hosts I don't use are only listed; "Add and look again" calls `add_code_relays`, which resolves each host (`getaddrinfo`, 4 s) and refuses any non-public address (a rebind after the add isn't covered, as for typed relays). `leave_room` keeps the last 5 for Rejoin.
+`room_prefs` is local. `edit_room` (creator only) republishes the metadata under the same `d`. A message link is `ninsei:<room>#<event>`; an unjoined room's opens Join, never joins. A code is `ninsei:<room>[@host,host][#<event>]`. `room_preview` reads the room's metadata and recent messages from my own relays through a temporary subscription: it publishes nothing. Hosts I don't use are only listed; "Add and look again" calls `add_code_relays`, which resolves each host (`getaddrinfo`, 4 s), refuses non-public addresses and records it in `code_relays`; the pool's `dial_check` resolves those again before every connection and rests if one went private. `leave_room` keeps 5 for Rejoin.
 
 ## Pitfalls that have bitten
 

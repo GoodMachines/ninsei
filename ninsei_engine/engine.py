@@ -950,10 +950,12 @@ class Engine:
             "agent_name": "", "vibe": "warm, curious, a little playful", "face": None, "persona": "", "persona_source": "",
             "budget_daily": 40000, "msgs_daily": MSGS_DAILY, "stranger_share": 0.5, "away_mode": "named",
             "status_mode": "auto", "chattiness": "normal", "offers": True, "share_budget": False,
-            "card_details": False, "relays": DEFAULT_RELAYS, "card_published_at": 0, "card_interests": [],
+            "card_details": False, "relays": DEFAULT_RELAYS, "code_relays": [], "card_published_at": 0, "card_interests": [],
             "person_face": None, "person_avatar": None, "show_avatars": "everyone", "room_prefs": {},
         }
         out = {**defaults, **s}
+        # the relays that came from a code or an invite (never from Settings): only ones still on the list count
+        out["code_relays"] = [u for u in dict.fromkeys(out.get("code_relays") or []) if isinstance(u, str) and u in out["relays"]]
         out["person_face"] = clean_face(out["person_face"]) if isinstance(out.get("person_face"), dict) and out["person_face"] else None
         out["person_avatar"] = clean_avatar(out.get("person_avatar"))
         out["show_avatars"] = "nobody" if out.get("show_avatars") == "nobody" else "everyone"
@@ -970,7 +972,8 @@ class Engine:
         pk = self._identity()["agent_pk"]
         return clean_face({"hue": int(pk[:6], 16) % 360, "shape": FACE_SHAPES[int(pk[6:8], 16) % len(FACE_SHAPES)]})
 
-    def save_settings(self, patch: dict) -> dict:
+    def save_settings(self, patch: dict, code_added: Optional[list] = None) -> dict:
+        """`code_added` is for `add_code_relays` only (never from a request): relays this save adds from a code or an invite."""
         cur = self.settings()
         allowed = {"onboarded", "display_name", "interests", "line", "agent_name", "vibe", "face",
                    "persona", "persona_source", "budget_daily", "msgs_daily", "chattiness", "offers", "share_budget", "card_details", "relays",
@@ -1012,11 +1015,15 @@ class Engine:
                 v = "nobody" if v == "nobody" else "everyone"
             elif k == "relays":
                 v = _clean_relays(v)
+                # a relay taken out of the list stops being a code relay; one typed in again afterwards is just a typed relay
+                cur["code_relays"] = [u for u in cur["code_relays"] if u in v]
             elif k in ("offers", "share_budget", "card_details", "onboarded"):
                 v = bool(v)
             cur[k] = v
         if not cur.get("persona"):
             cur["persona_source"] = ""
+        if code_added:
+            cur["code_relays"] = list(dict.fromkeys(cur["code_relays"] + [u for u in code_added if u in cur["relays"]]))
         self.store.set("settings", cur)
         if cur["show_avatars"] != before:
             self._art_shown_changed(cur["show_avatars"])
@@ -1128,7 +1135,24 @@ class Engine:
     def _new_pool(self) -> RelayPool:
         pool = RelayPool(self.relays(), outbox=self.store)
         pool.set_auth(self._login_event)   # asked only for the private-message subscription (see relays.py)
+        pool.dial_check = self._dial_check
         return pool
+
+    async def _dial_check(self, url: str) -> Optional[str]:
+        """Asked by the pool before every connection to a relay. A relay that came from a code or an invite is resolved
+        again each time (a stranger's name can point somewhere private later, after the check at "Add and look again"):
+        any address that isn't public, or a name that won't resolve, means the pool rests instead of dialling. Relays typed in
+        Settings are never checked: a relay on my own network is legitimate there."""
+        if url not in self.settings()["code_relays"]:
+            return None
+        host, _, port = url[6:].rstrip("/").partition(":")
+        try:
+            addrs = await asyncio.wait_for(_resolve(host, int(port or 443)), RESOLVE_TIMEOUT)
+        except (OSError, asyncio.TimeoutError, ValueError):
+            return "its name could not be looked up"
+        if not addrs or not all(_public_address(a) for a in addrs):
+            return "its name now points at a private network address"
+        return None
 
     def _login_event(self, url: str, challenge: str) -> dict:
         """NIP-42: the answer to a relay's challenge, signed by the PERSON key (the key private messages are
@@ -5763,7 +5787,7 @@ class Engine:
         if len(mine) + len(new) > 8:
             raise ValueError(f"You use {len(mine)} relays and Ninsei takes up to 8. Remove one in Settings, Relays, then try again.")
         await self._check_public_relays(new)
-        self.save_settings({"relays": list(mine) + new})
+        self.save_settings({"relays": list(mine) + new}, code_added=new)
         await self.reconnect()
         self._previews.pop(room, None)   # the next preview asks again, including the new relays
         self._bump()
@@ -5773,9 +5797,9 @@ class Engine:
         """A relay a code or an invite names is added only if every address its host resolves to is public. The name
         rules in codes.py can't see that a public-looking name points at 127.0.0.1, 10.x or 169.254.x (a stranger can
         make one), and Ninsei would then connect to the owner's own network. Resolved here, with a short bound, before
-        anything is saved; a host that won't resolve isn't added either. (A name can change what it points at after
-        this check: that is not guarded, and the pool connects to what is in Settings, as it does for typed relays.
-        Relays typed in Settings are never checked: a local relay there is legitimate.)"""
+        anything is saved; a host that won't resolve isn't added either. A relay added this way is recorded in
+        `code_relays` and the pool resolves it again before every connection (`_dial_check`), so a name that later points
+        somewhere private is not dialled. Relays typed in Settings are never checked: a local relay there is legitimate."""
         async def one(url: str) -> None:
             host, _, port = url[6:].partition(":")
             try:

@@ -53,6 +53,10 @@ AUTH_WINDOW_S = 600.0
 _TRANSIENT = re.compile(r"^\s*rate-limited\b|rate[\s-]*limit|slow\s*down|try again later", re.I)
 
 
+class _DialRefused(Exception):
+    """The engine's dial check said not to connect to this relay right now (its name points somewhere private)."""
+
+
 def transient(reason: str) -> bool:
     """A refusal that means "not now" rather than "never": the event is retried, never marked failed."""
     return bool(_TRANSIENT.search(reason or ""))
@@ -140,6 +144,11 @@ class RelayPool:
         self._auth_wait: dict[str, set] = {}   # url -> subs the relay closed before it had sent a challenge
         self._auth_times: dict[str, list] = {}  # url -> monotonic times of our logins there (kept across reconnects)
         self._auth_resume: set[str] = set()    # urls waiting out the login window before asking again
+        # Asked before every connection (first and every reconnect): None to go ahead, or a short reason to rest instead.
+        # The engine uses it for relays that came from a code or an invite, whose names must still resolve to public
+        # addresses when we dial them (a name can change what it points at after it was added).
+        self.dial_check: Optional[Callable[[str], Awaitable[Optional[str]]]] = None
+        self._refused: set[str] = set()        # urls refused on their last try (logged once, until one is let through)
         if self._store is not None:
             try:
                 keep = max(self._outbox_ttl, getattr(self._store, "event_history_days", 3) * 86400, FAILED_KEEP_S)
@@ -195,6 +204,11 @@ class RelayPool:
             opened = None
             busy = False
             try:
+                if self.dial_check is not None:
+                    why = await self.dial_check(url)
+                    if why:
+                        raise _DialRefused(why)
+                    self._refused.discard(url)
                 async with websockets.connect(url, open_timeout=8, ping_interval=25, ping_timeout=20,
                                               max_size=2 ** 20) as ws:
                     self._ws[url] = ws
@@ -214,6 +228,11 @@ class RelayPool:
                         await self._on_message(url, raw)
             except asyncio.CancelledError:
                 raise
+            except _DialRefused as e:   # not dialled at all: rest like a failed connection, and say so once
+                st.last_error = f"not connected: {e}"
+                if url not in self._refused:
+                    self._refused.add(url)
+                    log.warning("ninsei: not connecting to %s: %s", url, e)
             except Exception as e:  # network errors are normal: back off and retry
                 st.last_error = type(e).__name__ + (f": {e}" if str(e) else "")
                 if _BUSY_STATUS.search(str(e)):
