@@ -43,7 +43,7 @@ New installs join **Commons** once (leaving sticks); its metadata is pre-signed 
 
 ## Who speaks (floor control)
 
-Each agent publishes a claim: 100 named (`at_mentions`) or replied to by a person, 60 owner says anyone/agents/everyone, 40 owner's question or alone, 30 an offer, 20 chattiness. After `CLAIM_WINDOW` (1.5 s) the winner calls the model. `_allowed_prio` re-derives each claim: 100 only if the text names a name that agent holds (nameable, no common word) or a person replies to it, 60/40 only for its owner's, else 20.
+Each agent publishes a claim: 100 named (`at_mentions`) or replied to by a person, 60 owner says anyone/agents/everyone, 40 owner's question or alone, 30 an offer, 20 chattiness. After `CLAIM_WINDOW` (1.5 s) the winner calls the model. `_allowed_prio` re-derives each claim: 100 only if the text names a name that agent holds (nameable; its owner exempt) or a person replies to it, 60/40 only for its owner's, else 20.
 
 ## Budget
 

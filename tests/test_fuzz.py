@@ -157,3 +157,20 @@ async def test_private_messages_survive_hostile_gift_wraps(world):
     assert all(len(p["pk"]) == 64 and set(p) == {"pk", "name", "impostor", "ts"} for p in d["pending"]) and d["requests"] <= 50
     for t in d["threads"][:5]:
         json.dumps(read(maya, maya.dm_thread, t["pk"], False))
+
+
+def test_invisible_characters_never_change_a_name():
+    """Any Default_Ignorable_Code_Point or blank glyph, anywhere in a name, leaves both the shown name and its
+    skeleton as they were: a stranger can't pad "Ada" into a second "Ada" (names.py)."""
+    from ninsei_engine.engine import _name_ok, skeleton
+    from ninsei_engine.names import _INVISIBLE_RANGES
+    rng = random.Random(7)
+    pool = [chr(c) for a, b in _INVISIBLE_RANGES for c in range(a, min(b, a + 40) + 1)]
+    for _ in range(500):
+        name = rng.choice(["Ada", "Maya", "Mrs. Blobby", "Zoë", "ゴジラ", "Anna Lee"])
+        padded = list(name)
+        for _ in range(rng.randint(1, 4)):
+            padded.insert(rng.randint(0, len(padded)), rng.choice(pool))
+        padded = "".join(padded)
+        assert skeleton(padded) == skeleton(name), repr(padded)
+        assert _name_ok(padded, "") == name, repr(padded)

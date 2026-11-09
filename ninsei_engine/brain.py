@@ -7,14 +7,17 @@ budget before it runs and settled with the provider's usage after.
 from __future__ import annotations
 
 import asyncio
+import functools
 import inspect
 import json
 import logging
 import re
 import unicodedata
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
+from .names import fold_label, invisible, lower_look, sub_folded
 from .persona import fence
 
 AUX_TASK = "ninsei"
@@ -37,8 +40,13 @@ class Line:
 # \x85 among them) and U+2028/U+2029. Each event must render as exactly one transcript line.
 _BREAKS = re.compile(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]")
 # Lookalikes of the label separator (U+00B7), for names and for spotting a faked label.
-_SEPS = "\u00b7\u2022\u2027\u2219\u22c5\u25e6\u2e31\u30fb\u0387|"
-_LABEL_WORDS = re.compile(r"owner|unverified|agent\W*of|[" + _SEPS + "]", re.I)
+_SEPS = "\u00b7\u2022\u2027\u2219\u22c5\u25e6\u2e31\u30fb\u0387\ua78f\u1427\u16eb\u2e33\u2981\u0f0b|"
+# Role words are matched against names.fold_label (lowercase, look-alikes and small capitals as Latin, digits as
+# the letters they spell), so a Cyrillic "ОWNER", "ʏᴏᴜʀ ᴏᴡɴᴇʀ" or "Y0UR 0WNER" counts; separators are not
+# letters, so the fold leaves them as they are. These patterns have no re.I: every caller folds first.
+_LABEL_WORDS = re.compile(r"owner|unverified|agent\W*of|[" + _SEPS + "]")
+_OWNER_WORDS = re.compile(r"your\W*owner")
+_NAME_LABEL = re.compile(r"your\W*owner|agent\W+of|[<>()" + _SEPS + "]")
 
 
 def _brackets(ch: str) -> str:
@@ -61,7 +69,8 @@ def _strip_markers(text: str) -> str:
     # the bare word.
     text = re.sub(r"room[\W_]*transcript|game[\W_]*question", "", text, flags=re.I)
     # A bracketed run that carries a label word or a separator lookalike is a faked label: drop it whole.
-    text = re.sub(r"\([^()]{0,80}\)", lambda m: "" if _LABEL_WORDS.search(m.group(0)) else m.group(0), text)
+    text = re.sub(r"\([^()]{0,80}\)", lambda m: "" if _LABEL_WORDS.search(fold_label(m.group(0))) else m.group(0),
+                  text)
     # Anything that looks like a fence (<<<, >>>, ROOM QUOTES ... END) goes too, so a quote can't close a block.
     return re.sub(r"<{2,}|>{2,}|ROOM\s*QUOTES\w*", "", text, flags=re.I)
 
@@ -74,18 +83,18 @@ def _clean(text: str, limit: int = 600) -> str:
     bracketed run that still looks like a label is dropped. The fence word goes in any spelling."""
     text = text if isinstance(text, str) else ("" if text is None else str(text))
     text = unicodedata.normalize("NFKC", text[:limit * 4])   # fullwidth ［＜ and friends become [ <
-    text = "".join(_brackets(ch) for ch in text if unicodedata.category(ch) != "Cf")  # zero-width, bidi
-    text = _BREAKS.sub(" ", text)
+    text = _BREAKS.sub(" ", text)   # before the invisible characters go, so a break still splits two words
+    text = "".join(_brackets(ch) for ch in text if not invisible(ch))  # zero-width, bidi, Hangul fillers
     text = _until_stable(_strip_markers, text)
-    # The label is written in capitals; the same words typed by someone are lowered so they never match it.
-    text = re.sub(r"YOUR\W*OWNER", lambda m: m.group(0).lower(), text)
+    # The label is written in capitals; the same words typed by someone (in any look-alike letters) are lowered
+    # so they never match it.
+    text = sub_folded(_OWNER_WORDS, lower_look, text)
     return re.sub(r"\s+", " ", text).strip()[:limit]
 
 
 def _name(text: str) -> str:
     """A display name for a label: no brackets, separators or role words, so it can't fake one."""
-    text = _until_stable(lambda t: re.sub(r"your\W*owner|agent\W+of|[<>()" + _SEPS + "]", "", t, flags=re.I),
-                         _clean(text, 80))
+    text = _until_stable(lambda t: sub_folded(_NAME_LABEL, lambda _: "", t), _clean(text, 80))
     return re.sub(r"\s+", " ", text).strip()[:40] or "someone"
 
 
@@ -186,7 +195,8 @@ def game_answer(text: str, max_words: int, clause: bool = False) -> str:
     answer followed by an explanation keeps just its first clause (always, with `clause`: a Tall Tales option
     is a bare answer); the refusal check sees the whole text."""
     text = (text or "").strip()
-    if not text or _OFF_SCRIPT.search(text) or _LABEL_WORDS.search(text):
+    folded = fold_label(text)   # "Agent Of", "ОWNER" in Cyrillic, "0WNER": the role words in any spelling
+    if not text or _OFF_SCRIPT.search(folded) or _LABEL_WORDS.search(folded):
         return ""
     if clause or len(text.split()) > max_words:
         m = _CLAUSE_END.search(text)
@@ -196,14 +206,19 @@ def game_answer(text: str, max_words: int, clause: bool = False) -> str:
     return text.rstrip(".")
 
 
-def _takes_task(fn: Callable) -> bool:
-    """Does this host's llm.complete accept task= (auxiliary model routing)? Older hosts don't."""
+def _takes(fn: Callable, name: str) -> bool:
+    """Does this host's llm.complete accept `name=` (task= for auxiliary model routing, timeout=)? Older
+    hosts don't."""
     try:
         params = inspect.signature(fn).parameters.values()
     except (TypeError, ValueError):
         return False
-    return any(p.kind is p.VAR_KEYWORD or (p.name == "task" and p.kind in (p.POSITIONAL_OR_KEYWORD, p.KEYWORD_ONLY))
+    return any(p.kind is p.VAR_KEYWORD or (p.name == name and p.kind in (p.POSITIONAL_OR_KEYWORD, p.KEYWORD_ONLY))
                for p in params)
+
+
+def _takes_task(fn: Callable) -> bool:
+    return _takes(fn, "task")
 
 
 def _maybe_billed(e: BaseException) -> bool:
@@ -213,6 +228,12 @@ def _maybe_billed(e: BaseException) -> bool:
     if not isinstance(e, Exception) or isinstance(e, TimeoutError):
         return True   # CancelledError, KeyboardInterrupt, asyncio.TimeoutError
     return "timeout" in type(e).__name__.lower()   # httpx.ReadTimeout, openai.APITimeoutError, ...
+
+
+MODEL_TIMEOUT_S = 120.0   # a model call that has not answered by then is given up on (billed its estimate)
+# Model calls get their own threads, so ones that hang cannot use up the default executor that private
+# messages and engine start share. Python cannot kill a thread: a hung call stays here until the provider gives up.
+_MODEL_THREADS = ThreadPoolExecutor(max_workers=8, thread_name_prefix="ninsei-model")
 
 
 class Brain:
@@ -237,9 +258,13 @@ class Brain:
         kwargs = dict(messages=messages, max_tokens=max_tokens, purpose=f"ninsei.{purpose}")
         if _takes_task(llm.complete):   # decided up front: exactly one model call per reserved ticket
             kwargs["task"] = AUX_TASK
+        if _takes(llm.complete, "timeout"):   # so the host's own request gives up too, not only our wait
+            kwargs["timeout"] = MODEL_TIMEOUT_S
         used = 0   # a call that fails before the provider answers costs nothing
         try:
-            res = await asyncio.to_thread(llm.complete, **kwargs)
+            call = asyncio.get_running_loop().run_in_executor(
+                _MODEL_THREADS, functools.partial(llm.complete, **kwargs))
+            res = await asyncio.wait_for(call, MODEL_TIMEOUT_S)
             used = est   # it ran: the provider's count if it gave one, else the reserved estimate
             u = getattr(res, "usage", None)
             total = getattr(u, "total_tokens", None) if u else None

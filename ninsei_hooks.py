@@ -2,7 +2,7 @@
 
 A toy gets built in the owner's own Hermes chat (the CLI, Desktop or the private line), which is a
 different process from the Ninsei engine. These hooks run inside that chat's process. They spot the
-build session by the offer line the build prompt asks for (`::ninsei-offer{id="..."}`), and from then
+build session by the private build key the build prompt carries (the offer id is public, so it can't), and from then
 on record coarse progress for that offer in Ninsei's SQLite file:
 
 * `pre_llm_call`: a turn starts, so the build is working (and an unknown session is matched here).
@@ -15,7 +15,7 @@ The engine reads the table and shows the agent as building, with the step count,
 Every hook returns None (a `pre_tool_call` dict could block a tool, and these must never steer the
 agent) and swallows its own errors: a broken progress write must not break the owner's chat. Only
 offers the owner accepted (status "building" in the store) are tracked, so a pasted or quoted offer
-line can't light up anything else.
+line, or a message that only knows the public id, can't light up anything else.
 """
 from __future__ import annotations
 
@@ -31,7 +31,9 @@ from . import _loader
 
 log = logging.getLogger("ninsei.hooks")
 
-OFFER_LINE = re.compile(r'::ninsei-offer\{id="([0-9a-f]{64})"\}')
+# The offer id is public in the room, so it can't tie a session to a build. The build prompt carries a key
+# made when the owner accepted (private, kept in the store): only a session that was given it is tracked.
+BUILD_KEY = re.compile(r'ninsei build key \(private\): ([0-9a-f]{32})\b')
 MAX_STEPS = 999
 
 _lock = threading.Lock()
@@ -64,24 +66,43 @@ def _building(db: sqlite3.Connection, offer: str) -> bool:
         return False
 
 
-def _offer_for(session_id: Any, text: Any = None) -> Optional[str]:
+def _offer_for(session_id: Any, text: Any = None, db: Optional[sqlite3.Connection] = None) -> Optional[str]:
     if not isinstance(session_id, str) or not session_id:
         return None
     offer = _sessions.get(session_id)
-    if offer is None and isinstance(text, str):
-        m = OFFER_LINE.search(text)
-        offer = m.group(1) if m else None
+    if offer is None and isinstance(text, str) and db is not None:
+        m = BUILD_KEY.search(text)
+        if m:
+            offer = _offer_with_key(db, m.group(1))
     return offer
+
+
+def _offer_with_key(db: sqlite3.Connection, key: str) -> Optional[str]:
+    row = db.execute("SELECT v FROM kv WHERE k='offers'").fetchone()
+    try:
+        offers = json.loads(row[0]) if row else {}
+        for oid, o in offers.items():
+            if isinstance(o, dict) and o.get("status") == "building" and o.get("build_key") == key:
+                return oid
+    except (ValueError, AttributeError):
+        pass
+    return None
 
 
 def _record(session_id: Any, *, text: Any = None, state: Optional[str] = None, step: bool = False) -> None:
     try:
         with _lock:
-            offer = _offer_for(session_id, text)
-            if offer is None:
+            # These hooks run on every turn of every Hermes chat: only a known build session, or a message that
+            # carries a build key, loads the engine and opens the store.
+            if not isinstance(session_id, str) or not session_id:
+                return
+            if session_id not in _sessions and not (isinstance(text, str) and BUILD_KEY.search(text)):
                 return
             db = _db()
             if db is None:
+                return
+            offer = _offer_for(session_id, text, db)
+            if offer is None:
                 return
             if not _building(db, offer):        # finished, shared or declined: stop tracking this session
                 _sessions.pop(session_id, None)

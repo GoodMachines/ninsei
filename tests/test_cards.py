@@ -84,7 +84,7 @@ async def test_the_brain_remembers_the_model_that_ran(tmp_path):
     e = Engine(tmp_path / "e", lambda: LLM(), relays=[], lock=False)
     e.save_settings({"onboarded": True})
     await e.brain._complete("chat", [{"role": "user", "content": "hi"}], 20, "reply")
-    assert e.store.get("model_last") == "anthropic/claude-sonnet-5-5"
+    assert e.store.get("model_last") == "claude-sonnet-5-5"   # stored as shown: the last path segment
     weird = Brain(lambda: LLM(model="x" * 500 + "<b>"), lambda c, n: "t", lambda t, n: None, on_model=e._note_model)
     await weird._complete("chat", [{"role": "user", "content": "hi"}], 20, "reply")
     assert e.store.get("model_last") == "x" * 60
@@ -106,7 +106,7 @@ async def test_vibe_and_model_are_published_only_when_the_owner_opts_in(tmp_path
     assert sent and sent[-1]["t"] == "presence" and "vibe" not in sent[-1] and "model" not in sent[-1]
     e.save_settings({"card_details": True})
     await e._presence_once()
-    assert sent[-1]["vibe"] == "dry wit, loves colour" and sent[-1]["model"] == "nous/hermes-5"
+    assert sent[-1]["vibe"] == "dry wit, loves colour" and sent[-1]["model"] == "hermes-5"   # the short form the owner's card shows
 
 
 def test_a_peers_shared_model_and_vibe_are_cleaned(tmp_path):

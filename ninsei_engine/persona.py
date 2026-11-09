@@ -69,6 +69,10 @@ _PHONE = re.compile(r"(?<![\w.])\+?\(?\d[\d\s().-]{7,}\d(?![\w])")
 _ADDRESS = re.compile(r"\b\d{1,6}\s+(?:[A-Z][a-z]+\s+){1,3}(?:St|Street|Ave|Avenue|Rd|Road|Blvd|Lane|Ln|Dr|Drive|Ct|Way)\b")
 _SENSITIVE_LINE = re.compile(r"password|passcode|social security", re.I)
 
+# The kinds a toy's share scan looks for, each searched on its own (scan_private's list is capped, so a long
+# run of one kind would hide the others).
+SECRET_KINDS = {"url_secret": _URL_SECRET, "key": _KEYS, "email": _EMAIL, "home_path": _HOME}
+
 _KIND_ORDER = ("url_secret", "key", "email", "home_path", "ip", "address", "phone", "sensitive_line")
 
 
