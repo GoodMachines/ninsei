@@ -82,7 +82,7 @@ globalThis.addEventListener = (t, f) => { (listeners[t] = listeners[t] || []).pu
 def _run_guard(setup: str, after: str) -> dict:
     body = toy.TOY_GUARD[len("<script>"):-len("</script>")]
     js = _HARNESS + setup + "\n;" + body + ";" + after + "\nconsole.log(JSON.stringify(result)); port1.close(); port2.close()"
-    out = subprocess.run([NODE, "-e", js], capture_output=True, text=True)
+    out = subprocess.run([NODE, "-"], input=js, capture_output=True, text=True)
     assert out.returncode == 0, out.stderr
     return json.loads(out.stdout)
 

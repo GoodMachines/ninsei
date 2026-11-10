@@ -456,7 +456,7 @@ out({ n, pressed, chosen, closed })
 def test_the_ui_and_engine_agree_on_the_eight():
     js = ROOM_JS[ROOM_JS.index("const REACTION_LIST"):ROOM_JS.index("\n", ROOM_JS.index("const REACTION_LIST"))] \
         + "\nconsole.log(JSON.stringify(REACTION_LIST))"
-    done = subprocess.run([NODE, "-e", js], capture_output=True, text=True, check=True)
+    done = subprocess.run([NODE, "-"], input=js, capture_output=True, text=True, check=True)
     assert json.loads(done.stdout) == list(REACTIONS)
 
 

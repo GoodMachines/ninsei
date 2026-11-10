@@ -104,7 +104,7 @@ const out = o => console.log(JSON.stringify(o))
 
 
 def run(js: str):
-    done = subprocess.run([NODE, "-e", "(async () => {\n" + HARNESS + js + "\n})().catch(e => { console.error(e); process.exit(1) })"],
+    done = subprocess.run([NODE, "-"], input="(async () => {\n" + HARNESS + js + "\n})().catch(e => { console.error(e); process.exit(1) })",
                           capture_output=True, text=True)
     assert done.returncode == 0, done.stderr
     return json.loads(done.stdout)

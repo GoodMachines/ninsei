@@ -35,7 +35,7 @@ for (const s of {json.dumps(steps)}) {{
   else if (s === 'timeout') timer && timer()
 }}
 console.log(JSON.stringify(out))"""
-    out = subprocess.run([NODE, "-e", js], capture_output=True, text=True, check=True)
+    out = subprocess.run([NODE, "-"], input=js, capture_output=True, text=True, check=True)
     return json.loads(out.stdout)
 
 
@@ -141,7 +141,7 @@ fire('message', real(new MessageEvent('message', { data: key, source: port1 }), 
 const beforeLoad = sent.slice()
 fire('load', real(new Event('load'), true))
 console.log(JSON.stringify([afterFakes, beforeLoad, sent])); port1.close(); port2.close()"""
-    out = subprocess.run([NODE, "-e", js], capture_output=True, text=True)
+    out = subprocess.run([NODE, "-"], input=js, capture_output=True, text=True)
     assert out.returncode == 0, out.stderr
     after_fakes, before_load, sent = json.loads(out.stdout)
     assert after_fakes == ["ninsei-toy-hello"]

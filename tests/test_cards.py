@@ -74,7 +74,7 @@ def test_the_ui_reads_a_hostile_face_as_defaults():
 const out = [faceFor({ hue: 'x', shape: 'evil', eyes: '<img>', mouth: 7, acc: {}, pattern: 'spots', hue2: -30 }, 'abcdef12'),
              faceFor(null, 'abcdef12'), faceFor('string', 'abcdef12')]
 console.log(JSON.stringify(out))"""
-    hostile, empty, string = json.loads(subprocess.run([NODE, "-e", js], capture_output=True, text=True, check=True).stdout)
+    hostile, empty, string = json.loads(subprocess.run([NODE, "-"], input=js, capture_output=True, text=True, check=True).stdout)
     assert hostile["eyes"] == "dot" and hostile["mouth"] == "smile" and hostile["acc"] == "none"
     assert hostile["pattern"] == "spots" and hostile["hue2"] == 330 and hostile["shape"] in eng_mod.FACE_SHAPES
     assert empty == string

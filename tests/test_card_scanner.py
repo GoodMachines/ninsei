@@ -47,7 +47,7 @@ JS = (CORE[CORE.index("const SHAPES"):CORE.index("const BUDGET_PRESETS")] + _fn(
 
 
 def _run(js: str):
-    out = subprocess.run([NODE, "-e", JS + js], capture_output=True, text=True, check=True)
+    out = subprocess.run([NODE, "-"], input=JS + js, capture_output=True, text=True, check=True)
     return json.loads(out.stdout)
 
 

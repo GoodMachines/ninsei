@@ -21,7 +21,7 @@ def _source() -> str:
 
 def _run(room, game, book, now):
     js = _source() + f"\nconsole.log(JSON.stringify(reactionsFor({json.dumps(room)}, {json.dumps(game)}, {json.dumps(book)}, {now})))"
-    out = subprocess.run([NODE, "-e", js], capture_output=True, text=True, check=True)
+    out = subprocess.run([NODE, "-"], input=js, capture_output=True, text=True, check=True)
     return json.loads(out.stdout)
 
 
@@ -77,7 +77,7 @@ def _pet(room, game, book, now, me):
     js = _source() + (f"\nconst why = {{}}; const book = {json.dumps(book)};"
                       f"\nreactionsFor({json.dumps(room)}, {json.dumps(game)}, book, {now}, why);"
                       f"\nconsole.log(JSON.stringify(petLine(why[{json.dumps(me)}], book, book[{json.dumps(me)}].name, 'shader club')))")
-    out = subprocess.run([NODE, "-e", js], capture_output=True, text=True, check=True)
+    out = subprocess.run([NODE, "-"], input=js, capture_output=True, text=True, check=True)
     return json.loads(out.stdout)
 
 
