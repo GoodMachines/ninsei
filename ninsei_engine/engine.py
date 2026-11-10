@@ -13,6 +13,7 @@ import fcntl
 import functools
 import hashlib
 import heapq
+import ipaddress
 import json
 import logging
 import math
@@ -20,17 +21,18 @@ import os
 import random
 import re
 import secrets
+import socket
 import threading
 import time
 import unicodedata
 from pathlib import Path
 from typing import Any, Callable, Iterable, Optional
 
-from . import avatar, dm, game, nip44, nostr, persona as personas
+from . import avatar, codes, dm, game, nip44, nostr, persona as personas
 from .brain import Brain, BudgetExhausted, Line
 from .names import name_ok as _name_ok, skeleton  # one folding for every identity check (names.py)
 from .relays import RelayPool
-from .store import DM_PER_PEER, EVENT_ROOM_CAP, FRIEND_REQUESTS, Store, today
+from .store import DM_PER_PEER, EVENT_ROOM_CAP, FRIEND_REQUESTS, INVITES_MAX, Store, today
 from .topics import TopicTracker
 from .toy import OFFER_ID_RE, SHARE_SERIALIZED_LIMIT, inject_csp, scan_secrets, serialized_size
 
@@ -42,6 +44,10 @@ KIND_META = 30078         # parameterized replaceable: room metadata, interest c
 APP_TAG = "ninsei"
 PRESENCE_EVERY = 60         # keepalive beat to each room; a state change sends one sooner (see _beat_soon)
 ABSENT_AFTER = 150          # two missed beats and a bit
+GONE_STATE = "system: absent"   # the last beat sent on leaving a room: receivers drop that agent at once (an
+                                # agent never otherwise publishes it; older clients show it absent, then it times out)
+MAX_GONE = 512             # goodbyes remembered, so a late beat from before one is ignored
+LEAVE_BEAT_TIMEOUT = 3      # seconds leaving waits for that beat; leaving never fails on it
 STATE_BEAT_GAP = 5          # seconds between state-change beats; the latest state wins. A game round flips
                             # the state several times, and every flip was a beat to every room: relays rate-
                             # limit per IP, so a few installs on one network got banned (damus, 2026-11-06).
@@ -129,9 +135,28 @@ DM_CLOCK_SLACK = 60        # seconds two installs' clocks may differ when histor
 DM_DEFER_MAX = 200        # non-friends' wraps from a history pass kept (sealed, in memory) until that pass ends
 DM_SINCE_MARGIN = 3 * 86400  # wraps are dated up to 2 days before they were sent: ask this far before "last online"
 DM_PACE_S = 0.05           # between wraps the worker opens: a flood of them costs a fraction of one core
+REJOIN_QUIET_S = 600      # a rejoin inside this many seconds of my last join message posts no new one
 DM_SEND_PER_MIN = 10       # private messages one install sends a minute (each is two wraps)
 DM_SNIPPET = 60            # how much of a new private message the sidebar carries, for the alert
 DM_THREAD_MESSAGES = 200   # messages of one conversation the UI loads
+INVITE_FRIENDS_PER_CALL = 10   # friends one "Invite" press may name (each is two wraps, all counted against DM_SEND_PER_MIN)
+INVITES_SHOWN = 20         # waiting invites the sidebar carries
+INVITE_LINES = 20          # invite lines one conversation carries
+INVITE_NAME_GAP = 60.0     # seconds between lookups of one room's name for an invite (the creator's own metadata)
+INVITE_NAMES_PER_ASK = 10  # rooms one name lookup asks about
+INVITE_NAME_QUERIES_PER_MIN = 3   # name lookups in all, whoever the rooms are from: the per-room gap alone let a friend make
+                                  # a query for every invite (a new room id each time)
+INVITE_NAMES_KEPT = 100    # names remembered for rooms I'm not in
+CREATORS_KEPT = 500        # room -> creator pairs remembered, to tell whether a room's name may be shown
+RESOLVE_TIMEOUT = 4.0      # seconds a code's relay hosts get to resolve before "Add and look again" gives up on them
+PREVIEW_COOLDOWN = 5.0     # seconds: a second preview of one room inside this returns the last answer, without a query
+PREVIEW_WAIT_RELAYS = 3.0  # seconds a preview waits for relays the owner just added to connect
+PREVIEWS_KEPT = 20
+JOIN_TOASTS_KEPT = 20      # recent live joins of my rooms carried to the page (it toasts each id once)
+JOIN_TOAST_AGE = 120       # seconds a join stays in the snapshot
+LEFT_ROOMS_KEPT = 5        # rooms I left that "Rejoin" remembers
+ROOM_RELAYS_KEPT = 8       # relays remembered per room (where its events came from)
+INVITE_URL = "https://goodmachines.ai/ninsei/join#"   # the web page an invite link opens (the part after # never leaves the browser)
 DM_SEEN_MEMORY = 4000      # wrap ids remembered in memory, for the ones not recorded on disk (hidden senders)
 # Typing indicators (ephemeral kind 21042 `typing`, people only) and pictures/faces of people (replaceable kind 30078).
 TYPING_GAP = 5             # seconds between my typing signals into one room while I type
@@ -269,6 +294,36 @@ def room_id_for(creator_pk: str, nonce: str) -> str:
     return hashlib.sha256(f"ninsei-room:{creator_pk}:{nonce}".encode()).hexdigest()[:16]
 
 
+async def _resolve(host: str, port: int) -> list[str]:
+    """Every address `host` resolves to, as text. Runs on the loop's resolver (a thread), so it never blocks the engine;
+    the caller bounds the wait. Kept as one small function so tests can stand in for the network's DNS."""
+    infos = await asyncio.get_running_loop().getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    return [str(i[4][0]) for i in infos]
+
+
+_NAT64 = ipaddress.ip_network("64:ff9b::/96")          # RFC 6052: an IPv4 address behind a translator
+_NAT64_LOCAL = ipaddress.ip_network("64:ff9b:1::/48")   # RFC 8215: the same for one network's own use, never public
+
+
+def _public_address(addr: str) -> bool:
+    """True only for a globally routable address: not loopback, private, link-local, CGNAT, multicast, reserved or
+    unspecified (what `ipaddress` calls not `is_global`). An IPv4 address wrapped in IPv6 (mapped, or inside the NAT64 prefix
+    64:ff9b::/96, which Python versions disagree about) is judged as the IPv4 one."""
+    try:
+        ip = ipaddress.ip_address(addr.split("%", 1)[0])
+    except ValueError:
+        return False
+    if isinstance(ip, ipaddress.IPv6Address):
+        if ip.ipv4_mapped is not None:
+            ip = ip.ipv4_mapped
+        elif ip in _NAT64:   # Python 3.11 calls this range global and 3.14 does not: judge the IPv4 address inside it
+            ip = ipaddress.IPv4Address(ip.packed[-4:])
+        elif ip in _NAT64_LOCAL:
+            return False
+    # (`is_global` alone lets some multicast ranges through, so those are refused by name as well)
+    return ip.is_global and not (ip.is_multicast or ip.is_loopback or ip.is_private or ip.is_link_local or ip.is_reserved or ip.is_unspecified)
+
+
 def _load_commons(path: Optional[Path] = None) -> tuple[Optional[dict], str]:
     """Commons: the public room every new install joins, so nobody starts in an empty app. Its metadata
     ships signed by Good Machines' key (scripts/sign_commons.py); anything that fails the checks is ignored."""
@@ -402,6 +457,15 @@ def _build_claim(b: Any) -> Optional[dict]:
     return {"offer": b["offer"], "step": max(0, min(step, MAX_BUILD_STEPS)), "wait": b.get("wait") is True}
 
 
+def _beat_at(ev: dict, c: dict) -> float:
+    """When a live event was written: the author's `at` (milliseconds) when it is within a second of created_at,
+    else created_at. Used only to order one key's own beats, so a forged `at` can only hide that key's own beats."""
+    at = c.get("at")
+    if isinstance(at, (int, float)) and not isinstance(at, bool) and abs(at - ev["created_at"]) < 1.5:
+        return float(at)
+    return float(ev["created_at"])
+
+
 def _person_claim(v: Any) -> Optional[str]:
     """A peer's published status, parsed strictly: one of PERSON_STATUSES, else nothing (an older client, or junk)."""
     return v if isinstance(v, str) and v in PERSON_STATUSES else None
@@ -455,16 +519,22 @@ def _clean_room_prefs(raw) -> dict:
     return out
 
 
-def parse_room_link(text: str) -> tuple[str, str]:
-    """(room id, event id) from what someone pasted: `ninsei:<room>`, `ninsei:<room>#<event id>` or a bare room id.
-    The event id is "" unless it is 64 hex characters. A room id is cut at its first non-hex character."""
-    t = str(text or "").strip()[:200]
+def parse_room_link(text: str) -> tuple[str, str, list[str]]:
+    """(room id, event id, relays) from what someone pasted: `ninsei:<room>`, `ninsei:<room>@host,host`,
+    `ninsei:<room>@host#<event id>`, `ninsei:<room>#<event id>` or a bare room id. The event id is "" unless it is
+    64 hex characters. A room id is cut at its first non-hex character. `relays` are up to 3 `wss://` addresses
+    from the hosts after the `@` (codes.clean_host decides each one: a bad host is dropped silently, and a code
+    whose hosts are all bad still names its room). The text is trimmed with `codes.trim` (the page's `trimCode`: whitespace and
+    U+FEFF, the same set on both sides) and cut at 1,200 characters first."""
+    t = codes.trim(str(text or ""))[:1200]
     t = re.sub(r"^ninsei:", "", t, flags=re.I)
-    room, _, ev = t.partition("#")
-    m = re.match(r"[0-9a-f]+", room.strip().lower())
+    head, _, ev = t.partition("#")
+    room, _, hosts = head.partition("@")
+    m = re.match(r"[0-9a-f]+", codes.trim(room).lower())
     room = m.group(0)[:24] if m else ""
-    ev = ev.strip().lower()
-    return room, ev if nostr.is_hex(ev, 32) else ""
+    ev = codes.trim(ev).lower()
+    relays = [codes.host_url(h) for h in codes.clean_hosts(hosts.split(",")[:8])] if room else []
+    return room, ev if nostr.is_hex(ev, 32) else "", relays
 
 
 def valid_reaction(c: dict) -> bool:
@@ -671,6 +741,7 @@ class Engine:
         # live, in-memory room state (rebuilt from the store + relays)
         self.events: dict[str, dict[str, dict]] = {}       # room -> id -> event
         self.presence: dict[str, dict[str, dict]] = {}     # room -> pk -> {state, budget, at}
+        self._gone: dict[tuple, float] = {}   # (room, agent pk) -> when its goodbye beat was written: older beats are stale
         self.claims: dict[str, list[tuple]] = {}           # trigger -> [(prio, tb, agent_pk)]
         self.topics: dict[str, TopicTracker] = {}
         self.lobby: dict = {"rooms": [], "people": [], "at": 0}
@@ -728,6 +799,16 @@ class Engine:
         self._dm_waiting: dict[str, list] = {}   # peer -> wrap ids of history messages read before they were a friend
         self._dm_pass_again = False              # a friendship began during a pass: run one more when it ends
         self._dm_busy = False
+        # room invites and links (all in memory and bounded; the invites themselves are in the store)
+        self._room_relays: dict[str, dict[str, float]] = {}   # room -> {relay url: when an event of it last came from there}
+        self._previews: dict[str, tuple] = {}     # room -> (monotonic start, finished Future of its preview)
+        self._invite_names: dict[str, str] = {}   # room -> the name its creator signed, for an invite to a room I'm not in
+        self._invite_asked: dict[str, float] = {} # room -> monotonic time its name was last asked for
+        self._invite_want: dict[str, None] = {}   # rooms whose name is wanted and not asked yet (waiting for the overall limit)
+        self._invite_queries: list[float] = []    # monotonic times of the name lookups made in the last minute
+        self._invite_wake: Optional[asyncio.TimerHandle] = None   # fires when the limit frees a slot, then asks the rooms waiting
+        self._creators: dict[str, str] = {}       # room -> its creator's key, as seen in a lookup, preview or the lobby
+        self._joins: list[dict] = []              # recent live joins of rooms I made: {id, room, name, ts}
         # people's pictures and faces: {pk: {"avatar": meta, "face": meta}} (meta: id, created_at, and mime/size or
         # the face dict; an empty one is a removal). The picture bytes stay in the store until asked for.
         self._art: dict[str, dict[str, dict]] = {}
@@ -903,10 +984,12 @@ class Engine:
             "agent_name": "", "vibe": "warm, curious, a little playful", "face": None, "persona": "", "persona_source": "",
             "budget_daily": 40000, "msgs_daily": MSGS_DAILY, "stranger_share": 0.5, "away_mode": "named",
             "status_mode": "auto", "chattiness": "normal", "offers": True, "share_budget": False,
-            "card_details": False, "relays": DEFAULT_RELAYS, "card_published_at": 0, "card_interests": [],
+            "card_details": False, "relays": DEFAULT_RELAYS, "code_relays": [], "card_published_at": 0, "card_interests": [],
             "person_face": None, "person_avatar": None, "show_avatars": "everyone", "room_prefs": {},
         }
         out = {**defaults, **s}
+        # the relays that came from a code or an invite (never from Settings): only ones still on the list count
+        out["code_relays"] = [u for u in dict.fromkeys(out.get("code_relays") or []) if isinstance(u, str) and u in out["relays"]]
         out["person_face"] = clean_face(out["person_face"]) if isinstance(out.get("person_face"), dict) and out["person_face"] else None
         out["person_avatar"] = clean_avatar(out.get("person_avatar"))
         out["show_avatars"] = "nobody" if out.get("show_avatars") == "nobody" else "everyone"
@@ -923,7 +1006,8 @@ class Engine:
         pk = self._identity()["agent_pk"]
         return clean_face({"hue": int(pk[:6], 16) % 360, "shape": FACE_SHAPES[int(pk[6:8], 16) % len(FACE_SHAPES)]})
 
-    def save_settings(self, patch: dict) -> dict:
+    def save_settings(self, patch: dict, code_added: Optional[list] = None) -> dict:
+        """`code_added` is for `add_code_relays` only (never from a request): relays this save adds from a code or an invite."""
         cur = self.settings()
         allowed = {"onboarded", "display_name", "interests", "line", "agent_name", "vibe", "face",
                    "persona", "persona_source", "budget_daily", "msgs_daily", "chattiness", "offers", "share_budget", "card_details", "relays",
@@ -965,11 +1049,15 @@ class Engine:
                 v = "nobody" if v == "nobody" else "everyone"
             elif k == "relays":
                 v = _clean_relays(v)
+                # a relay taken out of the list stops being a code relay; one typed in again afterwards is just a typed relay
+                cur["code_relays"] = [u for u in cur["code_relays"] if u in v]
             elif k in ("offers", "share_budget", "card_details", "onboarded"):
                 v = bool(v)
             cur[k] = v
         if not cur.get("persona"):
             cur["persona_source"] = ""
+        if code_added:
+            cur["code_relays"] = list(dict.fromkeys(cur["code_relays"] + [u for u in code_added if u in cur["relays"]]))
         self.store.set("settings", cur)
         if cur["show_avatars"] != before:
             self._art_shown_changed(cur["show_avatars"])
@@ -1081,7 +1169,27 @@ class Engine:
     def _new_pool(self) -> RelayPool:
         pool = RelayPool(self.relays(), outbox=self.store)
         pool.set_auth(self._login_event)   # asked only for the private-message subscription (see relays.py)
+        pool.dial_check = self._dial_check
         return pool
+
+    async def _dial_check(self, url: str) -> tuple[Optional[str], Optional[str]]:
+        """Asked by the pool before every connection to a relay; answers `(ip, why)`. A relay that came from a code or an
+        invite is resolved again each time (a stranger's name can point somewhere private later, after the check at "Add and
+        look again"): any address that isn't public, or a name that won't resolve, gives a reason and the pool rests instead
+        of dialling. Otherwise `ip` is the public address just checked and the pool connects to that address, not to a second
+        lookup of the name, which a stranger's DNS can answer differently (rebinding). The pinned connection also refuses
+        a redirect to another host. Relays typed in Settings are never checked or pinned, `(None, None)`: a relay on my own
+        network is legitimate there."""
+        if url not in self.settings()["code_relays"]:
+            return None, None
+        host, _, port = url[6:].rstrip("/").partition(":")
+        try:
+            addrs = await asyncio.wait_for(_resolve(host, int(port or 443)), RESOLVE_TIMEOUT)
+        except (OSError, asyncio.TimeoutError, ValueError):
+            return None, "its name could not be looked up"
+        if not addrs or not all(_public_address(a) for a in addrs):
+            return None, "its name now points at a private network address"
+        return addrs[0].split("%", 1)[0], None
 
     def _login_event(self, url: str, challenge: str) -> dict:
         """NIP-42: the answer to a relay's challenge, signed by the PERSON key (the key private messages are
@@ -1355,7 +1463,7 @@ class Engine:
             if (nostr.tag_values(ev, "d") or [""])[0] in ART_KINDS:
                 self._take_art(ev)   # a picture or a face: never room metadata
             else:
-                self._on_room_meta(ev)
+                self._on_room_meta(ev, _src)
             return
         rooms = nostr.tag_values(ev, "h")
         if not rooms:
@@ -1399,6 +1507,7 @@ class Engine:
                                                  or self.owner_of(ev)):
             return  # an edit or delete is malformed, or an agent's (agents never edit or delete): never stored
         self.events[room][ev["id"]] = ev
+        self._note_room_relay(room, _src)
         # When it reached us, kept with the event: after a restart the ranking of games (and of who got a
         # name first) must still go by arrival, not by the author's date. A history pull has no real arrival.
         arrived = None if _src == "history" else time.time()
@@ -1412,6 +1521,8 @@ class Engine:
         self._seen_active(room, ev["pubkey"], min(created, now))
         if c.get("t") not in SILENT_TYPES and not self.owner_of(ev):
             self._art_see(ev["pubkey"])   # a person in a room I'm in: their picture and face may be asked for
+        if c.get("t") == "join" and not self.owner_of(ev):
+            self._note_join(room, ev, c, _src, created, now)
         if c.get("t") == "msg" and not self.owner_of(ev):
             self.typing.get(room, {}).pop(ev["pubkey"], None)   # they sent it: no longer typing
         # Backfill: a history pull, or anything dated before the live window (a relay replaying the room, or a
@@ -1504,6 +1615,19 @@ class Engine:
         owner = self.owner_of(ev)
         if t == "presence" and owner:
             pres = self.presence.setdefault(room, {})
+            at = _beat_at(ev, c)
+            key = (room, ev["pubkey"])
+            if c.get("state") == GONE_STATE:   # they left the room: gone now, not after ABSENT_AFTER
+                if len(self._gone) >= MAX_GONE:
+                    self._gone.pop(next(iter(self._gone)))
+                self._gone[key] = max(at, self._gone.get(key, 0.0))
+                if pres.pop(ev["pubkey"], None) is not None:
+                    self._bump()
+                return
+            if key in self._gone:
+                if at <= self._gone[key]:
+                    return   # written before they left, delivered late (a slow or replaying relay): not a sign of life
+                del self._gone[key]   # a newer beat: they came back
             if ev["pubkey"] not in pres and len(pres) >= MAX_PRESENCE:
                 now = time.time()
                 for pk in [pk for pk, p in pres.items() if now - p["at"] >= ABSENT_AFTER]:
@@ -1920,14 +2044,15 @@ class Engine:
         return self._mentions(str(c.get("text", "")), self.persona()["name"],
                               by_owner=ev["pubkey"] == self._identity()["person_pk"])
 
-    def _rate_ok(self, key: str, limit: int, window: float) -> bool:
-        """Sliding-window limiter: True (and counted) while `key` has had fewer than `limit` hits."""
+    def _rate_ok(self, key: str, limit: int, window: float, n: int = 1) -> bool:
+        """Sliding-window limiter: True (and counted) while `key` has had fewer than `limit` hits. `n` hits are
+        counted together or not at all (an invite to several friends is several messages, taken in one go)."""
         now = time.time()
         hits = [t for t in self._rate.get(key, ()) if t > now - window]
-        if len(hits) >= limit:
+        if len(hits) + n > limit:
             self._rate[key] = hits
             return False
-        hits.append(now)
+        hits.extend([now] * n)
         self._rate[key] = hits
         if len(self._rate) > 2000:
             for k in [k for k, v in self._rate.items() if not v or v[-1] < now - 3600]:
@@ -3634,7 +3759,7 @@ class Engine:
                 "interests": [str(x)[:24] for x in (c.get("interests") or [])][:8], "creator": ev["pubkey"], "at": at,
                 "nonce": str(c.get("nonce"))[:64]}  # already proven to be the creator's by room_id_for above
 
-    def _on_room_meta(self, ev: dict) -> None:
+    def _on_room_meta(self, ev: dict, src: str = "") -> None:
         d = (nostr.tag_values(ev, "d") or [""])[0]
         if not d.startswith("ninsei/room/"):
             return
@@ -3643,13 +3768,17 @@ class Engine:
         if cur is None:
             return
         meta = self._room_meta_from(ev, room)
-        if meta is None or meta["at"] <= int(cur.get("at") or 0):
-            return  # forged, or not newer than what we have
+        if meta is None:
+            return  # not from the room's creator
+        self._note_room_relay(room, src)   # this relay holds the room's real metadata, new or not
+        if meta["at"] <= int(cur.get("at") or 0):
+            return  # not newer than what we have
         self.store.save_room(room, meta)
         self._bump()
 
     async def join_room(self, room: str, meta: Optional[dict] = None) -> dict:
-        room = parse_room_link(room)[0]  # a message link (`ninsei:<room>#<event>`) joins the room, never mangles the id
+        room = parse_room_link(room)[0]  # a message link (`ninsei:<room>#<event>`) joins the room, never mangles the id;
+                                         # a code's relay hosts are ignored here (the Join preview offers them, on a press)
         if not room:
             raise ValueError("that room code doesn't look right")
         if meta is None:
@@ -3666,7 +3795,11 @@ class Engine:
                     meta, found_meta = m, True
         else:
             found_meta = True
+        was_member = room in self.store.rooms()
         self.store.save_room(room, meta)
+        self._left_forget(room)   # joined again: no longer in the Rejoin list
+        if self.store.invites_joined(room, self._identity()["person_pk"]):
+            self._dm_rev += 1     # joining any way answers the invites to this room
         self.events.setdefault(room, {})
         self.topics.setdefault(room, TopicTracker())
         await self._resubscribe()
@@ -3677,8 +3810,13 @@ class Engine:
         for ev in sorted(hist, key=lambda e: (e.get("created_at") if isinstance(e.get("created_at"), int) else 0,
                                               str(e.get("id")))):
             await self._on_event(ev, "history")
-        if not any(self._content(e).get("t") == "join" and e["pubkey"] == self._identity()["person_pk"]
-                   for e in self.events[room].values()):
+        # A join message goes out on a real join, a rejoin after leaving included (the room should hear you're back,
+        # and its creator gets "joined" for it), but not twice inside REJOIN_QUIET_S, so leave-and-rejoin can't spam
+        # the room. Called for a room I'm already in, it only repairs a join that never went out.
+        me = self._identity()["person_pk"]
+        my_joins = [e["created_at"] for e in self.events[room].values()
+                    if e["pubkey"] == me and self._content(e).get("t") == "join" and isinstance(e.get("created_at"), int)]
+        if not my_joins or (not was_member and max(my_joins) < _now() - REJOIN_QUIET_S):
             await self._publish_room(room, False, {"t": "join"})
             await self._publish_room(room, True, {"t": "join"})
         await self._presence_once()
@@ -3689,12 +3827,23 @@ class Engine:
 
     async def leave_room(self, room: str) -> None:
         await self._end_hosted(room)
+        # a last beat while the room's relays are still known, so the room stops showing me as here at once
+        if room in self.events and self.pool:
+            try:
+                await asyncio.wait_for(self._publish_room(room, True, {"t": "presence", "state": GONE_STATE, "person": "away"},
+                                                          kind=KIND_LIVE), LEAVE_BEAT_TIMEOUT)
+            except Exception:
+                pass
+        if room in self.store.rooms():
+            self._left_remember(room)   # before the room is forgotten: its name and the relays it lives on
         self.store.forget_room(room)
         prefs = self.settings()["room_prefs"]
         if room in prefs:
             stored = self.store.get("settings") or {}
             stored["room_prefs"] = {k: v for k, v in prefs.items() if k != room}
             self.store.set("settings", stored)
+        self._room_relays.pop(room, None)
+        self._joins = [j for j in self._joins if j["room"] != room]
         self.events.pop(room, None)  # first: from here on _publish_room refuses the room, so work in flight can't post
         # what was waiting on this room can't be answered any more: its offers and queued drafts are dropped
         offers = self.store.get("offers") or {}
@@ -3774,6 +3923,7 @@ class Engine:
         self._dm_defer = [(p, w) for p, w in self._dm_defer if p != pk]
         self._dm_waiting.pop(pk, None)
         self.store.friend_forget(pk)   # and the friendship, any request, and any memory of an ignore
+        self.store.invite_drop(pk)     # and every room invite between us, in both directions
         self._dm_rev += 1
         self._art_forget(pk)       # and their picture and face
         self._bump()
@@ -3863,6 +4013,7 @@ class Engine:
         rid = d.split("/")[-1]
         if rid in RETIRED_ROOMS or room_id_for(ev["pubkey"], str(c.get("nonce", ""))) != rid:
             return None
+        self._note_creator(rid, ev["pubkey"])   # kept off the row: it is only for hiding a room's name in an invite
         return {"id": rid, "name": _name_ok(c.get("name"), "Room"), "about": str(c.get("about", ""))[:200],
                 "interests": tags[:8], "overlap": overlap, "at": ev["created_at"],
                 "joined": rid in self.store.rooms(), "commons": rid == COMMONS_ID}
@@ -5018,46 +5169,87 @@ class Engine:
             return dm.HIDDEN
         now = time.time()
         created = max(0, min(msg["created_at"], int(now)))   # a date ahead of us would pin it to the bottom
+        if msg["type"] == dm.ROOM_INVITE:
+            return self._invite_inbound(wid, ev, src, msg, mine, created, now)
         if msg["type"] != dm.TEXT:
             # A friend event may be a second or so ahead (two actions in one second are dated now and now + 1, to
             # keep their order), so it is clamped a little ahead of now rather than at now.
             at = max(0, min(msg["created_at"], int(now) + DM_CLOCK_SLACK))
             return self._friend_inbound(wid, msg["type"], peer, mine, at, now)
-        # Friends only, and only what they wrote once both of us had said yes: a request carries no words, so
-        # anything a requester wrote before that is dropped, never held, and accepting starts an empty conversation.
-        # A message dated far ahead of now is dropped too (it would claim to come after a yes). My own copy, from my
+        # Friends only, and only what they wrote once both of us had said yes (see `_dm_gate`). My own copy, from my
         # other install, is stored for anyone not hidden: only my key can make one.
         if not mine:
-            row = self.store.friend_get(peer)
-            if msg["created_at"] > now + DM_FUTURE_SKEW:
-                self._dm_handled(wid)
-                return dm.NOT_FRIEND
-            if not row or not (row["mine"] and row["theirs"]):
-                if src == "history" and self._dm_passes and len(self._dm_defer) < DM_DEFER_MAX:
-                    # history arrives in no order: the friend event may still be on its way in this same pass
-                    self._dm_defer.append((peer, ev))
-                    self._dm_handled(wid, record=False)
-                    return dm.NOT_FRIEND
-                if src in ("history", "final"):
-                    # Read back from history, and no friendship (yet): not recorded on disk, so a later pass (one
-                    # starts when a friendship begins) can look again; the date check below keeps out what was
-                    # written before the yes.
-                    self._dm_handled(wid, record=False)
-                    self._dm_note_waiting(peer, wid)
-                    return dm.NOT_FRIEND
-                self._dm_handled(wid)
-                return dm.NOT_FRIEND
-            if src in ("history", "final") and msg["created_at"] < max(row["mine_at"], row["theirs_at"]) - DM_CLOCK_SLACK:
-                # Read back from history (a restart, a second install): dated before we were friends (this time),
-                # so a live install dropped it then. Live, the friend state at arrival decides, whatever the clocks say.
-                self._dm_handled(wid)
-                return dm.NOT_FRIEND
+            verdict = self._dm_gate(wid, ev, src, peer, msg["created_at"], now)
+            if verdict is not None:
+                return verdict
         res = self.store.dm_add(id=msg["id"], peer=peer, sender=sender, text=msg["text"], created_at=created,
                                 arrived_at=now)
         self._dm_handled(wid)
         if res == "added":
             self._dm_rev += 1
             self._bump()
+        return dm.OK
+
+    def _dm_gate(self, wid: str, ev: Any, src: str, peer: str, dated: int, now: float) -> Optional[str]:
+        """Friends only, for what a stranger could send with words or a call to act (a text, a room invite): None
+        when `peer` may be heard, else the verdict (the wrap is already recorded or deferred as it should be). A
+        request carries no words, so anything a requester wrote before both of us said yes is dropped, never held,
+        and accepting starts an empty conversation. A message dated far ahead of now is dropped too (it would claim
+        to come after a yes). `dated` is the rumor's own date; `src` is "history" for a wrap a history pass read,
+        "final" when that pass has ended and looks at it again, anything else (a relay's url) for a live one."""
+        row = self.store.friend_get(peer)
+        if dated > now + DM_FUTURE_SKEW:
+            self._dm_handled(wid)
+            return dm.NOT_FRIEND
+        if not row or not (row["mine"] and row["theirs"]):
+            if src == "history" and self._dm_passes and len(self._dm_defer) < DM_DEFER_MAX:
+                # history arrives in no order: the friend event may still be on its way in this same pass
+                self._dm_defer.append((peer, ev))
+                self._dm_handled(wid, record=False)
+                return dm.NOT_FRIEND
+            if src in ("history", "final"):
+                # Read back from history, and no friendship (yet): not recorded on disk, so a later pass (one
+                # starts when a friendship begins) can look again; the date check below keeps out what was
+                # written before the yes.
+                self._dm_handled(wid, record=False)
+                self._dm_note_waiting(peer, wid)
+                return dm.NOT_FRIEND
+            self._dm_handled(wid)
+            return dm.NOT_FRIEND
+        if src in ("history", "final") and dated < max(row["mine_at"], row["theirs_at"]) - DM_CLOCK_SLACK:
+            # Read back from history (a restart, a second install): dated before we were friends (this time),
+            # so a live install dropped it then. Live, the friend state at arrival decides, whatever the clocks say.
+            self._dm_handled(wid)
+            return dm.NOT_FRIEND
+        return None
+
+    def _invite_inbound(self, wid: str, ev: Any, src: str, msg: dict, mine: bool, at: int, now: float) -> str:
+        """A room invite that arrived in a wrap: from a friend, or my own copy from another install. It carries a
+        room id and up to 3 relay addresses (checked in dm.unwrap) and no words, so all that is ever used is who it
+        is from and which room. Agents never send, receive or see these: one from an agent's key is dropped. From
+        anyone who isn't a friend (both ways yes) it is dropped and recorded handled, by the same rules as a text:
+        live, the friendship at arrival decides; read from history, it must be dated after the friendship began."""
+        peer, room, relays = msg["peer"], msg["room"], msg["relays"]
+        me = self._identity()["person_pk"]
+        if mine:
+            # my own copy, from my other install: shown here as sent. Only my key can make one.
+            res = self.store.invite_add(from_pk=me, peer=peer, room=room, relays=relays, at=at, status="sent", now=now,
+                                        name=self._room_name_known(room, mine_only=True))
+        else:
+            if self._is_agent_key(peer):
+                self._dm_handled(wid)
+                return dm.DROPPED
+            verdict = self._dm_gate(wid, ev, src, peer, msg["created_at"], now)
+            if verdict is not None:
+                return verdict
+            status = "joined" if room in self.store.rooms() else "new"   # already in it: a line in the conversation, no alert
+            res = self.store.invite_add(from_pk=peer, peer=peer, room=room, relays=relays, at=at, status=status, now=now)
+        self._dm_handled(wid)
+        if res == "added":
+            self._dm_rev += 1
+            self._bump()
+            if not mine and status == "new":
+                self._invite_names_ask([room])
         return dm.OK
 
     def _friend_inbound(self, wid: str, kind: str, peer: str, mine: bool, at: int, now: float) -> str:
@@ -5079,6 +5271,8 @@ class Engine:
         self._dm_handled(wid)
         if res != "applied":
             return dm.DROPPED
+        if kind == dm.FRIEND_REMOVE:
+            self.store.invite_drop(peer, only_new=True)   # no longer a friend: nothing of theirs still asks for an answer
         self._dm_rev += 1
         self._bump()
         self._dm_friend_began(peer)
@@ -5212,7 +5406,10 @@ class Engine:
         lists = self.store.friend_lists()
         pend = lists["requests"][:FRIEND_REQUESTS]
         asked = [r for r in self.store.sent_requests() if r["peer"] not in self._hidden]
-        book = self._dm_book({t["peer"] for t in threads} | {r["peer"] for r in pend} | {r["peer"] for r in asked})
+        me = self._identity()["person_pk"]
+        inv = [i for i in self.store.invites_new(me, INVITES_SHOWN) if i["peer"] not in self._hidden]
+        book = self._dm_book({t["peer"] for t in threads} | {r["peer"] for r in pend} | {r["peer"] for r in asked}
+                             | {i["peer"] for i in inv})
         remembered = self.store.friend_names()
         statuses = self._status_map()   # a friend's status from any room we share
         rows, unread = [], 0
@@ -5239,11 +5436,19 @@ class Engine:
         for r in asked:
             info = book.get(r["peer"]) or {"name": "", "flag": None}
             sent.append({"pk": r["peer"], "name": self._dm_label(r["peer"], info), "impostor": bool(info["flag"]), "ts": r["at"]})
+        # invites waiting for me: who (by the name rooms know, or a short key: never anything they typed) and which room
+        invites = []
+        for i in inv:
+            info = book.get(i["peer"]) or {"name": "", "flag": None}
+            invites.append({"pk": i["peer"], "name": self._dm_label(i["peer"], info), "impostor": bool(info["flag"]),
+                            "room": i["room"], "room_name": self._room_name_known(i["room"]) or "a room", "ts": i["at"],
+                            "code": self._code_of(i["room"], i["relays"])})
+        self._invite_names_ask([i["room"] for i in inv])
         rel = {pk: "friend" for pk in lists["friends"]}
         rel.update({pk: "sent" for pk in lists["sent"]})
         rel.update({r["peer"]: "request" for r in lists["requests"]})
         return {"threads": rows, "unread": unread, "requests": len(lists["requests"]), "pending": pending, "sent": sent, "rel": rel,
-                "rev": self._dm_rev}
+                "invites": invites, "rev": self._dm_rev}
 
     def dm_thread(self, pk: str, read: bool = True, before: str = "") -> dict:
         """One conversation for the DM view. `read` marks it read (the UI passes false when it isn't on screen).
@@ -5268,6 +5473,20 @@ class Engine:
             rows = allrows[-DM_THREAD_MESSAGES:]
             earlier = len(allrows) > DM_THREAD_MESSAGES
         out = []
+        # the conversation's room invite lines go in among the messages they were sent between (nothing of the
+        # sender's own is in them: the name is the room creator's, looked up here, or "a room")
+        at_i = next((n for n, m in enumerate(allrows) if m["id"] == before), None) if before else None
+        if not (before and at_i is None):
+            inv_lo = rows[0]["created_at"] if rows and earlier else 0
+            inv_hi = allrows[at_i]["created_at"] if before else float("inf")
+            for inv in self.store.invites_with(pk, INVITE_LINES):
+                if inv_lo <= inv["at"] < inv_hi:
+                    sent = inv["from_pk"] == ident["person_pk"]
+                    out.append({"id": f"inv:{inv['from_pk'][:12]}:{inv['room']}", "ts": inv["at"], "t": "invite", "mine": sent,
+                                "name": "You" if sent else self._dm_label(pk, info), "room": inv["room"],
+                                "room_name": (inv["name"] if sent else "") or self._room_name_known(inv["room"]) or "a room",
+                                "status": inv["status"], "in_room": inv["room"] in self.store.rooms(),
+                                "code": self._code_of(inv["room"], inv["relays"])})
         for m in rows:
             mine = m["sender"] == ident["person_pk"]
             item = {"id": m["id"], "ts": m["created_at"], "t": "msg", "pk": m["sender"], "role": "person", "mine": mine,
@@ -5279,6 +5498,7 @@ class Engine:
                 if d != "sent":
                     item["delivery"] = d
             out.append(item)
+        out.sort(key=lambda m: m["ts"])   # stable: messages keep their own order
         return {"pk": pk, "name": self._dm_label(pk, info), "impostor": bool(info["flag"]), "friend": rel == "friend",
                 "rel": rel, "hidden": pk in self._hidden, "messages": out, "earlier": earlier}
 
@@ -5440,6 +5660,7 @@ class Engine:
             raise ValueError(f"Slow down: Ninsei sends at most {DM_SEND_PER_MIN} private messages a minute.")
         at = self._mine_next(pk)
         self.store.friend_event(pk, side="mine", action="remove", at=at)
+        self.store.invite_drop(pk, only_new=True)   # their invites that were waiting for me go with the friendship
         self._friend_say(pk, dm.FRIEND_REMOVE, at)
         self._dm_rev += 1
         self._bump()
@@ -5452,9 +5673,360 @@ class Engine:
         if not re.fullmatch(r"[0-9a-f]{64}", pk):
             raise ValueError("that isn't a person's key")
         n = self.store.dm_forget(pk)
+        self.store.invite_drop_read(pk)   # the conversation's invite lines go with it; an invite still waiting stays
         self._dm_rev += 1
         self._bump()
         return {"deleted": n}
+
+    # ============================================================================================
+    # room invites and room links
+    #
+    # An invite is a private message to a friend (see dm.py): the room's id and up to 3 relay hosts, no words. A code
+    # carries the same hosts. Connecting to a relay shows it your IP address, so nothing here connects to a relay a
+    # code or an invite names: the Join preview lists the ones I don't use and a press adds them.
+    # ============================================================================================
+    @staticmethod
+    def _relay_key(url: str) -> str:
+        return str(url).strip().lower().rstrip("/")
+
+    def _note_room_relay(self, room: str, src: Any) -> None:
+        """Remember which relay a room's events or metadata came from (live or replayed by a subscription, not a
+        one-shot history pull or my own post), so a code can name relays that really hold the room."""
+        if not isinstance(src, str) or not src.startswith("wss://") or room not in self.events:
+            return
+        seen = self._room_relays.setdefault(room, {})
+        seen[src] = time.time()
+        while len(seen) > ROOM_RELAYS_KEPT:
+            seen.pop(min(seen, key=seen.get))
+
+    def _share_hosts(self, room: str) -> list[str]:
+        """Up to 3 relay hosts for a room's code: the ones its metadata or recent history came from (the most recent
+        first) while they are still on my list, then the rest of my list in its order. Only plain `wss://host`
+        relays can be written into a code, so one with a path, or `ws://`, is skipped."""
+        mine: list[str] = []
+        for u in self.relays():
+            h = codes.relay_url_host(u)
+            if h and h not in mine:
+                mine.append(h)
+        seen = self._room_relays.get(room) or {}
+        first = [h for h in (codes.relay_url_host(u) for u in sorted(seen, key=seen.get, reverse=True)) if h and h in mine]
+        return codes.clean_hosts(first + mine)
+
+    def _room_code(self, room: str) -> str:
+        """`ninsei:<room>@host,host,host`: what Share code copies (the hosts are left off when there are none)."""
+        hosts = self._share_hosts(room)
+        return f"ninsei:{room}" + (("@" + ",".join(hosts)) if hosts else "")
+
+    @staticmethod
+    def _code_of(room: str, urls: Any) -> str:
+        """The code for a room and the relay addresses an invite carried (already checked when it was stored)."""
+        hosts = codes.clean_hosts(h for h in (codes.relay_url_host(u) for u in (urls if isinstance(urls, list) else [])) if h)
+        return f"ninsei:{room}" + (("@" + ",".join(hosts)) if hosts else "")
+
+    def _room_name_known(self, room: str, mine_only: bool = False) -> str:
+        """The name of a room as far as this install knows it: from a room I'm in, else (unless `mine_only`) the
+        creator-signed metadata a lookup or the cached Lobby and Browse lists found. "" when not known (shown as "a room"),
+        and when the room's creator is someone I hid: a name that person chose doesn't reach the page, even from a cache
+        made before I hid them."""
+        meta = self.store.rooms().get(room)
+        if meta and meta.get("name"):
+            return str(meta["name"])
+        if mine_only or self._creators.get(room) in self._hidden:
+            return ""
+        if self._invite_names.get(room):
+            return self._invite_names[room]
+        for r in list((self.lobby or {}).get("rooms", [])) + list((self._browse or {}).get("rooms", [])):
+            if r.get("id") == room and r.get("name"):
+                return str(r["name"])
+        return ""
+
+    def _note_creator(self, room: str, creator: Any) -> None:
+        """Remember who made a room (the id commits to its creator, so a lookup's metadata proves it)."""
+        if isinstance(creator, str) and creator:
+            self._creators.pop(room, None)
+            self._creators[room] = creator
+            while len(self._creators) > CREATORS_KEPT:
+                self._creators.pop(next(iter(self._creators)))
+
+    def _remember_invite_name(self, room: str, name: str, creator: Any = None) -> None:
+        """Keep a looked-up room name (at most INVITE_NAMES_KEPT, oldest out), from any of the paths that find one."""
+        self._invite_names.pop(room, None)
+        self._invite_names[room] = name
+        self._note_creator(room, creator)
+        while len(self._invite_names) > INVITE_NAMES_KEPT:
+            self._invite_names.pop(next(iter(self._invite_names)))
+
+    def _invite_names_ask(self, rooms: list[str]) -> None:
+        """Look up the names of the rooms I've been invited to and don't know. The rooms asked about are the ones whose
+        invite is still waiting for me (an evicted or answered one is not worth a query), at most one try per room per
+        INVITE_NAME_GAP seconds; the rooms waiting are asked in one query of up to INVITE_NAMES_PER_ASK, and the lookups
+        in all are limited to INVITE_NAME_QUERIES_PER_MIN a minute whoever the invites came from: past that the rooms
+        wait for a slot (`_invite_names_flush`). Called when an invite arrives and from the sidebar's summary; a no-op
+        when nothing is missing or there is no loop to run on."""
+        if not self.pool or not hasattr(self.pool, "query"):
+            return
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        for r in rooms:
+            if r not in self._invite_want and len(self._invite_want) < 4 * INVITES_MAX:
+                self._invite_want[r] = None
+        self._invite_names_flush()
+
+    def _invite_names_flush(self) -> None:
+        """Ask for the names of the rooms waiting, if the limit allows, else wait for a slot."""
+        now = time.monotonic()
+        self._invite_queries = [t for t in self._invite_queries if now - t < 60]
+        live = {i["room"] for i in self.store.invites_new(self._identity()["person_pk"], INVITES_MAX) if i["peer"] not in self._hidden}
+        for r in list(self._invite_want):
+            if r not in live or self._room_name_known(r) or now - self._invite_asked.get(r, -1e9) < INVITE_NAME_GAP:
+                del self._invite_want[r]   # gone, known, or tried a moment ago (the summary asks again later)
+        if not self._invite_want:
+            return
+        if len(self._invite_queries) >= INVITE_NAME_QUERIES_PER_MIN:
+            self._invite_names_wake(self._invite_queries[0] + 60 - now)
+            return
+        todo = list(self._invite_want)[:INVITE_NAMES_PER_ASK]
+        for r in todo:
+            del self._invite_want[r]
+            self._invite_asked[r] = now
+        self._invite_queries.append(now)
+        while len(self._invite_asked) > 200:
+            self._invite_asked.pop(next(iter(self._invite_asked)))
+        self._spawn(self._invite_lookup(todo))
+        if self._invite_want:
+            self._invite_names_wake(self._invite_queries[0] + 60 - now)
+
+    def _invite_names_wake(self, delay: float) -> None:
+        """Come back when the limit frees a slot (one timer at a time; a timer, not a task, so nothing waits on it)."""
+        if self._invite_wake is None:
+            self._invite_wake = asyncio.get_running_loop().call_later(max(0.0, delay) + 0.05, self._invite_names_woke)
+
+    def _invite_names_woke(self) -> None:
+        self._invite_wake = None   # this wait is over: the flush may start the next one
+        try:
+            self._invite_names_flush()
+        except Exception:
+            log.exception("ninsei: asking for invited rooms' names failed")
+
+    async def _invite_lookup(self, rooms: list[str]) -> None:
+        try:
+            evs, _ = await self._query([{"kinds": [KIND_META], "#d": [f"ninsei/room/{r}" for r in rooms],
+                                         "limit": 20 * len(rooms)}], timeout=4)
+        except Exception:
+            log.exception("ninsei: looking up an invited room's name failed")
+            return
+        best: dict[str, dict] = {}
+        for ev in evs:
+            if not isinstance(ev, dict) or ev.get("kind") != KIND_META or ev.get("pubkey") in self._hidden:
+                continue
+            room = ((nostr.tag_values(ev, "d") or [""])[0]).split("/")[-1]
+            meta = self._room_meta_from(ev, room) if room in rooms else None
+            if meta and meta["at"] >= best.get(room, {}).get("at", -1):
+                best[room] = meta
+        for room, meta in best.items():
+            self._remember_invite_name(room, meta["name"], meta["creator"])
+        if best:
+            self._dm_rev += 1
+            self._bump()
+
+    def _unknown_relays(self, relays: list[str]) -> list[str]:
+        """The relays of a code or invite that aren't on my list."""
+        mine = {self._relay_key(u) for u in self.relays()}
+        return [u for u in relays if self._relay_key(u) not in mine]
+
+    async def room_preview(self, code: str) -> dict:
+        """What a room is, before I join it: a query of my relays for its metadata (creator-signed, the same check as
+        `_room_meta_from`) and for its day's activity. No join, no subscription kept, nothing published, and nothing
+        about it is stored. Returns {id, found, name, about, interests, msgs, talkers, last, joined, unknown_relays,
+        reached}: `unknown_relays` are the code's hosts that aren't on my relay list (the page offers them, and
+        nothing connects to them until it is pressed); `reached` is false when no relay answered, so "found: false"
+        isn't read as "there is no such room". One query per room per PREVIEW_COOLDOWN seconds: a repeat inside it
+        returns the last answer. No names of people: the names in a room I haven't joined aren't checked."""
+        room, _event, relays = parse_room_link(code)
+        if not room:
+            raise ValueError("that room code doesn't look right")
+        cur = self._previews.get(room)
+        if cur is None or time.monotonic() - cur[0] >= PREVIEW_COOLDOWN:
+            cur = (time.monotonic(), asyncio.ensure_future(self._preview_query(room, relays)))
+            self._previews[room] = cur
+            while len(self._previews) > PREVIEWS_KEPT:
+                self._previews.pop(next(iter(self._previews)))
+        out = await asyncio.shield(cur[1])
+        return {**out, "joined": room in self.store.rooms(), "unknown_relays": self._unknown_relays(relays)}
+
+    async def _preview_query(self, room: str, relays: list[str]) -> dict:
+        st = getattr(self.pool, "status", None) or {}
+        mine = {self._relay_key(u): u for u in self.relays()}
+        # relays I just added (the preview's "Add and look again") may still be connecting: give them a moment
+        wait = [mine[k] for k in (self._relay_key(u) for u in relays) if k in mine and mine[k] in st]
+        end = time.monotonic() + PREVIEW_WAIT_RELAYS
+        while time.monotonic() < end and any(getattr(st[u], "state", "") in ("idle", "connecting") for u in wait):
+            await asyncio.sleep(0.05)
+        (evs, answered), act = await asyncio.gather(
+            self._query([{"kinds": [KIND_META], "#d": [f"ninsei/room/{room}"], "limit": 50}], timeout=4),
+            self._room_activity([room]))
+        meta = None
+        for ev in evs:
+            if not isinstance(ev, dict) or ev.get("pubkey") in self._hidden:
+                continue
+            m = self._room_meta_from(ev, room)
+            if m and (meta is None or m["at"] >= meta["at"]):
+                meta = m
+        a = act.get(room, {})
+        if meta is None and room in self.store.rooms():
+            meta = self.store.rooms()[room]   # offline, or the relays dropped it: what I already have
+        if meta is not None:
+            self._remember_invite_name(room, meta.get("name") or "", meta.get("creator"))   # the same lookup serves an invite to this room
+        return {"id": room, "found": meta is not None or a.get("msgs", 0) > 0, "reached": bool(answered),
+                "name": (meta or {}).get("name") or "Room " + room[:4], "about": str((meta or {}).get("about") or "")[:200],
+                "interests": [str(x)[:24] for x in ((meta or {}).get("interests") or [])][:8],
+                "msgs": a.get("msgs", 0), "talkers": a.get("talkers", 0), "last": a.get("last", 0)}
+
+    async def add_code_relays(self, code: str) -> dict:
+        """The Join preview's "Add and look again": add the code's relay hosts that I don't use to my relay list (the
+        same setting as Settings, Relays) and connect to them. Only ever on this call: reading a code or a preview
+        changes nothing. Refused when I have no relays set (that is offline on purpose) or the list would pass 8."""
+        room, _event, relays = parse_room_link(code)
+        if not room:
+            raise ValueError("that room code doesn't look right")
+        mine = self.relays()
+        new = self._unknown_relays(relays)
+        if not new:
+            return {"added": [], "relays": mine}
+        if not mine:
+            raise ValueError("You have no relays set, so Ninsei is offline. Add relays in Settings, Relays.")
+        if len(mine) + len(new) > 8:
+            raise ValueError(f"You use {len(mine)} relays and Ninsei takes up to 8. Remove one in Settings, Relays, then try again.")
+        await self._check_public_relays(new)
+        self.save_settings({"relays": list(mine) + new}, code_added=new)
+        await self.reconnect()
+        self._previews.pop(room, None)   # the next preview asks again, including the new relays
+        self._bump()
+        return {"added": new, "relays": self.relays()}
+
+    async def _check_public_relays(self, urls: list[str]) -> None:
+        """A relay a code or an invite names is added only if every address its host resolves to is public. The name
+        rules in codes.py can't see that a public-looking name points at 127.0.0.1, 10.x or 169.254.x (a stranger can
+        make one), and Ninsei would then connect to the owner's own network. Resolved here, with a short bound, before
+        anything is saved; a host that won't resolve isn't added either. A relay added this way is recorded in
+        `code_relays` and the pool resolves it again before every connection (`_dial_check`), so a name that later points
+        somewhere private is not dialled. Relays typed in Settings are never checked: a local relay there is legitimate."""
+        async def one(url: str) -> None:
+            host, _, port = url[6:].partition(":")
+            try:
+                addrs = await asyncio.wait_for(_resolve(host, int(port or 443)), RESOLVE_TIMEOUT)
+            except (OSError, asyncio.TimeoutError, ValueError):
+                raise ValueError(f"Ninsei couldn't find {host}, so it wasn't added. Check the code, or add the relay in Settings, Relays.") from None
+            if not addrs or not all(_public_address(a) for a in addrs):
+                raise ValueError("That relay points at a private network address, so Ninsei won't add it.")
+        await asyncio.gather(*(one(u) for u in urls))
+
+    async def room_invite(self, room: str, friends: Any) -> dict:
+        """Invite friends to a room I'm in: one private invite each (two wraps: theirs and my copy, like a message,
+        and each counts against DM_SEND_PER_MIN), carrying only the room's id and up to 3 of its relay hosts. 1 to
+        INVITE_FRIENDS_PER_CALL friends a call, friends only, never someone I hid. Nothing is typed into an invite."""
+        room = str(room or "").lower()
+        meta = self.store.rooms().get(room)
+        if meta is None:
+            raise ValueError("You can only invite people to a room you are in.")
+        if not isinstance(friends, (list, tuple)):
+            raise ValueError("pick the friends to invite")
+        ident = self._identity()
+        pks = list(dict.fromkeys(str(x or "").lower() for x in friends))
+        if not 1 <= len(pks) <= INVITE_FRIENDS_PER_CALL:
+            raise ValueError(f"Pick between 1 and {INVITE_FRIENDS_PER_CALL} friends.")
+        for pk in pks:
+            if not re.fullmatch(r"[0-9a-f]{64}", pk):
+                raise ValueError("that isn't a person's key")
+            if pk == ident["person_pk"]:
+                raise ValueError("you can't invite yourself")
+            if pk in self._hidden:
+                raise ValueError("You hid them. Unhide them in Settings to invite them.")
+            if self.store.friend_rel(pk) != "friend" or self._is_agent_key(pk):
+                raise ValueError("You can invite people once you are friends.")
+        if not self._rate_ok("dm_send", DM_SEND_PER_MIN, 60, n=len(pks)):
+            raise ValueError(f"Slow down: Ninsei sends at most {DM_SEND_PER_MIN} private messages a minute.")
+        urls = [codes.host_url(h) for h in self._share_hosts(room)]
+        name = str(meta.get("name") or "")
+        for pk in pks:
+            now = max(int(time.time()), self.store.dm_deleted_before(pk) + 1)
+            rumor = dm.make_invite_rumor(ident["person_pk"], pk, room, urls, now)
+            to_them = dm.wrap_for(ident["person_sk"], pk, rumor)
+            to_me = dm.wrap_for(ident["person_sk"], ident["person_pk"], rumor)
+            # recorded before it is sent, like any durable event; a second invite to the same room later replaces the line
+            self.store.invite_add(from_pk=ident["person_pk"], peer=pk, room=room, relays=urls, at=max(now, int(time.time())),
+                                  status="sent", now=time.time(), name=name)
+            self._dm_publish(to_them, to_me)
+        self._dm_rev += 1
+        self._bump()
+        return {"sent": len(pks)}
+
+    async def invite_ignore(self, pk: str, room: str) -> dict:
+        """Ignore a waiting invite: local and silent, the sender isn't told. (Joining the room, any way, marks it joined.)"""
+        pk = str(pk or "").lower()
+        if not re.fullmatch(r"[0-9a-f]{64}", pk) or not self.store.invite_ignore(pk, str(room or "").lower()):
+            raise ValueError("that invite isn't here")
+        self._dm_rev += 1
+        self._bump()
+        return {"ok": True}
+
+    def _join_label(self, room: str, pk: str, claimed: Any) -> str:
+        """What to call someone who just joined: the name their join claims, unless it is one another key holds in the
+        room, or mine, or a friend's (look-alikes included): then the short key, as every other view does."""
+        name = _name_ok(claimed, "")
+        if not name:
+            return _short(pk)
+        if self._flag(self._who(room), pk, name, None, "", True):
+            return _short(pk)
+        sk = skeleton(name)
+        taken = {skeleton(n): f for f, n in self.store.friend_names().items() if skeleton(n)}
+        if sk == skeleton(self.settings()["display_name"]) or taken.get(sk, pk) != pk:
+            return _short(pk)
+        return name
+
+    def _note_join(self, room: str, ev: dict, c: dict, src: Any, created: int, now: float) -> None:
+        """A person's live join in a room I made: noted for the page's "Sam joined <room>" toast (it toasts each id once,
+        and not for a muted room). Not history, not an agent, not me, not a hidden person (dropped earlier), and
+        bounded: at most 30 joins a minute are looked at and one person is noted once while they are listed. Never a
+        desktop notification, and nothing about it reaches an agent."""
+        me = self._identity()["person_pk"]
+        if ev["pubkey"] == me or src in ("history", "local") or created < now - FRESH_WINDOW:
+            return
+        if (self.store.rooms().get(room) or {}).get("creator") != me:
+            return
+        eosed = getattr(self.pool, "eosed", None)
+        if eosed is not None and isinstance(src, str) and src.startswith(("ws://", "wss://")) \
+                and not any(eosed(sid, src) for sid in self._room_subs):
+            return   # that relay is still handing over what it stored: history, not a live join
+        self._joins = [j for j in self._joins if j["ts"] >= now - JOIN_TOAST_AGE]
+        if any(j["pk"] == ev["pubkey"] and j["room"] == room for j in self._joins) or not self._rate_ok("join_note", 30, 60):
+            return
+        self._joins.append({"id": ev["id"], "room": room, "pk": ev["pubkey"], "ts": int(created),
+                            "name": self._join_label(room, ev["pubkey"], c.get("name"))})
+        del self._joins[:-JOIN_TOASTS_KEPT]
+
+    def _left_remember(self, room: str) -> None:
+        """Keep the last LEFT_ROOMS_KEPT rooms I left, so "Rejoin" can offer them: id, name and the code with its relays."""
+        meta = self.store.rooms().get(room) or {}
+        keep = [r for r in (self.store.get("left_rooms") or []) if isinstance(r, dict) and r.get("id") != room]
+        keep.insert(0, {"id": room, "name": str(meta.get("name") or "")[:60], "code": self._room_code(room)})
+        self.store.set("left_rooms", keep[:LEFT_ROOMS_KEPT])
+
+    def _left_forget(self, room: str) -> None:
+        keep = [r for r in (self.store.get("left_rooms") or []) if isinstance(r, dict)]
+        if any(r.get("id") == room for r in keep):
+            self.store.set("left_rooms", [r for r in keep if r.get("id") != room])
+
+    def left_rooms(self) -> list[dict]:
+        out = []
+        for r in self.store.get("left_rooms") or []:
+            if isinstance(r, dict) and dm.valid_room_id(r.get("id")):
+                code = parse_room_link(str(r.get("code") or ""))
+                out.append({"id": r["id"], "name": _name_ok(r.get("name"), "a room"),
+                            "code": f"ninsei:{r['id']}" + (("@" + ",".join(h[6:] for h in code[2])) if code[2] else "")})
+        return out[:LEFT_ROOMS_KEPT]
 
     # ============================================================================================
     # the view the UI renders
@@ -5920,12 +6492,17 @@ class Engine:
             "hidden": self.hidden_people(),
             "dms": self.dm_summary(),
             "commons": COMMONS_ID,
+            # live joins of rooms I made (the page toasts each once, unless the room is muted) and the rooms I left
+            "joins": [{"id": j["id"], "room": j["room"], "room_name": self.room_name(j["room"]), "name": j["name"], "ts": j["ts"]}
+                      for j in self._joins if j["ts"] >= now - JOIN_TOAST_AGE and j["room"] in self.store.rooms()],
+            "left": self.left_rooms(),
         }
         members: list[dict] = []
         if room and room in self.events:
             members = self.members(room)
             shown, earlier = self.messages_view(room)
             snap["room"] = {"id": room, **self.room_meta(room), "members": members,
+                            "code": self._room_code(room), "invite_link": INVITE_URL + self._room_code(room)[len("ninsei:"):],
                             "messages": shown, "earlier": earlier, "game": self._game_to_show(room),
                             "start_error": self._start_error_view(room),
                             "typing": self.typing_view(room)}

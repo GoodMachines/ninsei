@@ -7,6 +7,7 @@ import re
 from test_audit_review import SETTINGS_JS
 from test_audit_ui import APP, CORE, ROOT, SETUP, STYLE, PARTS, const, fn, needs_node, run, src
 from test_import_profile_ui import ONBOARD_JS, PICKER_JS
+from test_invites_ui import HOSTS_JS
 
 FACE = src("10_face.js")
 LOOK = src("32_look.js")
@@ -263,8 +264,9 @@ out([empty, st()])
 
 @needs_node
 def test_join_says_why_it_waits_and_enter_does_nothing_without_a_code():
-    r = run(fn(APP, "JoinDialog") + """
-function Modal() {}
+    r = run(fn(APP, "JoinDialog") + HOSTS_JS + """
+function Modal() {}; function Chips() {}
+globalThis.P = { setTimeout: () => () => {}, rest: async () => ({}) }   // the preview asks only for a code that could name a room
 let posts = 0
 const store = { post: async () => { posts++; return { id: 'r' } } }
 const root = mount(JoinDialog, { store, onClose() {}, onDone() {} })

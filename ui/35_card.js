@@ -297,7 +297,7 @@ function ProfileLayer(props) {
   const close = useCallback(() => { shown.current = false; setWho(null) }, [])
   return jsxs(ProfileContext.Provider, { value: open, children: [
     props.children,
-    who && jsx(ProfileSheet, { who, room: props.room, snap: props.snap, store: props.store, openSettings: props.openSettings, openDm: props.openDm,
+    who && jsx(ProfileSheet, { who, room: props.room, snap: props.snap, store: props.store, openSettings: props.openSettings, openDm: props.openDm, openInvite: props.openInvite,
       opener, onClose: close, onOpen: open, key: who.pk })
   ] })
 }
@@ -418,6 +418,12 @@ function ProfileSheet(props) {
     props.onClose()
     props.openDm(act.message.pk)
   }
+  const inviteThem = () => {
+    if (!act.message || !props.openInvite) return
+    keepFocus.current = true
+    props.onClose()
+    props.openInvite(act.message.pk, act.message.name)
+  }
   const hideThem = async () => {
     if (!act.hide || !props.store) return
     try {
@@ -440,6 +446,8 @@ function ProfileSheet(props) {
         saveBtn, copyBtn,
         act.message && jsx(FriendAction, { rel: ((snap.dms || {}).rel || {})[act.message.pk] || '', name: act.message.name, pk: act.message.pk,
           store: props.store, onMessage: props.openDm ? messageThem : null }, 'friend'),
+        act.message && props.openInvite && ((snap.dms || {}).rel || {})[act.message.pk] === 'friend' && jsx(K.Button, { variant: 'secondary', size: 'sm', onClick: inviteThem,
+          children: [jsx(K.Icon, { name: 'organization', size: 13 }, 'i'), 'Invite to a room'] }, 'invite'),
         act.edit && jsx(K.Button, { variant: 'ghost', size: 'sm', onClick: editFace, children: [jsx(K.Icon, { name: 'edit', size: 13 }, 'i'), 'Edit face'] }, 'edit'),
         act.hide && props.store && jsx(K.Button, { variant: 'ghost', size: 'sm', onClick: hideThem, children: [jsx(K.Icon, { name: 'eye-closed', size: 13 }, 'i'),
           jsx('span', { className: 'h-trunc', style: { maxWidth: 190 }, children: 'Hide ' + act.hide.name }, 't')] }, 'hide')

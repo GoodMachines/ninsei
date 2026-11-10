@@ -16,6 +16,12 @@ FIELDS = ["text", "name", "face", "gid", "n", "q", "options", "ends_at", "secs",
           "html", "bytes", "seq", "at", "state", "budget", "prio", "trigger", "to", "reply", "system", "aborted", "target", "emoji", "on"]
 
 
+INVITE_TAGS = [["relay", "wss://nos.lol"], ["relay", "wss://relay.damus.io:443"], ["relay", "wss://127.0.0.1"], ["relay", "wss://localhost"],
+               ["relay", "ws://nos.lol"], ["relay", "wss://" + "a" * 300 + ".io"], ["relay", "wss://nos.lol", "x"], ["relay"], ["relay", 5],
+               ["h", "short"], ["h", "G" * 16], ["h", "0" * 25], ["subject", "FREE MONEY"], ["name", "Totally Real"], ["e", "y"], ["p", "x"],
+               ["relay", "wss://a.io"], ["relay", "wss://b.io"], ["relay", "wss://c.io"], ["relay", "wss://d.io"]]
+
+
 def junk(rng, depth=0):
     makers = [lambda: None, lambda: True, lambda: rng.randint(-5, 10 ** 12), lambda: rng.random() * 1e9,
               lambda: "x" * rng.randint(0, 300), lambda: rng.choice(["", "maya", "0" * 64, "<b>hi</b>"])]
@@ -142,6 +148,14 @@ async def test_private_messages_survive_hostile_gift_wraps(world):
         rumor["content"], rumor["tags"] = rng.choice(["", "x" * 3000, "@Ada \x00"]), rumor["tags"] + rng.choice([[], [["ninsei", "x"]], [["e", "y"]]])
         rumor["id"] = nostr.event_id(rumor)
         await run(maya, maya._dm_process, dm.wrap_for(sk, ident["person_pk"], rumor))
+        # room invites too: a rumor with the invite mark and hostile tags (bad ids, too many relays, IP literals, text in
+        # the content and in odd tags), from friends and from strangers; whatever is kept is a room id and relay hosts only
+        inv = dm.make_rumor(nostr.pubkey(sk), ident["person_pk"], "", friend=dm.FRIEND_REQUEST)
+        inv["tags"] = [["p", ident["person_pk"]], ["ninsei", rng.choice([dm.ROOM_INVITE] * 4 + ["room_invite_x"])]] + \
+            [list(t) for t in rng.sample(INVITE_TAGS, rng.randint(0, 5))] + [["h", "%016x" % rng.getrandbits(64)]] * rng.randint(0, 2)
+        inv["content"] = rng.choice(["", "x" * 3000, "JOIN @Ada \x00"])
+        inv["id"] = nostr.event_id(inv)
+        await run(maya, maya._dm_process, dm.wrap_for(sk, ident["person_pk"], inv), rng.choice(["relay", "history", "final"]))
         text = rng.choice(["hi", "x" * rng.randint(1, 3999), "<b>hi</b>\u202e", "\x00\x01", "@Ada @Maya", "😀" * 50, "  ", ""])
         if text.strip():
             await run(maya, maya._dm_process, dm.wrap_for(sk, ident["person_pk"], dm.make_rumor(nostr.pubkey(sk), ident["person_pk"], text)))
@@ -153,6 +167,11 @@ async def test_private_messages_survive_hostile_gift_wraps(world):
     snap, _cpu = await asyncio.wrap_future(maya.call(_timed(maya.snapshot)))
     json.dumps(snap)
     d = read(maya, maya.dm_summary)
+    assert len(d["invites"]) <= 20 and all(set(i) == {"pk", "name", "impostor", "room", "room_name", "ts", "code"} and len(i["room"]) in range(16, 25)
+                                           for i in d["invites"])
+    rows = maya.store._db.execute("SELECT relays, room FROM room_invites").fetchall()
+    assert len(rows) <= 50 and all(len(json.loads(r)) <= 3 and all(u.startswith("wss://") for u in json.loads(r)) for r, _ in rows)
+    assert "JOIN" not in json.dumps([snap, rows])                                   # no free text got anywhere
     assert d["threads"] and all(len(t["pk"]) == 64 for t in d["threads"])
     assert all(len(p["pk"]) == 64 and set(p) == {"pk", "name", "impostor", "ts"} for p in d["pending"]) and d["requests"] <= 50
     for t in d["threads"][:5]:
@@ -174,3 +193,23 @@ def test_invisible_characters_never_change_a_name():
         padded = "".join(padded)
         assert skeleton(padded) == skeleton(name), repr(padded)
         assert _name_ok(padded, "") == name, repr(padded)
+
+
+def test_codes_and_hosts_survive_hostile_text():
+    """Whatever is pasted as a code, and whatever a rumor says is a relay: never an error, always bounded, and only
+    hosts that pass the rules come out (no IP literal, no localhost, no scheme but wss, at most 3)."""
+    from ninsei_engine import codes
+    from ninsei_engine.engine import parse_room_link
+    rng = random.Random(4242)
+    atoms = ["ninsei:", "0123456789abcdef", "@", ",", "#", "nos.lol", "127.0.0.1", "localhost", "[::1]", ":443", ":", "wss://", "ws://", "a.", ".io",
+             "\u202e", "\x00", " ", "x" * 300, "A" * 30, "\n", "%", "..", "-", "0x7f.1", "\u00f6"]
+    for _ in range(3000):
+        text = "".join(rng.choice(atoms) for _ in range(rng.randint(0, 14)))
+        room, ev, relays = parse_room_link(text)
+        assert len(room) <= 24 and (ev == "" or len(ev) == 64) and len(relays) <= 3
+        for u in relays:
+            assert u.startswith("wss://") and codes.clean_host(u[6:]) == u[6:] and len(u) <= 6 + 253
+        assert codes.clean_host(text) in (None, text.lower())
+        tags = [rng.choice([["relay", "wss://" + text], ["relay", text], ["relay"], ["h", text]]) for _ in range(rng.randint(0, 5))]
+        out = codes.clean_relay_tags(tags)
+        assert out is None or (len(out) <= 3 and all(codes.relay_url_host(u) for u in out))

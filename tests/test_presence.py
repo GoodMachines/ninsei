@@ -672,3 +672,45 @@ async def test_do_not_disturb_still_counts_as_here(bare):
 def test_the_page_counts_do_not_disturb_as_here_too():
     from test_audit_ui import CORE
     assert "k === 'dnd'" in CORE.split("const isHere", 1)[1].split("\n", 1)[0]
+
+
+# --- leaving a room ---------------------------------------------------------------------------------------------
+
+async def test_leaving_sends_a_last_beat_and_the_room_drops_that_agent_at_once(bare):
+    from test_audit_engine_reliability import RoomPool
+    e, _ = bare()
+    e.pool = RoomPool()
+    # the leaver's side: one beat marked gone, to the room it was in, before the room is forgotten
+    await e.leave_room(ROOM)
+    await settle(e)
+    last = [ev for ev in e.pool.sent if ev["kind"] == KIND_LIVE]
+    assert [json.loads(ev["content"])["state"] for ev in last] == [eng_mod.GONE_STATE]
+    assert ["h", ROOM] in last[0]["tags"] and json.loads(last[0]["content"])["person"] == "away"
+    assert ROOM not in e.store.rooms()
+
+
+async def test_a_gone_beat_removes_that_agent_and_its_person_from_who_is_here(bare):
+    e, _ = bare()
+    bo = Key("bo")
+    await e._on_event(bo.person({"t": "join", "name": "Bo"}), "relay")
+    await e._on_event(beat(bo, "present"), "relay")
+    here = lambda: {p["pk"]: p["online"] for p in e.members(ROOM)}
+    assert here()[bo.ppk] is True and e._here_in(ROOM) >= 2
+    await e._on_event(beat(bo, "away", state=eng_mod.GONE_STATE), "relay")
+    assert bo.apk not in e.presence.get(ROOM, {})
+    assert here()[bo.ppk] is False                         # still listed (they joined once), but not here
+    assert e._status_map(ROOM).get(bo.ppk) is None
+
+
+async def test_a_beat_written_before_the_goodbye_but_delivered_after_it_does_not_bring_them_back(bare):
+    e, _ = bare()
+    bo = Key("bo")
+    await e._on_event(bo.person({"t": "join", "name": "Bo"}), "relay")
+    now = int(time.time())
+    early = beat(bo, "present", at=now - 2)
+    await e._on_event(beat(bo, "present", at=now - 4), "relay")
+    await e._on_event(beat(bo, "away", state=eng_mod.GONE_STATE, at=now - 1), "relay")
+    await e._on_event(early, "relay")                      # a slow relay hands over an older beat afterwards
+    assert bo.apk not in e.presence.get(ROOM, {})
+    await e._on_event(beat(bo, "present", at=now), "relay")   # a newer one: they came back
+    assert bo.apk in e.presence[ROOM]

@@ -66,6 +66,16 @@ CREATE TABLE IF NOT EXISTS dm_friends (
 CREATE TABLE IF NOT EXISTS dm_deleted (peer TEXT PRIMARY KEY, before INTEGER NOT NULL);
 -- Gift wraps already opened (or refused): a restart or a relay replaying history costs one lookup, not a decryption.
 CREATE TABLE IF NOT EXISTS dm_wraps (id TEXT PRIMARY KEY, at REAL NOT NULL);
+-- Room invites between friends, both ways: one row per (sender, conversation partner, room), the latest wins.
+-- `from_pk` is who sent it (the peer, or me for a row I sent), `peer` is the other person in the conversation,
+-- `at` is the rumor's own date. `status`: new (waiting for me), joined (I am in the room), ignored (local and
+-- silent), sent (I sent it). `relays` is a JSON list of up to 3 wss:// addresses the room lives on; `name` is a
+-- room name I wrote myself, kept only on a row I sent (an invite you receive carries no name: the engine looks
+-- the creator's own up). Never any text from the sender, and nothing here reaches a model.
+CREATE TABLE IF NOT EXISTS room_invites (
+  from_pk TEXT NOT NULL, peer TEXT NOT NULL, room TEXT NOT NULL, relays TEXT NOT NULL DEFAULT '[]',
+  at INTEGER NOT NULL, status TEXT NOT NULL, arrived_at REAL NOT NULL, name TEXT NOT NULL DEFAULT '',
+  PRIMARY KEY (from_pk, peer, room));
 -- What people in my rooms look like: a profile picture (kind 'avatar', the image bytes, already checked by
 -- avatar.py) or a built face (kind 'face', JSON). One row per (person, kind): the newest event wins, and an
 -- empty one ("I removed it") is kept as a row with no data so an older copy can't bring it back.
@@ -102,6 +112,11 @@ FRIEND_TOMBSTONES = 200
 FRIEND_IGNORES = 500
 FRIEND_IGNORE_DAYS = 30
 DM_WRAP_MEMORY = 20000    # gift wrap ids remembered
+# room invites kept: in all (the oldest that isn't waiting for me goes first, then the oldest), and from or to one
+# person, so one friend can't push everyone else's out
+INVITES_MAX = 50
+INVITES_PER_PEER = 10
+INVITE_STATUSES = ("new", "joined", "ignored", "sent")
 
 # people's pictures and faces kept on disk (most recently received first; mine are never dropped)
 ART_AVATARS = 300         # picture rows that hold bytes (at most 44 KB each)
@@ -718,6 +733,95 @@ class Store:
                              "before=MAX(before, excluded.before)", (peer, now))
             self._db.commit()
         return n
+
+    # --- room invites (see the room_invites table) ---------------------------------------------------
+    @staticmethod
+    def _invite_dict(r) -> dict:
+        d = dict(zip(("from_pk", "peer", "room", "relays", "at", "status", "arrived_at", "name"), r))
+        try:
+            urls = json.loads(d["relays"])
+        except ValueError:
+            urls = []
+        d["relays"] = [u for u in urls if isinstance(u, str)][:3] if isinstance(urls, list) else []
+        return d
+
+    def invite_add(self, *, from_pk: str, peer: str, room: str, relays: list, at: int, status: str, now: float,
+                   name: str = "") -> str:
+        """Record one invite. The latest per (sender, partner, room) wins: "stale" when a row dated at or after `at` is
+        already there, else "added" (a newer invite makes the row waiting again, whatever I did with the old one).
+        Past INVITES_PER_PEER rows for one sender and partner, and past INVITES_MAX in all, the oldest go: first the
+        ones that aren't waiting for me, then the oldest of those that are. The caller decides who may be recorded."""
+        if status not in INVITE_STATUSES:
+            raise ValueError("unknown invite status")
+        with self._lock:
+            old = self._db.execute("SELECT at FROM room_invites WHERE from_pk=? AND peer=? AND room=?",
+                                   (from_pk, peer, room)).fetchone()
+            if old and old[0] >= at:
+                return "stale"
+            self._db.execute("INSERT OR REPLACE INTO room_invites(from_pk, peer, room, relays, at, status, arrived_at, name) "
+                             "VALUES(?,?,?,?,?,?,?,?)", (from_pk, peer, room, json.dumps(list(relays)[:3]), int(at), status,
+                                                         now, str(name)[:64]))
+            order = "ORDER BY (status='new'), at, arrived_at, room"   # the ones not waiting for me first, oldest first
+            self._db.execute(f"DELETE FROM room_invites WHERE from_pk=? AND peer=? AND room IN ("
+                             f"SELECT room FROM room_invites WHERE from_pk=? AND peer=? {order} "
+                             f"LIMIT MAX(0, (SELECT COUNT(*) FROM room_invites WHERE from_pk=? AND peer=?) - ?))",
+                             (from_pk, peer, from_pk, peer, from_pk, peer, INVITES_PER_PEER))
+            self._db.execute(f"DELETE FROM room_invites WHERE rowid IN (SELECT rowid FROM room_invites {order} "
+                             f"LIMIT MAX(0, (SELECT COUNT(*) FROM room_invites) - ?))", (INVITES_MAX,))
+            self._db.commit()
+            return "added"
+
+    def invite_get(self, from_pk: str, peer: str, room: str) -> Optional[dict]:
+        with self._lock:
+            r = self._db.execute("SELECT from_pk, peer, room, relays, at, status, arrived_at, name FROM room_invites "
+                                 "WHERE from_pk=? AND peer=? AND room=?", (from_pk, peer, room)).fetchone()
+        return self._invite_dict(r) if r else None
+
+    def invites_new(self, me: str, limit: int = 20) -> list[dict]:
+        """The invites waiting for me, newest first (never one I sent)."""
+        with self._lock:
+            rows = self._db.execute("SELECT from_pk, peer, room, relays, at, status, arrived_at, name FROM room_invites "
+                                    "WHERE status='new' AND from_pk<>? ORDER BY at DESC, arrived_at DESC, room LIMIT ?",
+                                    (me, int(limit))).fetchall()
+        return [self._invite_dict(r) for r in rows]
+
+    def invites_with(self, peer: str, limit: int = 20) -> list[dict]:
+        """Every invite between me and `peer`, both ways, newest `limit` of them, oldest first (the conversation's lines)."""
+        with self._lock:
+            rows = self._db.execute("SELECT from_pk, peer, room, relays, at, status, arrived_at, name FROM room_invites "
+                                    "WHERE peer=? ORDER BY at DESC, arrived_at DESC, room LIMIT ?", (peer, int(limit))).fetchall()
+        return [self._invite_dict(r) for r in reversed(rows)]
+
+    def invite_ignore(self, peer: str, room: str) -> bool:
+        """Ignore a waiting invite: local and silent."""
+        with self._lock:
+            cur = self._db.execute("UPDATE room_invites SET status='ignored' WHERE from_pk=? AND peer=? AND room=? AND status='new'",
+                                   (peer, peer, room))
+            self._db.commit()
+            return cur.rowcount > 0
+
+    def invites_joined(self, room: str, me: str) -> int:
+        """I joined this room: every invite to it that I received (waiting or ignored) is now `joined`."""
+        with self._lock:
+            cur = self._db.execute("UPDATE room_invites SET status='joined' WHERE room=? AND from_pk<>? AND status IN ('new', 'ignored')",
+                                   (room, me))
+            self._db.commit()
+            return cur.rowcount
+
+    def invite_drop(self, peer: str, only_new: bool = False) -> int:
+        """Forget invites between me and `peer`: only the ones still waiting for me (`only_new`: they are no longer my
+        friend, so nothing of theirs should still ask for an answer), or every one (I hid them)."""
+        with self._lock:
+            cur = self._db.execute("DELETE FROM room_invites WHERE peer=?" + (" AND status='new'" if only_new else ""), (peer,))
+            self._db.commit()
+            return cur.rowcount
+
+    def invite_drop_read(self, peer: str) -> int:
+        """Delete a conversation's invite lines (sent ones, and ones I joined or ignored); a waiting one stays."""
+        with self._lock:
+            cur = self._db.execute("DELETE FROM room_invites WHERE peer=? AND status<>'new'", (peer,))
+            self._db.commit()
+            return cur.rowcount
 
     # --- friends (see the dm_friends table) ---------------------------------------------------------
     @staticmethod

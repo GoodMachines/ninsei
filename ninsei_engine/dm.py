@@ -2,7 +2,9 @@
 
     rumor  kind 14, unsigned, pubkey = the sender, one `p` tag = the other person, content = plain text
            (a friend request, accept or removal is a kind 14 with a `["ninsei", "friend_request" | "friend_accept"
-           | "friend_remove"]` tag and EMPTY content: whatever a hostile client puts there is never kept or shown)
+           | "friend_remove"]` tag and EMPTY content: whatever a hostile client puts there is never kept or shown;
+           a room invite is the same with a `["ninsei", "room_invite"]` tag, one `["h", <room id>]` and up to 3
+           `["relay", "wss://host"]`: the room's id and where it lives, and no words at all)
     seal   kind 13, signed by the sender, NIP-44 encrypted to the receiver, no tags
     wrap   kind 1059, signed by a one-time random key, NIP-44 encrypted to the receiver, tag ["p", receiver]
 
@@ -22,7 +24,7 @@ import secrets
 import time
 from typing import Any, Callable, Optional
 
-from . import nip44, nostr
+from . import codes, nip44, nostr
 
 KIND_RUMOR = 14
 KIND_SEAL = 13
@@ -47,6 +49,7 @@ FRIEND_REQUEST = "friend_request"   # the `ninsei` tag's value on a rumor that s
 FRIEND_ACCEPT = "friend_accept"
 FRIEND_REMOVE = "friend_remove"
 FRIEND_TYPES = (FRIEND_REQUEST, FRIEND_ACCEPT, FRIEND_REMOVE)
+ROOM_INVITE = "room_invite"  # "come to this room": not a friend event (the friend state machine never sees it) and not text
 TEXT = "text"                # a message's `type` when it is not one of the above
 
 UNSUPPORTED = "unsupported"  # a valid message of a kind or shape Ninsei doesn't show (group chats, files, reactions)
@@ -76,6 +79,25 @@ def make_rumor(sender_pk: str, peer_pk: str, text: str, now: Optional[int] = Non
              "tags": [["p", peer_pk]] + ([["ninsei", friend]] if friend else []), "content": "" if friend else text}
     rumor["id"] = nostr.event_id(rumor)
     return rumor
+
+
+def make_invite_rumor(sender_pk: str, peer_pk: str, room: str, relays: list[str], now: Optional[int] = None) -> dict:
+    """The unsigned kind 14 room invite: EMPTY content, the `ninsei` tag, the room's id and up to MAX_CODE_HOSTS relay
+    addresses. Nothing the sender typed goes in: not the room's name, not a note."""
+    if not valid_room_id(room):
+        raise ValueError("not a room id")
+    urls = codes.clean_relay_tags([["relay", u] for u in relays])
+    if urls is None:
+        raise ValueError("not a relay list")
+    rumor = {"pubkey": sender_pk, "created_at": int(now if now is not None else time.time()), "kind": KIND_RUMOR,
+             "tags": [["p", peer_pk], ["ninsei", ROOM_INVITE], ["h", room]] + [["relay", u] for u in urls], "content": ""}
+    rumor["id"] = nostr.event_id(rumor)
+    return rumor
+
+
+def valid_room_id(room: Any) -> bool:
+    """16 to 24 lowercase hex characters (a room id is 16; the parser reads up to 24)."""
+    return isinstance(room, str) and 16 <= len(room) <= 24 and room.isascii() and all(c in "0123456789abcdef" for c in room)
 
 
 def make_seal(sender_sk: str, receiver_pk: str, rumor: dict) -> dict:
@@ -113,8 +135,9 @@ def unwrap(my_sk: str, my_pk: str, wrap: Any,
            hidden: Callable[[str], bool] = lambda pk: False) -> tuple[str, Optional[dict]]:
     """Open a gift wrap meant for me. Returns (verdict, message): the message is
     {"id", "sender", "peer", "text", "type", "created_at"} only when the verdict is OK, where `peer` is the other
-    person in the conversation (the sender, or for my own copy the receiver) and `type` is TEXT or one of
-    FRIEND_TYPES (then `text` is always ""). The relay pool has already
+    person in the conversation (the sender, or for my own copy the receiver) and `type` is TEXT, one of
+    FRIEND_TYPES or ROOM_INVITE (then `text` is always ""; an invite also has `room` and `relays`, `wss://` URLs,
+    both validated here). The relay pool has already
     checked the wrap's signature; this checks its shape and id again because it is cheap.
 
     Order matters: sizes, then who it is for, then the wrap's layer, then the seal's signature (only after the
@@ -156,14 +179,23 @@ def unwrap(my_sk: str, my_pk: str, wrap: Any,
             return GARBAGE, None
         if nostr.event_id(rumor) != rumor["id"]:
             return GARBAGE, None
-        # A `ninsei` tag marks a friend event: exactly one, of a known type, else it is not shown at all (so a
-        # message of a future type can never be read as text). A friend event has no text: its content is dropped.
+        # A `ninsei` tag marks a friend event or a room invite: exactly one, of a known type, else it is not shown at
+        # all (so a message of a future type can never be read as text). Neither has text: the content is dropped.
         marks = [t for t in rumor["tags"] if t and t[0] == "ninsei"]
         kind = TEXT
+        extra: dict = {}
         if marks:
-            if len(marks) != 1 or len(marks[0]) != 2 or marks[0][1] not in FRIEND_TYPES:
+            if len(marks) != 1 or len(marks[0]) != 2 or marks[0][1] not in FRIEND_TYPES + (ROOM_INVITE,):
                 return UNSUPPORTED, None
             kind = marks[0][1]
+            if kind == ROOM_INVITE:
+                # One room id and at most MAX_CODE_HOSTS relay hosts, checked here; whatever else the tags carry is
+                # ignored. A malformed one is garbage: it is never half-read, and no free text can get in.
+                rooms = [t for t in rumor["tags"] if t and t[0] == "h"]
+                relays = codes.clean_relay_tags(rumor["tags"])
+                if len(rooms) != 1 or len(rooms[0]) != 2 or not valid_room_id(rooms[0][1]) or relays is None:
+                    return GARBAGE, None
+                extra = {"room": rooms[0][1], "relays": relays}
         else:
             if len(rumor["content"]) > MAX_TEXT:
                 return OVERSIZE, None
@@ -184,6 +216,6 @@ def unwrap(my_sk: str, my_pk: str, wrap: Any,
                 return NOT_MINE, None                  # a message between two other people
             peer = sender
         return OK, {"id": rumor["id"], "sender": sender, "peer": peer, "text": "" if kind != TEXT else rumor["content"],
-                    "type": kind, "created_at": rumor["created_at"]}
+                    "type": kind, "created_at": rumor["created_at"], **extra}
     except (nip44.Nip44Error, ValueError, TypeError, KeyError, AttributeError, RecursionError, UnicodeError):
         return GARBAGE, None

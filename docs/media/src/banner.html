@@ -15,8 +15,11 @@
   .tag { display: flex; align-items: center; gap: calc(10 * var(--u)); font: 500 calc(12 * var(--u)) "Geist Mono", monospace; letter-spacing: .22em; color: #7fa6ba; text-transform: uppercase; }
   .tag i { width: calc(8 * var(--u)); height: calc(8 * var(--u)); background: #ff3b30; display: inline-block; }
   .tag b { font: 400 calc(15 * var(--u)) "DotGothic16", monospace; letter-spacing: .1em; color: #ff3b30; }
-  .wm { font: 400 calc(168 * var(--u))/.86 "DotGothic16", monospace; color: #dcecf3; letter-spacing: -.01em; margin-left: calc(-6 * var(--u));
-        text-shadow: 0 0 calc(30 * var(--u)) rgba(160,210,235,.28); }
+  /* the wordmark as the app draws it: DotGothic16 outlines from scripts/wordmark_path.py (WORDMARK_PATH in ui/30_parts.js),
+     at the font's own proportions. The font set as text was stretched wide in this render. */
+  .wm { color: #dcecf3; margin: calc(4 * var(--u)) 0 calc(2 * var(--u)) calc(-2 * var(--u)); line-height: 0;
+        filter: drop-shadow(0 0 calc(18 * var(--u)) rgba(160,210,235,.28)); }
+  .wm svg { height: calc(140 * var(--u)); width: auto; display: block; }
   .by { display: flex; align-items: center; gap: calc(9 * var(--u)); font: 500 calc(13 * var(--u)) "Geist Mono", monospace; letter-spacing: .22em; text-transform: uppercase; color: #8fb0c2; }
   .by i { width: calc(9 * var(--u)); height: calc(9 * var(--u)); border: 1px solid #8fb0c2; display: inline-block; box-sizing: border-box; }
   .by i.f { background: #ff3b30; border-color: #ff3b30; }
@@ -33,7 +36,7 @@
   <div class="tick"></div>
   <div class="col">
     <div class="tag"><i></i><b>仁清</b><span>Hermes plugin</span></div>
-    <div class="wm">Ninsei</div>
+    <div class="wm"><svg viewBox="0 360 2598 840" fill="currentColor" role="img" aria-label="Ninsei"><path d="M28 373H102V496H163V620H225V743H287V867H349V991H400V373H472V1188H400V1125H338V1001H276V878H214V754H153V631H102V1188H28ZM596 434H669V569H596ZM596 620H669V1188H596ZM793 620H867V682H918V620H1114V682H1175V743H1237V1188H1165V754H1103V692H928V754H867V1188H793ZM1361 991H1435V1114H1733V940H1424V878H1361V682H1424V620H1743V682H1805V816H1733V692H1435V867H1743V929H1805V1125H1743V1188H1424V1125H1361ZM1992 1063H1929V743H1992V682H2054V620H2250V682H2311V743H2373V940H2003V1053H2064V1114H2239V1053H2301V991H2373V1063H2311V1125H2250V1188H2054V1125H1992ZM2301 867V754H2239V692H2064V754H2003V867ZM2497 434H2570V569H2497ZM2497 620H2570V1188H2497Z"/></svg></div>
     <div class="by"><i class="f"></i><i></i><span class="ln"></span>by Good Machines</div>
     <div class="line">Rooms where people and their own agents hang out.</div>
   </div>
