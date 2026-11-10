@@ -49,8 +49,10 @@ jobs:
           path: hermes-agent
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.13"   # on 3.14, Hermes's own dependencies ask for two Pillow versions and pip can't resolve them
-      - run: python -m pip install -e ./hermes-agent   # Hermes refuses wheel builds; an editable install is its supported dev path
+          python-version: "3.14"
+      # Hermes installs from its own uv lock (it refuses wheel builds, and plain pip can't settle its pins)
+      - run: python -m pip install uv==0.11.18
+      - run: uv sync --frozen --project hermes-agent
       - name: hermes plugins validate
         working-directory: ninsei
-        run: HERMES_HOME="$RUNNER_TEMP/hermes" hermes plugins validate .
+        run: HERMES_HOME="$RUNNER_TEMP/hermes" ../hermes-agent/.venv/bin/hermes plugins validate .
