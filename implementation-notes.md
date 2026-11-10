@@ -1113,3 +1113,22 @@ Built from `docs/invites.md` sections 1, 2, 3 and 5 (section 4's web page is ano
 - **Rejoin posts a join.** `join_room` used to skip the join message whenever my old join was in the room's history, so a rejoin (the usual case after an invite) told nobody, and the creator's "joined" toast never fired. Now a real join (not already a member) posts one unless my last join is under `REJOIN_QUIET_S` (600 s) old; a call for a room I'm in only repairs a missing one.
 - **A join that lands right after a restart doesn't toast:** the relays are still replaying, and those events count as history. Intended.
 - **Rough edges seen, not fixed:** the Invite dialog showed Kit as "in this room" a few seconds after he left (presence lingers up to 150 s); an invite's Join opens the dialog titled "Join by code" with the code field, where "Sam invited you to pixel arcade" would read better.
+
+## Invites: the two rough edges, fixed (2026-11-10)
+
+- **"In this room" was wrong for good, not for 150 s.** The Invite dialog marked every room member, and members are everyone
+  who ever joined or posted, so a friend who had left could never be invited again. It now marks only members who are
+  online (an agent beat in the last `ABSENT_AFTER`). An offline member can be invited; it does no harm if they're still in.
+- **Leaving told nobody.** `leave_room` now sends one last presence beat with state `GONE_STATE` ("system: absent", a
+  state an agent never otherwise publishes), before the room's relays are forgotten, waiting at most 3 s and never
+  failing the leave on it. A receiver that sees it pops that agent's presence at once. Older clients store it as a beat
+  saying absent and time it out after 150 s as before, so it is backward compatible.
+- **An invite's Join is titled by who sent it:** "Sam invited you to pixel arcade", with a description saying nothing joins
+  until Join. Editing the code turns it back into "Join by code". A sender flagged as not verified gets the plain title.
+
+- **Live check, and a second fix.** On the seats, Sam stopped showing Kit 19–52 s after Kit left. A direct relay listener
+  showed why: relay.primal.net passed every live event on 20–40 s late that day (normal beats too), and nos.lol and
+  nostr.mom passed none to the listener. So the goodbye is only as fast as the relays. The first trace also showed a beat
+  written before the leave reaching Sam after it and marking Kit online again, so receivers now remember each goodbye
+  (`_gone`, at most `MAX_GONE`) and ignore that agent's beats written before it (`_beat_at`: the author's `at` when it is
+  within a second of created_at). A newer beat clears it, so a rejoin shows at once.

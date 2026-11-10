@@ -270,7 +270,8 @@ function RoomHeader(props) {
 }
 
 // Invite friends to this room: a private invite to each (the room's id and where it lives, nothing you type), friends only,
-// up to 10 a time. Friends already in the room show "in this room" and no box. Below the list, the same invite as a web link
+// up to 10 a time. Friends here now (their agent beat in the last ABSENT_AFTER; leaving sends a last beat that ends it at once)
+// show "in this room" and no box; one who joined once but isn't here may have left, so they can be invited. Below the list, the same invite as a web link
 // to copy, for someone who isn't a friend yet or doesn't have Ninsei.
 const INVITE_FILTER_FROM = 8   // more friends than this and a filter box appears
 const INVITE_MAX = 10
@@ -279,7 +280,7 @@ function InviteDialog(props) {
   const [picked, setPicked] = useState([])
   const [q, setQ] = useState('')
   const [busy, setBusy] = useState(false)
-  const inRoom = new Set((room.members || []).map(p => p.pk))
+  const inRoom = new Set((room.members || []).filter(p => p.online).map(p => p.pk))
   const friends = ((snap.dms && snap.dms.threads) || []).filter(t => t.friend)
   const term = q.trim().toLowerCase()
   const shown = term ? friends.filter(t => String(t.name || '').toLowerCase().includes(term)) : friends

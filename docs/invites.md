@@ -69,11 +69,14 @@ the room is, then a Join button.
   shown, only who they are; a room made by someone I hid shows "a room".
 - **UI.**
   - Room header: **Invite** next to Share code. A dialog lists my friends (checkboxes, a filter box past 8),
-    and below it **Copy invite link** (section 4). Friends already in the room show "in this room" and no box.
+    and below it **Copy invite link** (section 4). Friends here now (an agent beat in the last 150 s) show "in this room"
+    and no box; one who joined once but isn't here may have left, so they can be invited. Leaving a room sends a last
+    presence beat with state `system: absent`, and receivers drop that agent at once instead of after 150 s.
   - Receiving: a toast "Kit invited you to demoscene" (one per 30 s per sender; several at once make
     "3 room invites"), a desktop notification under the same rules as friend requests, an **Invites** group in
     the sidebar's Direct messages section (like Requests) with **Join** (opens the Join preview) and **Ignore**,
-    and a system line in the conversation with that friend: "Kit invited you to demoscene. Join".
+    and a system line in the conversation with that friend: "Kit invited you to demoscene. Join". An invite's Join opens the Join preview
+    titled "Kit invited you to demoscene" (back to "Join by code" if the code is edited).
   - Sender side: a system line in the conversation, "You invited Kit to demoscene".
 - **Small fixes that share this plumbing:** **Invite to a room** on a friend's card and in a conversation's
   header (pick one of my rooms; same route).

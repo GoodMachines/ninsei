@@ -203,6 +203,23 @@ out({ copied, toasts })
     assert "props.roomCode || 'ninsei:' + props.roomId" in ROOM and "roomCode: room.code" in ROOM
 
 
+@needs_node
+def test_an_invites_join_is_titled_by_who_sent_it_and_goes_back_to_join_by_code_once_the_code_changes():
+    r = run(JOIN_JS + """
+ANSWERS = [answer({}), answer({})]
+const root = mount(JoinDialog, { store, initial: '%(room)s', from: { name: 'Sam', room: 'pixel arcade' }, onClose() {}, onDone() {} })
+await settle()
+const invited = { title: root.tree.props.title, desc: root.tree.props.description }
+find(root.tree, n => n.type === K.Input).props.onChange({ target: { value: '%(room)sx' } })
+await settle()
+const plain = mount(JoinDialog, { store, initial: '%(room)s', onClose() {}, onDone() {} })
+await settle()
+out({ invited, edited: root.tree.props.title, plain: plain.tree.props.title })
+""" % {"room": ROOM_ID})
+    assert r["invited"]["title"] == "Sam invited you to pixel arcade" and "Nothing joins until you press Join" in r["invited"]["desc"]
+    assert r["edited"] == "Join by code" and r["plain"] == "Join by code"
+
+
 INVITE_JS = afn(ROOM, "copyInviteLink") + fn(ROOM, "InviteDialog") + """
 function Modal() {}; function PersonMark() {}
 const INVITE_FILTER_FROM = 8, INVITE_MAX = 10
@@ -211,7 +228,7 @@ globalThis.P = { copy: async t => { copied.push(t); return true }, toast: (k, m)
 const store = { post: async (p, b) => { posts.push([p, b]); return { sent: b.friends.length } } }
 const pk = n => String(n).padStart(64, '0')
 const friend = (n, name, extra) => Object.assign({ pk: pk(n), name, friend: true, impostor: false, unread: 0, ts: 1 }, extra || {})
-const room = { id: '%(room)s', name: 'demoscene', members: [{ pk: pk(2) }], invite_link: 'https://goodmachines.ai/ninsei/join#%(room)s@nos.lol' }
+const room = { id: '%(room)s', name: 'demoscene', members: [{ pk: pk(2), online: true }, { pk: pk(3), online: false }], invite_link: 'https://goodmachines.ai/ninsei/join#%(room)s@nos.lol' }
 const box = (root, name) => find(root.tree, n => n.type === 'input' && n.props['aria-label'] === 'Invite ' + name)
 """ % {"room": ROOM_ID}
 
@@ -236,6 +253,7 @@ out({ first, label, posts, closed, toasts, copied, desc: root.tree.props.descrip
 """)
     f = r["first"]
     assert f["ann"] and f["cy"] and not f["bo"] and not f["old"] and f["disabled"] and not f["filter"]            # in the room: no box; not a friend: not listed
+    # Cy joined once but isn't here now (they may have left): they can be invited, and say nothing about the room
     assert "in this room" in f["text"] and "Old" not in f["text"] and "Copy invite link" in f["text"]
     assert "never sees it" in r["desc"]                                                                          # said once, in the dialog's own words
     assert r["label"] == "Send 2 invites" and r["posts"] == [["/rooms/invite", {"room": ROOM_ID, "friends": [f"{1:064d}", f"{3:064d}"]}]]
@@ -483,7 +501,7 @@ out({ kinds, scene, rejoin, typed, noneLeft: none.filter(i => i.kind === 'rejoin
     assert r["rejoin"][0] == ["Rejoin demoscene old", "Left room", f"ninsei:{ROOM_ID}@nos.lol"] and r["typed"] == [["rejoin", "Rejoin shader sketchbook"]]
     assert r["noneLeft"] == 0 and r["noInvites"] is False
     app = fn(APP, "App")
-    assert "it.kind === 'rejoin') setJoinFor(it.code)" in app and "it.kind === 'invites'" in app and "DM_INVITES" in app
+    assert "it.kind === 'rejoin') { setJoinFrom(null); setJoinFor(it.code) }" in app and "it.kind === 'invites'" in app and "DM_INVITES" in app
 
 
 @needs_node

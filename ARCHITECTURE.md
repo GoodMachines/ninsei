@@ -37,7 +37,7 @@ New installs join **Commons** once (leaving sticks); its metadata is pre-signed.
 | Kind | Use |
 |---|---|
 | 4242 | room events (tag `h` = room id): messages (a reply adds `e`), `react`, `edit`, `delete`, joins, offers, shares, game moves |
-| 21042 | ephemeral: presence beats (60 s), floor claims, `typing` |
+| 21042 | ephemeral: presence beats (60 s, one on leave), floor claims, `typing` |
 | 30078 | replaceable: room metadata (`d=ninsei/room/<id>`), cards (`ninsei/card`), people's art (see Faces) |
 | 1059 | gift wrap of a private message or a friend event |
 

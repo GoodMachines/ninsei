@@ -44,6 +44,10 @@ KIND_META = 30078         # parameterized replaceable: room metadata, interest c
 APP_TAG = "ninsei"
 PRESENCE_EVERY = 60         # keepalive beat to each room; a state change sends one sooner (see _beat_soon)
 ABSENT_AFTER = 150          # two missed beats and a bit
+GONE_STATE = "system: absent"   # the last beat sent on leaving a room: receivers drop that agent at once (an
+                                # agent never otherwise publishes it; older clients show it absent, then it times out)
+MAX_GONE = 512             # goodbyes remembered, so a late beat from before one is ignored
+LEAVE_BEAT_TIMEOUT = 3      # seconds leaving waits for that beat; leaving never fails on it
 STATE_BEAT_GAP = 5          # seconds between state-change beats; the latest state wins. A game round flips
                             # the state several times, and every flip was a beat to every room: relays rate-
                             # limit per IP, so a few installs on one network got banned (damus, 2026-11-06).
@@ -453,6 +457,15 @@ def _build_claim(b: Any) -> Optional[dict]:
     return {"offer": b["offer"], "step": max(0, min(step, MAX_BUILD_STEPS)), "wait": b.get("wait") is True}
 
 
+def _beat_at(ev: dict, c: dict) -> float:
+    """When a live event was written: the author's `at` (milliseconds) when it is within a second of created_at,
+    else created_at. Used only to order one key's own beats, so a forged `at` can only hide that key's own beats."""
+    at = c.get("at")
+    if isinstance(at, (int, float)) and not isinstance(at, bool) and abs(at - ev["created_at"]) < 1.5:
+        return float(at)
+    return float(ev["created_at"])
+
+
 def _person_claim(v: Any) -> Optional[str]:
     """A peer's published status, parsed strictly: one of PERSON_STATUSES, else nothing (an older client, or junk)."""
     return v if isinstance(v, str) and v in PERSON_STATUSES else None
@@ -728,6 +741,7 @@ class Engine:
         # live, in-memory room state (rebuilt from the store + relays)
         self.events: dict[str, dict[str, dict]] = {}       # room -> id -> event
         self.presence: dict[str, dict[str, dict]] = {}     # room -> pk -> {state, budget, at}
+        self._gone: dict[tuple, float] = {}   # (room, agent pk) -> when its goodbye beat was written: older beats are stale
         self.claims: dict[str, list[tuple]] = {}           # trigger -> [(prio, tb, agent_pk)]
         self.topics: dict[str, TopicTracker] = {}
         self.lobby: dict = {"rooms": [], "people": [], "at": 0}
@@ -1601,6 +1615,19 @@ class Engine:
         owner = self.owner_of(ev)
         if t == "presence" and owner:
             pres = self.presence.setdefault(room, {})
+            at = _beat_at(ev, c)
+            key = (room, ev["pubkey"])
+            if c.get("state") == GONE_STATE:   # they left the room: gone now, not after ABSENT_AFTER
+                if len(self._gone) >= MAX_GONE:
+                    self._gone.pop(next(iter(self._gone)))
+                self._gone[key] = max(at, self._gone.get(key, 0.0))
+                if pres.pop(ev["pubkey"], None) is not None:
+                    self._bump()
+                return
+            if key in self._gone:
+                if at <= self._gone[key]:
+                    return   # written before they left, delivered late (a slow or replaying relay): not a sign of life
+                del self._gone[key]   # a newer beat: they came back
             if ev["pubkey"] not in pres and len(pres) >= MAX_PRESENCE:
                 now = time.time()
                 for pk in [pk for pk, p in pres.items() if now - p["at"] >= ABSENT_AFTER]:
@@ -3800,6 +3827,13 @@ class Engine:
 
     async def leave_room(self, room: str) -> None:
         await self._end_hosted(room)
+        # a last beat while the room's relays are still known, so the room stops showing me as here at once
+        if room in self.events and self.pool:
+            try:
+                await asyncio.wait_for(self._publish_room(room, True, {"t": "presence", "state": GONE_STATE, "person": "away"},
+                                                          kind=KIND_LIVE), LEAVE_BEAT_TIMEOUT)
+            except Exception:
+                pass
         if room in self.store.rooms():
             self._left_remember(room)   # before the room is forgotten: its name and the relays it lives on
         self.store.forget_room(room)

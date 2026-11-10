@@ -72,6 +72,7 @@ function App(props) {
   const switchingRef = useRef(false)
   switchingRef.current = switching
   const [joinFor, setJoinFor] = useState('')
+  const [joinFrom, setJoinFrom] = useState(null)   // { name, room }: the Join dialog was opened by this friend's invite
   const [inviteFor, setInviteFor] = useState(null)   // { pk, name }: pick a room to invite this friend to
   const rootRef = useRef(null)
   const live = useRef(false)
@@ -99,9 +100,9 @@ function App(props) {
   const openDm = pk => { store.setDm(pk); go('dm') }
   // a `ninsei:` link in a message: a room you are in opens (at the message, if it names one); any other opens the Join dialog
   // `code` is the link as written (it may name relays: the Join preview lists the ones you don't use yet)
-  const openLink = (room, event, code) => {
+  const openLink = (room, event, code, from, roomName) => {
     const joined = ((store.get().snap || {}).rooms || []).some(r => r.id === room)
-    if (!joined) { setJoinFor(code || room + (event ? '#' + event : '')); return }
+    if (!joined) { setJoinFrom(from ? { name: from, room: roomName || '' } : null); setJoinFor(code || room + (event ? '#' + event : '')); return }
     if (event) wantJump(room, event)
     store.setRoom(room); go('room')
   }
@@ -111,7 +112,7 @@ function App(props) {
     else if (it.kind === 'dm') { store.setDm(it.id); go('dm') }
     else if (it.kind === 'requests') { store.setDm(DM_REQUESTS); go('dm') }
     else if (it.kind === 'invites') { store.setDm(DM_INVITES); go('dm') }
-    else if (it.kind === 'rejoin') setJoinFor(it.code)
+    else if (it.kind === 'rejoin') { setJoinFrom(null); setJoinFor(it.code) }
     else if (it.kind === 'settings') openSettings()
     else go(it.kind)
   }
@@ -136,8 +137,8 @@ function App(props) {
     let center
     const dmPk = store.dm()
     if (view === 'hermes') center = jsx(LineView, { store, snap })
-    else if (view === 'dm') center = dmPk === DM_REQUESTS ? jsx(DmRequests, { store, snap }) : dmPk === DM_INVITES ? jsx(DmInvites, { store, snap, onJoin: (code, room) => openLink(room, '', code) })
-      : dmPk ? jsx(DmView, { store, snap, pk: dmPk, onPeople: togglePeople, onInvite: (pk, name) => setInviteFor({ pk, name }), onJoin: (code, room) => openLink(room, '', code) }, dmPk) : jsx(DmEmpty, { snap })
+    else if (view === 'dm') center = dmPk === DM_REQUESTS ? jsx(DmRequests, { store, snap }) : dmPk === DM_INVITES ? jsx(DmInvites, { store, snap, onJoin: (code, room, from, name) => openLink(room, '', code, from, name) })
+      : dmPk ? jsx(DmView, { store, snap, pk: dmPk, onPeople: togglePeople, onInvite: (pk, name) => setInviteFor({ pk, name }), onJoin: (code, room, from, name) => openLink(room, '', code, from, name) }, dmPk) : jsx(DmEmpty, { snap })
     else if (view === 'settings') center = jsx('div', { className: 'h-scroll', children: jsxs('div', { className: 'h-pane', children: [jsx('h1', { children: 'Settings' }, 'h'), jsx(SettingsForm, { store, snap, inset: true }, 's')] }) })
     else if (showRoom && room) center = jsx(RoomView, { store, snap, room, onPeople: togglePeople }, room.id)
     else if (showRoom) center = jsx('div', { className: 'h-empty', children: 'Opening the room…' })
@@ -172,7 +173,7 @@ function App(props) {
     inner,
     snap && snap.settings.onboarded && switching && jsx(QuickSwitcher, { snap, onPick: pick, onClose: () => setSwitching(false) }),
     snap && snap.settings.onboarded && inviteFor && jsx(InviteToRoomDialog, { store, snap, pk: inviteFor.pk, name: inviteFor.name, onClose: () => setInviteFor(null) }),
-    snap && snap.settings.onboarded && joinFor && jsx(JoinDialog, { store, initial: joinFor, onClose: () => setJoinFor(''), onDone: id => { setJoinFor(''); store.setRoom(id); go('room') } })
+    snap && snap.settings.onboarded && joinFor && jsx(JoinDialog, { store, initial: joinFor, from: joinFrom, onClose: () => setJoinFor(''), onDone: id => { setJoinFor(''); store.setRoom(id); go('room') } })
   ] })
 }
 
@@ -411,7 +412,11 @@ function JoinDialog(props) {
   ] })
   else if (d) body = jsx('div', { className: 'h-faint h-small', role: 'status', 'data-preview': 'none', children: d.reached === false
     ? 'Couldn’t reach your relays. Check your connection, then try again.' : 'Nothing on your relays for this code.' })
-  return jsx(Modal, { open: true, onClose: props.onClose, title: 'Join by code', description: 'Paste a code like ninsei:203f22bcfd1b4b2f, or a link to a message in a room.',
+  // opened by a friend's invite (and the code not changed since): say whose
+  const from = props.from && code === props.initial ? props.from : null
+  return jsx(Modal, { open: true, onClose: props.onClose,
+    title: from ? cleanSnippet(from.name, 32) + ' invited you to ' + (cleanSnippet(from.room, 40) || 'a room') : 'Join by code',
+    description: from ? 'This is what the room looks like on your relays. Nothing joins until you press Join.' : 'Paste a code like ninsei:203f22bcfd1b4b2f, or a link to a message in a room.',
     footer: [
       !code.trim() && jsx('span', { id: 'h-jn-need', className: 'h-faint h-small', children: 'Paste a code to join.' }, 'n'),
       jsx(K.Button, { variant: 'ghost', onClick: props.onClose, children: 'Cancel' }, 'c'),
