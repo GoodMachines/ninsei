@@ -29,7 +29,7 @@ def _const(src: str, name: str) -> str:
 
 
 def _run(js: str, tz: str = "UTC"):
-    out = subprocess.run([NODE, "-e", js], capture_output=True, text=True, check=True, env={**os.environ, "TZ": tz})
+    out = subprocess.run([NODE, "-"], input=js, capture_output=True, text=True, check=True, env={**os.environ, "TZ": tz})
     return json.loads(out.stdout)
 
 

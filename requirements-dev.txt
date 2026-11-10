@@ -1,0 +1,5 @@
+# What the test suite needs (Ninsei itself runs inside Hermes and uses Hermes's own packages).
+pytest==8.3.5
+pytest-asyncio==0.25.3
+websockets==15.0.1
+cryptography==44.0.2
