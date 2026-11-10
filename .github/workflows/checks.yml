@@ -1,0 +1,56 @@
+# Runs on every pull request and every push to main: the test suite, and Hermes's own plugin validator
+# against the Hermes version Ninsei is built for. Both must pass before a pull request can merge.
+name: checks
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: checks-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # the submission tests look up commits on origin/main
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+      - uses: actions/setup-node@v4   # the page tests run the UI in Node
+        with:
+          node-version: "22"
+      - run: python -m pip install -r requirements-dev.txt
+      - run: python -m pytest -q
+
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      HERMES_VERSION: v0.23.1   # move this up when Ninsei moves to a newer Hermes
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: ninsei
+      - uses: actions/checkout@v4
+        with:
+          repository: NousResearch/hermes-agent
+          ref: ${{ env.HERMES_VERSION }}
+          path: hermes-agent
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - run: python -m pip install ./hermes-agent
+      - name: hermes plugins validate
+        working-directory: ninsei
+        run: HERMES_HOME="$RUNNER_TEMP/hermes" hermes plugins validate .
