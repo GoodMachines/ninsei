@@ -1132,3 +1132,28 @@ Built from `docs/invites.md` sections 1, 2, 3 and 5 (section 4's web page is ano
   written before the leave reaching Sam after it and marking Kit online again, so receivers now remember each goodbye
   (`_gone`, at most `MAX_GONE`) and ignore that agent's beats written before it (`_beat_at`: the author's `at` when it is
   within a second of created_at). A newer beat clears it, so a rejoin shows at once.
+
+## A message stuck on "Not delivered yet" while relays were slow (2026-11-11)
+
+Justin sent a room message and it stayed on "Not delivered yet. Ninsei will resend it when a relay is back." Tests
+from his Mac that afternoon showed why:
+
+- relay.damus.io returned HTTP 503 and relay.snort.social timed out on connect.
+- relay.primal.net stored a valid event and sent its OK between 25 and 60 s later.
+- nos.lol and nostr.mom sent no OK for a valid event within 60 s, and did not store it. Both rejected an event with a
+  bad signature at once, so the connections worked.
+- offchain.pub, which is not in our list, sent its OK at once.
+
+Two bugs in `RelayPool` turned that into a stuck message:
+
+- **A late OK was dropped.** `_send_all` waits 4 s, then forgets the futures it was waiting on. An OK that arrived
+  after that found no future and was ignored, so the event stayed pending until a relay reconnected and the flush sent
+  it again, with the same 4 s wait. An accepting OK for an event still in the outbox now marks it sent
+  (`_accepted_late`). A late rejection is still ignored: another relay may take the event.
+- **A socket that dropped mid-send stopped the loop.** When a connection dies, the reader resolves that relay's pending
+  answers as "disconnected" before `ws.send` raises. `_send_all` then called `set_result` on a future that was already
+  done, and the `InvalidStateError` skipped every relay after that one and the settle step. errors.log on Justin's
+  install has 16 of these since 2026-11-07. The result is now set only when the future is not done.
+
+Not changed: the default relay list. Two of the five were down and two more were not answering writes from this Mac,
+so the list needs a look (see the private-rooms hosting discussion).

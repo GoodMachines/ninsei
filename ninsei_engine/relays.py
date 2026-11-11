@@ -333,6 +333,10 @@ class RelayPool:
                     self._cool(url)
             if fut and not fut.done():
                 fut.set_result((bool(msg[2]), str(msg[3] if len(msg) > 3 else "")))
+            elif msg[2] and isinstance(msg[1], str) and msg[1] in self._outbox:
+                # An answer that came after the wait (busy relays can take a minute). The relay has the
+                # event, so it is delivered; dropping this left it "Not delivered yet" until a reconnect.
+                self._accepted_late(msg[1])
         elif typ == "EOSE" and len(msg) >= 2:
             sub = self._subs.get(msg[1])
             if sub:
@@ -622,7 +626,8 @@ class RelayPool:
             try:
                 await ws.send(payload)
             except Exception as e:
-                fut.set_result((False, f"{SYNTH}send failed: {e}"))
+                if not fut.done():   # a dropped socket can resolve it first ("disconnected"); then the next relay
+                    fut.set_result((False, f"{SYNTH}send failed: {e}"))
         if not futs:
             return {}
         await asyncio.wait(futs.values(), timeout=wait)
@@ -722,6 +727,13 @@ class RelayPool:
             self._queue(ev)   # a path that skipped publish (a flush of an evicted event stays failed)
         if eid in self._outbox:
             self._delivery[eid] = "pending"
+
+    def _accepted_late(self, eid: str) -> None:
+        if eid in self._inflight:
+            return   # still inside publish's own wait: its settle sees the answer
+        self._outbox.pop(eid, None)
+        self._delivery[eid] = "sent"
+        self._store_call("event_outbox_drop", [eid])
 
     def _store_call(self, name: str, *args) -> None:
         if self._store is None:
