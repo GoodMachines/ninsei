@@ -113,6 +113,10 @@ async def test_a_private_room_is_readable_by_its_members_and_by_nobody_else(worl
     [inv] = read(sam, sam.dm_summary)["invites"]
     assert inv["private"] is True
     assert read(sam, lambda: sam.is_private(room)) is False         # a candidate key only: he hasn't joined
+    # a key nothing has proven says nothing: the same invite reads "not private" until the metadata opened with it
+    read(sam, lambda: sam._proven.clear())
+    assert read(sam, sam.dm_summary)["invites"][0]["private"] is False
+    read(sam, lambda: sam._proven.setdefault(room, None))
 
     # he joins by the invite and reads what was said before he came; both ways work from here
     out = await run(sam, sam.join_room, room)
@@ -233,8 +237,15 @@ async def test_a_made_up_key_for_a_public_room_changes_nothing(world):
     wrap = dm.wrap_for(maya._identity()["person_sk"], sam._identity()["person_pk"], rumor)
     assert await run(sam, sam._dm_process, wrap) == dm.OK
     assert read(sam, lambda: sam._spare.get(room)) == [KEY]
+    # the invite is never labelled private: nothing has proven the key, and the name lookup finds a public room
+    assert await wait_for(lambda: read(sam, sam.dm_summary)["invites"][0]["room_name"] == "open house")
+    [inv] = read(sam, sam.dm_summary)["invites"]
+    assert inv["private"] is False
+    pre = await run(sam, sam.room_preview, f"ninsei:{room}")
+    assert pre["found"] and pre["private"] is False
     out = await run(sam, sam.join_room, room)
     assert out["found"] and not out.get("private") and read(sam, lambda: sam.is_private(room)) is False
+    assert read(sam, lambda: sam._spare.get(room)) is None                 # the made-up key is forgotten
     assert await wait_for(lambda: "everyone welcome" in texts(sam, room))
     await run(sam, sam.post, room, "hi all")
     assert await wait_for(lambda: "hi all" in texts(maya, room))        # he posted plain text, not ciphertext

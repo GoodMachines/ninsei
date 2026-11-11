@@ -795,6 +795,7 @@ class Engine:
                                              for r, ks in (self.store.get(SPARE_KEYS_KV) or {}).items()
                                              if dm.valid_room_id(r) and isinstance(ks, list)}
         self._conv_keys: dict[tuple, bytes] = {}
+        self._proven: dict[str, None] = {}   # rooms I'm not in whose creator-signed metadata opened with a spare key (bounded)
         self._opened: dict[tuple, Optional[dict]] = {}     # (fake event id, peer pk) -> open_fake result (bounded)
         self._hidden: set[str] = set(self.store.get("hidden") or {})  # person pks the owner chose to hide
         # their agents' keys as far as we know them, so another host's game can't show them either
@@ -1537,9 +1538,11 @@ class Engine:
     def is_private(self, room: str) -> bool:
         return room in self._rkeys
 
-    def _keyed(self, room: str) -> bool:
-        """True for a private room I'm in, or one I hold an (unproven) key for: how an invite is labelled."""
-        return room in self._rkeys or bool(self._spare.get(room))
+    def _known_private(self, room: str) -> bool:
+        """How an invite is labelled: private only for a room I'm in with its key, or one whose creator's metadata
+        has opened with a key I hold. A key by itself says nothing: a friend can send a made-up one for a public
+        room, and that invite must not read "private"."""
+        return room in self._rkeys or (room in self._proven and bool(self._spare.get(room)))
 
     # --- private room keys ----------------------------------------------------------------------
     def _set_room_key(self, room: str, key: str) -> None:
@@ -3916,6 +3919,11 @@ class Engine:
             # The creator encrypted it with this key, so the room is private and the key is the room's. Only the
             # room's key decrypts to a nonce that commits to the signer: a key someone made up opens nothing.
             meta["private"] = True
+            if room not in self._rkeys:
+                self._proven.pop(room, None)
+                self._proven[room] = None
+                while len(self._proven) > SPARE_KEY_ROOMS:
+                    self._proven.pop(next(iter(self._proven)))
         return meta
 
     def _on_room_meta(self, ev: dict, src: str = "") -> None:
@@ -3955,6 +3963,11 @@ class Engine:
                     meta, found_meta, key = m, True, self._open(ev)[1]
             if key:
                 self._set_room_key(room, key)   # proven by the creator's metadata; from here the room is private
+                self._proven.pop(room, None)
+            elif found_meta and "creator" in meta and self._spare.pop(room, None) is not None:
+                # the creator's metadata is plain: the room is public, and a key someone sent for it was made up
+                self._proven.pop(room, None)
+                self.store.set(SPARE_KEYS_KV, dict(self._spare))
             elif room not in self._rkeys and self._spare.get(room) and "creator" not in meta:
                 # I hold a key for this room (an invite, or I left it) and nothing proved it: joining blind would
                 # post encrypted lines into a room the key may not belong to. A private room is joined only once
@@ -5616,7 +5629,7 @@ class Engine:
             info = book.get(i["peer"]) or {"name": "", "flag": None}
             invites.append({"pk": i["peer"], "name": self._dm_label(i["peer"], info), "impostor": bool(info["flag"]),
                             "room": i["room"], "room_name": self._room_name_known(i["room"]) or "a room", "ts": i["at"],
-                            "code": self._code_of(i["room"], i["relays"]), "private": self._keyed(i["room"])})
+                            "code": self._code_of(i["room"], i["relays"]), "private": self._known_private(i["room"])})
         self._invite_names_ask([i["room"] for i in inv])
         rel = {pk: "friend" for pk in lists["friends"]}
         rel.update({pk: "sent" for pk in lists["sent"]})
@@ -5660,7 +5673,7 @@ class Engine:
                                 "name": "You" if sent else self._dm_label(pk, info), "room": inv["room"],
                                 "room_name": (inv["name"] if sent else "") or self._room_name_known(inv["room"]) or "a room",
                                 "status": inv["status"], "in_room": inv["room"] in self.store.rooms(),
-                                "code": self._code_of(inv["room"], inv["relays"]), "private": self._keyed(inv["room"])})
+                                "code": self._code_of(inv["room"], inv["relays"]), "private": self._known_private(inv["room"])})
         for m in rows:
             mine = m["sender"] == ident["person_pk"]
             item = {"id": m["id"], "ts": m["created_at"], "t": "msg", "pk": m["sender"], "role": "person", "mine": mine,

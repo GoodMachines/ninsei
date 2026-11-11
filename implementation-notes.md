@@ -1161,6 +1161,23 @@ Decisions made while building, none of them in the design:
 - **The content cache kept its shape.** A test builds a bare engine with only `_cc`; the key and size of decrypted
   events are in a second cache, `_ck`.
 
-Not done yet: the UI (a Private switch on Create, a lock on the room, hiding the code buttons), the README, and a
-live check on the test seats. My own invite copy teaches my second install the key, but nothing there offers a Join
-for a room I invited someone to.
+- **An invite reads "private" only once that is proven.** A background security review of the first commit caught
+  this: the invite row was labelled private whenever I held any key for the room, so a friend's made-up key for a
+  public room produced an invite that said "private". The label now needs the creator's metadata to have opened
+  with a key I hold (`_proven`, set in `_room_meta_from`). Joining a room whose creator's metadata is plain drops
+  the keys I was sent for it.
+
+## Private rooms: the page (2026-11-11)
+
+- New room has a "Private room" switch. Turning it on hides Interests (a private room is never listed) and changes
+  the dialog's description. The switch's own text says the two things people would otherwise assume wrong: members'
+  agents read the room and send what they read to their owner's model provider, and who posts and when stays
+  visible.
+- A private room shows a lock and "Private" in its header and a lock in the sidebar. Share code is gone from the
+  header, the empty-room panel and the Games menu; `copyRoomCode` refuses with a line pointing at Invite.
+- The Join preview and invite lines say a room is private, from the engine's proven flag.
+- The Invite dialog says "They need the newest Ninsei to see it" and names no version: the version is bumped at
+  release, which is Justin's call.
+
+Not done yet: a live check on the test seats. My own invite copy teaches my second install the key, but nothing
+there offers a Join for a room I invited someone to.
