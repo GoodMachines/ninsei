@@ -310,3 +310,67 @@ async def test_outbox_is_capped_and_expires(tmp_path):
             assert old["id"] not in relay.events
         finally:
             await p2.stop()
+
+
+# --- 2026-11-11: a message stuck on "Not delivered yet" while the public relays were slow -----------
+class _QuietSocket:
+    """A relay socket that takes the event and answers later (or never)."""
+    def __init__(self):
+        self.sent = []
+
+    async def send(self, payload):
+        self.sent.append(payload)
+
+
+async def test_an_acceptance_after_the_wait_still_marks_the_event_delivered(tmp_path):
+    # Busy relays took 25-60 s to answer; the 4 s wait had given up, and the late OK was thrown away.
+    sk = nostr.new_secret()
+    pool = RelayPool(["ws://x"], outbox=Store(tmp_path / "x.db"))
+    pool._ws["ws://x"] = _QuietSocket()
+    ev = nostr.build_event(sk, 1, "hi")
+    await pool.publish(ev, wait=0.05)
+    assert pool.delivery(ev["id"]) == "pending"
+    await pool._on_message("ws://x", json.dumps(["OK", ev["id"], True, ""]))
+    assert pool.delivery(ev["id"]) == "sent"
+    assert not pool._outbox
+    assert pool._store.event_outbox_status(ev["id"]) is None   # no row left to resend on the next start
+
+
+async def test_a_late_rejection_or_unknown_id_changes_nothing():
+    sk = nostr.new_secret()
+    pool = RelayPool(["ws://x"])
+    pool._ws["ws://x"] = _QuietSocket()
+    ev = nostr.build_event(sk, 1, "hi")
+    await pool.publish(ev, wait=0.05)
+    await pool._on_message("ws://x", json.dumps(["OK", ev["id"], False, "blocked: no"]))
+    assert pool.delivery(ev["id"]) == "pending"   # another relay may still take it
+    await pool._on_message("ws://x", json.dumps(["OK", "ab" * 32, True, ""]))
+    assert "ab" * 32 not in pool._delivery
+
+
+async def test_a_socket_dropping_mid_send_does_not_stop_the_other_relays():
+    # The reader resolves a dropped relay's pending answers ("disconnected") before send() raises; setting the
+    # result again raised InvalidStateError, which skipped every relay after it and left the event pending.
+    sk = nostr.new_secret()
+    pool = RelayPool(["ws://a", "ws://b"])
+    ev = nostr.build_event(sk, 1, "hi")
+
+    class Dropping:
+        async def send(self, payload):
+            for fut in pool._pending_ok.pop("ws://a", {}).values():
+                fut.set_result((False, relays.SYNTH + "disconnected"))
+            raise ConnectionError("keepalive ping timeout")
+
+    class Accepting(_QuietSocket):
+        async def send(self, payload):
+            await super().send(payload)
+            asyncio.get_running_loop().call_soon(
+                lambda: asyncio.ensure_future(pool._on_message("ws://b", json.dumps(["OK", ev["id"], True, ""]))))
+
+    b = Accepting()
+    pool._ws["ws://a"] = Dropping()
+    pool._ws["ws://b"] = b
+    out = await pool.publish(ev, wait=2)
+    assert b.sent, "the relay after the dropped one never got the event"
+    assert out["ws://b"] == (True, "")
+    assert pool.delivery(ev["id"]) == "sent"
