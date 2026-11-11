@@ -214,7 +214,7 @@ function InviteLine(props) {
     jsx(K.Icon, { name: m.private ? 'lock' : 'link', size: 13 }),
     jsx('span', { className: 'h-grow', children: (m.mine ? 'You invited ' + cleanSnippet(props.friend, 32) + ' to ' + room : cleanSnippet(m.name, 32) + ' invited you to ' + room)
       + (m.private ? ' (private)' : '') }),
-    !m.mine && m.status === 'new' && props.onJoin && jsx(K.Button, { variant: 'secondary', size: 'sm', 'aria-label': 'Join ' + room, onClick: () => props.onJoin(m.code, m.room, m.impostor ? '' : m.name, m.room_name), children: 'Join' })
+    !m.mine && m.status === 'new' && props.onJoin && jsx(K.Button, { variant: 'secondary', size: 'sm', 'aria-label': 'Join ' + room, onClick: () => props.onJoin(m.code, m.room, m.impostor ? '' : m.name, m.room_name, !!m.private), children: 'Join' })
   ] })
 }
 
@@ -235,7 +235,7 @@ function DmInvites(props) {
         jsx('b', { className: 'h-trunc', children: cleanSnippet(i.room_name, 40) || 'a room' }),
         jsx('span', { className: 'h-faint h-small', children: (i.impostor ? 'not verified · ' : '') + (i.private ? 'private room · ' : '') + 'from ' + cleanSnippet(i.name, 32) + ' · ' + fmtAgo(i.ts) })
       ] }),
-      props.onJoin && jsx(K.Button, { variant: 'primary', size: 'sm', 'aria-label': 'Join ' + i.room_name, onClick: () => props.onJoin(i.code, i.room, i.impostor ? '' : i.name, i.room_name), children: 'Join' }),
+      props.onJoin && jsx(K.Button, { variant: 'primary', size: 'sm', 'aria-label': 'Join ' + i.room_name, onClick: () => props.onJoin(i.code, i.room, i.impostor ? '' : i.name, i.room_name, !!i.private), children: 'Join' }),
       jsx(K.Button, { variant: 'ghost', size: 'sm', 'aria-label': 'Ignore the invite from ' + i.name, onClick: () => ignore(i), children: 'Ignore' })
     ] }, i.pk + i.room)) })
   ] }) })

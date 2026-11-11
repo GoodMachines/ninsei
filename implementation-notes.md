@@ -1179,5 +1179,24 @@ Decisions made while building, none of them in the design:
 - The Invite dialog says "They need the newest Ninsei to see it" and names no version: the version is bumped at
   release, which is Justin's call.
 
-Not done yet: a live check on the test seats. My own invite copy teaches my second install the key, but nothing
-there offers a Join for a room I invited someone to.
+Still open: my own invite copy teaches my second install the key, but nothing there offers a Join for a room I
+invited someone to.
+
+## Private rooms: live check on the test seats (2026-11-11)
+
+Two dashboards (`xeniamaya` on 9311, `xeniasam` on 9312) against `tests/local_relay.py` on 7447, both seats' relay
+lists pointed at it for the run and put back to the five defaults afterwards.
+
+- Maya made a private room from New room, said one line and invited Sam. Sam's Invites list showed it as a private
+  room from Maya, the Join preview carried the private line, and after Join he read the line Maya wrote before he
+  came. The members list showed both people and both agents.
+- The relay held 7 events: five kind 4242, one kind 30078, one kind 1059. None of the six room events parsed as
+  JSON, the room's name and the words of the message appeared nowhere in the relay's data, and the metadata event
+  had no `t` tags.
+- Both seats left the room after the check. The room's key stays in each seat's spare keys, as it would for anyone
+  who leaves.
+- Found by looking: the Join dialog for the invite still showed the code field holding `ninsei:<room id>`, though
+  a private room has no code. Fixed in the same branch: an invite passes `private` through to the dialog, and the
+  dialog shows no code field for an invite to a private room (known from the invite at once, or from the preview
+  when the invite did not say). A code typed by hand keeps its field. Join still sends the invite's code.
+- The React switch ignored the browser tool's `form_input`; a real click worked. Nothing wrong with the switch.

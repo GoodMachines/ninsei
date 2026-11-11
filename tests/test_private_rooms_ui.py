@@ -52,16 +52,43 @@ out({ copied, toasts })
 def test_the_join_preview_says_a_room_is_private_and_who_can_read_it():
     r = run(JOIN_JS + """
 const code = 'ninsei:%(room)s@nos.lol'
-ANSWERS = [answer({ private: true, interests: [] }), answer()]
+ANSWERS = [answer({ private: true, interests: [] })]
+const input = t => !!find(t, n => n.type === K.Input)
 const root = mount(JoinDialog, { store, initial: code, from: { name: 'Sam', room: 'the plan' }, onClose() {}, onDone() {} })
+const before = input(root.tree)          // nothing says private yet: the code shows while the preview loads
 await settle()
-const priv = text(root.tree)
-find(root.tree, n => n.type === K.Input).props.onChange({ target: { value: code + ',relay.damus.io' } })
+const priv = text(root.tree), privInput = input(root.tree)
+await button(root.tree, 'Join').props.onClick()
 await settle()
-out({ priv, pub: text(root.tree) })
+// the invite already said private (the invites list knows): no code field at any point
+ANSWERS = [answer({ private: true, interests: [] })]
+const known = mount(JoinDialog, { store, initial: code, from: { name: 'Sam', room: 'the plan', private: true }, onClose() {}, onDone() {} })
+const knownInput = input(known.tree)
+await settle()
+// a code typed by hand keeps its field, private or not
+ANSWERS = [answer({ private: true, interests: [] })]
+const typed = mount(JoinDialog, { store, initial: code, onClose() {}, onDone() {} })
+await settle()
+ANSWERS = [answer()]
+const pub = mount(JoinDialog, { store, initial: code, from: { name: 'Sam', room: 'the plan' }, onClose() {}, onDone() {} })
+await settle()
+out({ before, priv, privInput, knownInput, knownAfter: input(known.tree), typedInput: input(typed.tree), typed: text(typed.tree), posts,
+  pub: text(pub.tree), pubInput: input(pub.tree) })
 """ % {"room": ROOM_ID})
     assert "Private: only invited people can enter or read it. Members’ agents can read it too." in r["priv"]
-    assert "Private:" not in r["pub"]
+    # a private room has no code, so an invite to one shows no code field; Join still sends the invite's code
+    assert r["before"] is True and r["privInput"] is False
+    assert r["knownInput"] is False and r["knownAfter"] is False
+    assert r["posts"] == [["/rooms/join", {"room": "ninsei:%s@nos.lol" % ROOM_ID}]]
+    assert r["typedInput"] is True and "Private:" in r["typed"]
+    assert "Private:" not in r["pub"] and r["pubInput"] is True      # an invite to a public room is unchanged
+
+
+def test_an_invite_passes_private_through_to_the_join_dialog():
+    assert "props.onJoin(m.code, m.room, m.impostor ? '' : m.name, m.room_name, !!m.private)" in fn(DM, "InviteLine")
+    assert "props.onJoin(i.code, i.room, i.impostor ? '' : i.name, i.room_name, !!i.private)" in fn(DM, "DmInvites")
+    assert "setJoinFrom(from ? { name: from, room: roomName || '', private: !!priv } : null)" in APP
+    assert APP.count("onJoin: (code, room, from, name, priv) => openLink(room, '', code, from, name, priv)") == 2
 
 
 def test_the_sidebar_and_invites_mark_a_private_room():
