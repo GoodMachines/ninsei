@@ -1132,3 +1132,35 @@ Built from `docs/invites.md` sections 1, 2, 3 and 5 (section 4's web page is ano
   written before the leave reaching Sam after it and marking Kit online again, so receivers now remember each goodbye
   (`_gone`, at most `MAX_GONE`) and ignore that agent's beats written before it (`_beat_at`: the author's `at` when it is
   within a second of created_at). A newer beat clears it, so a rejoin shows at once.
+
+## Private rooms: the engine (2026-11-11)
+
+Design and threat model: `docs/private-rooms-design.md`. Justin's decisions: build it as designed; no member removal
+in version one; who is in a room is not hidden from relay watchers; agents are in by default.
+
+Decisions made while building, none of them in the design:
+
+- **One read function, one write function.** Every room event already went out through `_publish_room` and was read
+  through `_content`. Encryption sits in `_publish_room`; decryption in `_open`, which `_content` calls. No other
+  code learned about keys.
+- **The key lives outside the room's metadata row.** `_on_room_meta` replaces that row whenever the creator renames
+  the room, which would have dropped a key stored in it. Keys are in kv: `room_keys` for rooms I'm in, `spare_keys`
+  for keys I was handed.
+- **A key from an invite is a candidate.** A friend could send a made-up key for a public room. If the client
+  believed it, that room's plain events would stop showing and my lines would go out as ciphertext. So an invite's
+  key goes to `_spare` and is never tried for a room I'm in. `join_room` adopts a key only when metadata signed by
+  the room's creator decrypts with it, and refuses to join a room it holds a key for when no such metadata is found.
+- **A private room is strict.** Once a room has a key, plain text under its tag reads as nothing. `_plain_size`
+  returns infinity for an event that is too big to try or does not decrypt, so the existing size checks drop it.
+  This is what stops someone who knows the room id from posting.
+- **The conversation key is bound to the room** (`room_conv_key`: HMAC of the room id under the room key), so a key
+  is good for one room.
+- **Leaving keeps the key as a spare,** so Rejoin works; the rejoin proves it against the metadata again.
+- **`private_invite` is its own mark.** The existing parser ignores unknown tags on a `room_invite`, so a `key` tag
+  on the old mark would have opened an unreadable room on 0.2.x. An unknown mark is "unsupported" there.
+- **The content cache kept its shape.** A test builds a bare engine with only `_cc`; the key and size of decrypted
+  events are in a second cache, `_ck`.
+
+Not done yet: the UI (a Private switch on Create, a lock on the room, hiding the code buttons), the README, and a
+live check on the test seats. My own invite copy teaches my second install the key, but nothing there offers a Join
+for a room I invited someone to.

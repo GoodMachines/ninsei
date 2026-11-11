@@ -13,6 +13,7 @@ import fcntl
 import functools
 import hashlib
 import heapq
+import hmac
 import ipaddress
 import json
 import logging
@@ -287,6 +288,22 @@ def _model_short(v) -> str:
     file path, and a path carries the owner's username and folders. What goes on the wire is this form.
     Split before _model_ok, on both separators: it drops backslashes, which would glue a Windows path together."""
     return _model_ok(re.split(r"[\\/]", v)[-1]) if isinstance(v, str) else ""
+
+
+# Private rooms: every event's content is NIP-44 encrypted under a key only the members hold (see
+# docs/private-rooms-design.md). The ciphertext is capped before anything is decrypted; the limits a public room
+# puts on `content` then apply to the decrypted text.
+ROOM_KEYS_KV = "room_keys"          # {room id: key hex} for the private rooms I'm in
+SPARE_KEYS_KV = "spare_keys"        # {room id: [key hex, ...]} from invites and from rooms I left: proven only at join
+SPARE_KEY_ROOMS = 100               # rooms kept in the spare list (the oldest goes first)
+SPARE_KEYS_PER_ROOM = 4             # keys kept for one room (two friends may each send one; only the creator's opens it)
+PRIVATE_CIPHER_MAX = 90_000         # base64 characters of one encrypted room event (the largest share is about 76,600)
+PRIVATE_LIVE_CIPHER_MAX = 8_000     # and of one encrypted presence beat or claim
+
+
+def room_conv_key(key_hex: str, room: str) -> bytes:
+    """The NIP-44 conversation key for a private room: bound to the room id, so a key is good for one room only."""
+    return hmac.new(bytes.fromhex(key_hex), b"ninsei-private-room:v1:" + room.encode(), hashlib.sha256).digest()
 
 
 def room_id_for(creator_pk: str, nonce: str) -> str:
@@ -770,6 +787,14 @@ class Engine:
         self._build_live: Optional[dict] = None             # the owner's build in progress, from ninsei_hooks
         self._build_mark: Optional[tuple] = None            # the (state, note) we set for it, to undo only ours
         self._cc: dict[str, dict] = {}
+        self._ck: dict[str, tuple] = {}                     # event id -> (room key that decrypted it, size of the text)
+        # private rooms: the key of each one I'm in, and keys I was handed for rooms I'm not in (see _open)
+        self._rkeys: dict[str, str] = {r: k for r, k in (self.store.get(ROOM_KEYS_KV) or {}).items()
+                                       if dm.valid_room_id(r) and dm.valid_room_key(k)}
+        self._spare: dict[str, list[str]] = {r: [k for k in ks if dm.valid_room_key(k)][:SPARE_KEYS_PER_ROOM]
+                                             for r, ks in (self.store.get(SPARE_KEYS_KV) or {}).items()
+                                             if dm.valid_room_id(r) and isinstance(ks, list)}
+        self._conv_keys: dict[tuple, bytes] = {}
         self._opened: dict[tuple, Optional[dict]] = {}     # (fake event id, peer pk) -> open_fake result (bounded)
         self._hidden: set[str] = set(self.store.get("hidden") or {})  # person pks the owner chose to hide
         # their agents' keys as far as we know them, so another host's game can't show them either
@@ -1396,10 +1421,17 @@ class Engine:
         if as_agent:
             content = {"name": s["agent_name"] or "Agent", "face": s["face"], **content}
             tags = self._room_tags(room, [["owner", ident["person_pk"], ident["binding"]]] + (extra_tags or []))
-            ev = nostr.build_event(ident["agent_sk"], kind, json.dumps(content, ensure_ascii=False), tags)
+            sk = ident["agent_sk"]
         else:
             content = {"name": s["display_name"] or "Someone", **content}
-            ev = nostr.build_event(ident["person_sk"], kind, json.dumps(content, ensure_ascii=False), self._room_tags(room, extra_tags))
+            tags, sk = self._room_tags(room, extra_tags), ident["person_sk"]
+        text = json.dumps(content, ensure_ascii=False)
+        key = self._rkeys.get(room)
+        # a private room: only the content changes. Kind, tags and the author's own signature stay, so members
+        # still know who wrote what and nobody without the key can read or forge a line.
+        ev = nostr.build_event(sk, kind, self._seal_room(room, key, text) if key else text, tags)
+        if key:
+            self._cc[ev["id"]], self._ck[ev["id"]] = content, (key, len(text))
         await self._on_event(ev, "local")  # apply locally first so the UI updates at once
         self._queue_event(ev)
         if wait:  # shutdown paths: the send must finish before the loop stops
@@ -1424,20 +1456,120 @@ class Engine:
     # inbound
     # ============================================================================================
     def _content(self, ev: dict) -> dict:
+        hit = self._cc.get(ev.get("id", ""))
+        return hit if hit is not None else self._open(ev)[0]
+
+    def _open(self, ev: dict) -> tuple:
+        """(content, key, size) of an event: its content as a dict ({} when unreadable), the room key that decrypted
+        it (None for plain content) and the size of the text that was parsed. A private room I'm in is strict:
+        only its key is tried, so plain text under its tag reads as nothing. For a room I'm not in, the keys I
+        was handed for it are tried first and plain JSON after: a key from an invite proves nothing until the
+        creator's own metadata opens with it (see join_room)."""
         eid = ev.get("id", "")
+        raw = ev.get("content")
         hit = self._cc.get(eid)
         if hit is not None:
-            return hit
-        try:
-            c = _loads(ev["content"])
-            c = c if isinstance(c, dict) else {}
-        except (ValueError, TypeError):
-            c = {}
+            used, size = self._ck.get(eid) or (None, len(raw) if isinstance(raw, str) else 0)
+            return hit, used, size
+        room, keys, strict = self._keys_for(ev)
+        c, used, size = {}, None, len(raw) if isinstance(raw, str) else 0
+        for k in keys:
+            try:
+                plain = nip44.decrypt(raw, self._conv_key(k, room))
+                obj = _loads(plain)
+            except (nip44.Nip44Error, ValueError, TypeError, RecursionError):
+                continue
+            if isinstance(obj, dict):
+                c, used, size = obj, k, len(plain)
+                break
+        if used is None and not strict:
+            try:
+                c = _loads(raw)
+                c = c if isinstance(c, dict) else {}
+            except (ValueError, TypeError):
+                c = {}
         if eid:
             if len(self._cc) > 20000:
                 self._cc.clear()
+                self._ck.clear()
             self._cc[eid] = c
-        return c
+            if used:
+                self._ck[eid] = (used, size)
+        return c, used, size
+
+    def _keys_for(self, ev: dict) -> tuple:
+        """(room, keys to try, strict) for an event: a room event by its `h` tag, room metadata by its `d` tag."""
+        if ev.get("kind") == KIND_META:
+            d = (nostr.tag_values(ev, "d") or [""])[0]
+            room = d.split("/")[-1] if d.startswith("ninsei/room/") else ""
+        else:
+            room = (nostr.tag_values(ev, "h") or [""])[0]
+        if not isinstance(room, str) or not room:
+            return "", (), False
+        key = self._rkeys.get(room)
+        if key:
+            return room, (key,), True
+        if room in self.events:
+            return room, (), False        # a public room I'm in: a key someone sent for it is never tried
+        return room, tuple(self._spare.get(room) or ()), False
+
+    def _conv_key(self, key: str, room: str) -> bytes:
+        ck = self._conv_keys.get((key, room))
+        if ck is None:
+            if len(self._conv_keys) > 500:
+                self._conv_keys.clear()
+            ck = self._conv_keys[(key, room)] = room_conv_key(key, room)
+        return ck
+
+    def _seal_room(self, room: str, key: str, text: str) -> str:
+        return nip44.encrypt(text, self._conv_key(key, room))
+
+    def _plain_size(self, ev: dict, room: str) -> float:
+        """The size the room's limits apply to: the content's length, or in a private room the decrypted text's.
+        Infinite (so every limit refuses it) for a private room's event that is too big to try or doesn't open."""
+        if room not in self._rkeys:
+            return len(ev["content"])
+        if len(ev["content"]) > (PRIVATE_LIVE_CIPHER_MAX if ev["kind"] == KIND_LIVE else PRIVATE_CIPHER_MAX):
+            return math.inf
+        _c, used, size = self._open(ev)
+        return size if used else math.inf
+
+    def is_private(self, room: str) -> bool:
+        return room in self._rkeys
+
+    def _keyed(self, room: str) -> bool:
+        """True for a private room I'm in, or one I hold an (unproven) key for: how an invite is labelled."""
+        return room in self._rkeys or bool(self._spare.get(room))
+
+    # --- private room keys ----------------------------------------------------------------------
+    def _set_room_key(self, room: str, key: str) -> None:
+        """This is the key of a private room I'm in (made by me, or proven at join by the creator's metadata)."""
+        self._rkeys[room] = key
+        self.store.set(ROOM_KEYS_KV, dict(self._rkeys))
+        if self._spare.pop(room, None) is not None:
+            self.store.set(SPARE_KEYS_KV, dict(self._spare))
+        self._cc.clear()   # anything of this room read before the key was known was read as nothing
+        self._ck.clear()
+
+    def _learn_key(self, room: str, key: str) -> None:
+        """Keep a key someone handed me for a room I'm not in (an invite, or a room I left). It is only a candidate."""
+        if room in self._rkeys or room in self.events or not dm.valid_room_key(key):
+            return
+        keys = [k for k in self._spare.pop(room, []) if k != key]
+        self._spare[room] = ([key] + keys)[:SPARE_KEYS_PER_ROOM]   # newest first; re-inserted, so the room is the newest
+        while len(self._spare) > SPARE_KEY_ROOMS:
+            self._spare.pop(next(iter(self._spare)))
+        self.store.set(SPARE_KEYS_KV, dict(self._spare))
+        self._cc.clear()
+        self._ck.clear()
+
+    def _drop_room_key(self, room: str) -> None:
+        """I left the room: its key becomes a spare, so Rejoin (which proves it again) still works."""
+        key = self._rkeys.pop(room, None)
+        if key is None:
+            return
+        self.store.set(ROOM_KEYS_KV, dict(self._rkeys))
+        self._learn_key(room, key)
 
     def _order(self, ev: dict) -> tuple:
         """Nostr timestamps are whole seconds; the `at` stamp orders events within one second.
@@ -1490,20 +1622,23 @@ class Engine:
             return
         # Size and age come first, before the content is parsed and cached: every byte here is a stranger's.
         if ev["kind"] == KIND_LIVE:
-            if created < now - LIVE_MAX_AGE or len(ev["content"]) > LIVE_MAX_BYTES:
-                return  # a replayed heartbeat or claim (it would keep an absent agent "online"), or a bloated one
+            if created < now - LIVE_MAX_AGE or self._plain_size(ev, room) > LIVE_MAX_BYTES:
+                return  # a replayed heartbeat or claim (it would keep an absent agent "online"), a bloated one,
+                        # or in a private room one that doesn't open with the room's key
             self._on_live(room, ev, self._content(ev))
             return
         if ev["kind"] != KIND_ROOM or ev["id"] in self.events[room]:
             return
-        if len(ev["content"]) > MAX_ROOM_EVENT_BYTES or created < now - HISTORY_DAYS * 86400:
-            return  # too big, or older than the history window (the store would prune it anyway)
-        if ev["id"] in self._trimmed.get(room, ()):
-            return  # a trim already let this one go: a history pull can't put it back
+        if created < now - HISTORY_DAYS * 86400 or ev["id"] in self._trimmed.get(room, ()):
+            return  # older than the history window (the store would prune it anyway), or a trim already let this
+                    # one go: a history pull can't put it back
+        size = self._plain_size(ev, room)
+        if size > MAX_ROOM_EVENT_BYTES:
+            return  # too big; or, in a private room, not written with the room's key: nobody outside can post
         c = self._content(ev)
-        if c.get("t") == "react" and (len(ev["content"]) > MAX_REACT_BYTES or not valid_reaction(c)):
+        if c.get("t") == "react" and (size > MAX_REACT_BYTES or not valid_reaction(c)):
             return  # a reaction is one fixed-size fact; junk is never stored, so it can't fill the room
-        if c.get("t") in ("edit", "delete") and (len(ev["content"]) > MAX_EDIT_BYTES or not valid_edit(c)
+        if c.get("t") in ("edit", "delete") and (size > MAX_EDIT_BYTES or not valid_edit(c)
                                                  or self.owner_of(ev)):
             return  # an edit or delete is malformed, or an agent's (agents never edit or delete): never stored
         self.events[room][ev["id"]] = ev
@@ -3703,14 +3838,32 @@ class Engine:
     def room_name(self, room: str) -> str:
         return self.room_meta(room).get("name") or "a room"
 
-    async def create_room(self, name: str, about: str, interests: list[str]) -> dict:
+    def _meta_event(self, room: str, meta: dict, created_at: Optional[int] = None) -> dict:
+        """The room's signed metadata event. A public room's is plain and tagged for the Lobby. A private room's
+        content is encrypted with the room key and it has no `t` tags: the Lobby and "Browse all" ask by `t`, so
+        they are never sent it, and without the key it fails the creator check everywhere."""
+        key = self._rkeys.get(room)
+        text = json.dumps(meta)
+        if key:
+            content, tags = self._seal_room(room, key, text), [["d", f"ninsei/room/{room}"]]
+        else:
+            content = text
+            tags = [["d", f"ninsei/room/{room}"], ["t", APP_TAG]] + [["t", i] for i in meta["interests"] if i]
+        return nostr.build_event(self._identity()["person_sk"], KIND_META, content, tags, pow_bits=12, created_at=created_at)
+
+    async def create_room(self, name: str, about: str, interests: list[str], private: bool = False) -> dict:
+        """Make a room and join it. `private=True` makes an invite-only room: a fresh 32-byte key encrypts everything
+        in it, its metadata is not listed anywhere, and the only way in is a member's invite (which carries the key)."""
         nonce = secrets.token_hex(8)
         room = room_id_for(self._identity()["person_pk"], nonce)
         meta = {"id": room, "nonce": nonce, "name": _name_ok(name, "New room"), "about": str(about or "")[:200],
-                "interests": [re.sub(r"[^a-z0-9 +#-]", "", str(x).lower()).strip()[:24] for x in interests or []][:8],
+                "interests": [] if private else
+                [re.sub(r"[^a-z0-9 +#-]", "", str(x).lower()).strip()[:24] for x in interests or []][:8],
                 "creator": self._identity()["person_pk"]}
-        tags = [["d", f"ninsei/room/{room}"], ["t", APP_TAG]] + [["t", i] for i in meta["interests"] if i]
-        ev = nostr.build_event(self._identity()["person_sk"], KIND_META, json.dumps(meta), tags, pow_bits=12)
+        if private:
+            meta["private"] = True
+            self._set_room_key(room, secrets.token_hex(32))
+        ev = self._meta_event(room, meta)
         self._queue_event(ev)
         self._spawn(self.pool.publish(ev))
         meta["at"] = ev["created_at"]  # kept so a rename is always newer than this, even inside the same second
@@ -3741,8 +3894,9 @@ class Engine:
         self._pace_click()
         at = max(_now(), int(meta.get("at") or 0) + 1)
         new = {"id": room, "nonce": nonce, "name": name, "about": about, "interests": list(meta.get("interests") or [])[:8], "creator": me}
-        tags = [["d", f"ninsei/room/{room}"], ["t", APP_TAG]] + [["t", i] for i in new["interests"] if i]
-        ev = nostr.build_event(self._identity()["person_sk"], KIND_META, json.dumps(new), tags, pow_bits=12, created_at=at)
+        if room in self._rkeys:
+            new["private"] = True
+        ev = self._meta_event(room, new, created_at=at)
         self._queue_event(ev)
         self._spawn(self.pool.publish(ev))
         self.store.save_room(room, dict(new, at=at))
@@ -3751,13 +3905,18 @@ class Engine:
 
     def _room_meta_from(self, ev: dict, room: str) -> Optional[dict]:
         """The room's metadata from a KIND_META event, only if the room's creator signed it."""
-        c = self._content(ev)
+        c, key, _size = self._open(ev)
         if room_id_for(ev["pubkey"], str(c.get("nonce", ""))) != room:
             return None  # metadata not from the room's creator
         at = ev.get("created_at") if isinstance(ev.get("created_at"), int) else 0
-        return {"id": room, "name": _name_ok(c.get("name"), "Room " + room[:4]), "about": str(c.get("about", ""))[:200],
+        meta = {"id": room, "name": _name_ok(c.get("name"), "Room " + room[:4]), "about": str(c.get("about", ""))[:200],
                 "interests": [str(x)[:24] for x in (c.get("interests") or [])][:8], "creator": ev["pubkey"], "at": at,
                 "nonce": str(c.get("nonce"))[:64]}  # already proven to be the creator's by room_id_for above
+        if key:
+            # The creator encrypted it with this key, so the room is private and the key is the room's. Only the
+            # room's key decrypts to a nonce that commits to the signer: a key someone made up opens nothing.
+            meta["private"] = True
+        return meta
 
     def _on_room_meta(self, ev: dict, src: str = "") -> None:
         d = (nostr.tag_values(ev, "d") or [""])[0]
@@ -3789,10 +3948,18 @@ class Engine:
             # nobody answered: the code isn't "not found", the relays weren't asked (the `rooms` subscription's
             # metadata filter fills the name in once one connects)
             found_meta = not answered
+            key = None
             for ev in found:
                 m = self._room_meta_from(ev, room)
                 if m and m["at"] >= int(meta.get("at") or 0):
-                    meta, found_meta = m, True
+                    meta, found_meta, key = m, True, self._open(ev)[1]
+            if key:
+                self._set_room_key(room, key)   # proven by the creator's metadata; from here the room is private
+            elif room not in self._rkeys and self._spare.get(room) and "creator" not in meta:
+                # I hold a key for this room (an invite, or I left it) and nothing proved it: joining blind would
+                # post encrypted lines into a room the key may not belong to. A private room is joined only once
+                # its creator's metadata opens with the key.
+                raise ValueError("Ninsei couldn't find this private room on your relays yet. Try again in a moment.")
         else:
             found_meta = True
         was_member = room in self.store.rooms()
@@ -3845,6 +4012,7 @@ class Engine:
         self._room_relays.pop(room, None)
         self._joins = [j for j in self._joins if j["room"] != room]
         self.events.pop(room, None)  # first: from here on _publish_room refuses the room, so work in flight can't post
+        self._drop_room_key(room)    # after the last beat (it needed the key); kept as a spare so Rejoin can prove it again
         # what was waiting on this room can't be answered any more: its offers and queued drafts are dropped
         offers = self.store.get("offers") or {}
         dropped = False
@@ -5233,6 +5401,8 @@ class Engine:
         me = self._identity()["person_pk"]
         if mine:
             # my own copy, from my other install: shown here as sent. Only my key can make one.
+            if msg.get("key"):
+                self._learn_key(room, msg["key"])   # so this install can join the private room too
             res = self.store.invite_add(from_pk=me, peer=peer, room=room, relays=relays, at=at, status="sent", now=now,
                                         name=self._room_name_known(room, mine_only=True))
         else:
@@ -5243,6 +5413,10 @@ class Engine:
             if verdict is not None:
                 return verdict
             status = "joined" if room in self.store.rooms() else "new"   # already in it: a line in the conversation, no alert
+            if msg.get("key"):
+                # A friend's private invite: the key is kept as a candidate (never for a room I'm already in) and
+                # is trusted only when the creator's metadata opens with it, at the name lookup and at join.
+                self._learn_key(room, msg["key"])
             res = self.store.invite_add(from_pk=peer, peer=peer, room=room, relays=relays, at=at, status=status, now=now)
         self._dm_handled(wid)
         if res == "added":
@@ -5442,7 +5616,7 @@ class Engine:
             info = book.get(i["peer"]) or {"name": "", "flag": None}
             invites.append({"pk": i["peer"], "name": self._dm_label(i["peer"], info), "impostor": bool(info["flag"]),
                             "room": i["room"], "room_name": self._room_name_known(i["room"]) or "a room", "ts": i["at"],
-                            "code": self._code_of(i["room"], i["relays"])})
+                            "code": self._code_of(i["room"], i["relays"]), "private": self._keyed(i["room"])})
         self._invite_names_ask([i["room"] for i in inv])
         rel = {pk: "friend" for pk in lists["friends"]}
         rel.update({pk: "sent" for pk in lists["sent"]})
@@ -5486,7 +5660,7 @@ class Engine:
                                 "name": "You" if sent else self._dm_label(pk, info), "room": inv["room"],
                                 "room_name": (inv["name"] if sent else "") or self._room_name_known(inv["room"]) or "a room",
                                 "status": inv["status"], "in_room": inv["room"] in self.store.rooms(),
-                                "code": self._code_of(inv["room"], inv["relays"])})
+                                "code": self._code_of(inv["room"], inv["relays"]), "private": self._keyed(inv["room"])})
         for m in rows:
             mine = m["sender"] == ident["person_pk"]
             item = {"id": m["id"], "ts": m["created_at"], "t": "msg", "pk": m["sender"], "role": "person", "mine": mine,
@@ -5880,6 +6054,7 @@ class Engine:
         if meta is not None:
             self._remember_invite_name(room, meta.get("name") or "", meta.get("creator"))   # the same lookup serves an invite to this room
         return {"id": room, "found": meta is not None or a.get("msgs", 0) > 0, "reached": bool(answered),
+                "private": bool((meta or {}).get("private")),
                 "name": (meta or {}).get("name") or "Room " + room[:4], "about": str((meta or {}).get("about") or "")[:200],
                 "interests": [str(x)[:24] for x in ((meta or {}).get("interests") or [])][:8],
                 "msgs": a.get("msgs", 0), "talkers": a.get("talkers", 0), "last": a.get("last", 0)}
@@ -5925,7 +6100,8 @@ class Engine:
 
     async def room_invite(self, room: str, friends: Any) -> dict:
         """Invite friends to a room I'm in: one private invite each (two wraps: theirs and my copy, like a message,
-        and each counts against DM_SEND_PER_MIN), carrying only the room's id and up to 3 of its relay hosts. 1 to
+        and each counts against DM_SEND_PER_MIN), carrying only the room's id and up to 3 of its relay hosts (and,
+        for a private room, its key: the invite is the only way in, and any member can send one). 1 to
         INVITE_FRIENDS_PER_CALL friends a call, friends only, never someone I hid. Nothing is typed into an invite."""
         room = str(room or "").lower()
         meta = self.store.rooms().get(room)
@@ -5952,7 +6128,7 @@ class Engine:
         name = str(meta.get("name") or "")
         for pk in pks:
             now = max(int(time.time()), self.store.dm_deleted_before(pk) + 1)
-            rumor = dm.make_invite_rumor(ident["person_pk"], pk, room, urls, now)
+            rumor = dm.make_invite_rumor(ident["person_pk"], pk, room, urls, now, key=self._rkeys.get(room))
             to_them = dm.wrap_for(ident["person_sk"], pk, rumor)
             to_me = dm.wrap_for(ident["person_sk"], ident["person_pk"], rumor)
             # recorded before it is sent, like any durable event; a second invite to the same room later replaces the line
@@ -6449,7 +6625,7 @@ class Engine:
                           "interests": meta.get("interests", []), "unread": unread, "mentions": mentions,
                           "online": online, "last_read": int(meta.get("last_read") or 0),
                           "muted": bool(prefs.get(rid, {}).get("muted")), "chattiness": prefs.get(rid, {}).get("chattiness", ""),
-                          "mine": meta.get("creator") == ident["person_pk"]})
+                          "mine": meta.get("creator") == ident["person_pk"], "private": rid in self._rkeys})
             if hits:  # the newest unread mention, for an alert: who, where and the start of what they said
                 he, hc = hits[-1]
                 name, owner, who = _name_ok(hc.get("name"), _short(he["pubkey"])), self.owner_of(he), self._who(rid)
@@ -6501,8 +6677,10 @@ class Engine:
         if room and room in self.events:
             members = self.members(room)
             shown, earlier = self.messages_view(room)
-            snap["room"] = {"id": room, **self.room_meta(room), "members": members,
-                            "code": self._room_code(room), "invite_link": INVITE_URL + self._room_code(room)[len("ninsei:"):],
+            private = room in self._rkeys   # no code and no link: the only way into a private room is an invite
+            snap["room"] = {"id": room, **self.room_meta(room), "members": members, "private": private,
+                            "code": "" if private else self._room_code(room),
+                            "invite_link": "" if private else INVITE_URL + self._room_code(room)[len("ninsei:"):],
                             "messages": shown, "earlier": earlier, "game": self._game_to_show(room),
                             "start_error": self._start_error_view(room),
                             "typing": self.typing_view(room)}

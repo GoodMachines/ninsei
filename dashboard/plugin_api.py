@@ -93,6 +93,7 @@ class RoomIn(BaseModel):
     name: str = ""
     about: str = ""
     interests: list[str] = []
+    private: bool = False   # an invite-only, encrypted room (docs/private-rooms-design.md)
 
 
 class RoomRef(BaseModel):
@@ -279,7 +280,7 @@ async def people_unhide(body: PersonRef):
 @router.post("/rooms")
 async def create_room(body: RoomIn):
     eng = await _engine()
-    return await _run(eng.create_room, body.name, body.about, body.interests)
+    return await _run(eng.create_room, body.name, body.about, body.interests, body.private)
 
 
 @router.post("/rooms/join")
