@@ -50,6 +50,9 @@ FRIEND_ACCEPT = "friend_accept"
 FRIEND_REMOVE = "friend_remove"
 FRIEND_TYPES = (FRIEND_REQUEST, FRIEND_ACCEPT, FRIEND_REMOVE)
 ROOM_INVITE = "room_invite"  # "come to this room": not a friend event (the friend state machine never sees it) and not text
+# The same invite for a private room: it also carries the room's key. A mark of its own, so an older Ninsei (which
+# knows only `room_invite`) calls it unsupported and never opens a room it cannot read.
+PRIVATE_INVITE = "private_invite"
 TEXT = "text"                # a message's `type` when it is not one of the above
 
 UNSUPPORTED = "unsupported"  # a valid message of a kind or shape Ninsei doesn't show (group chats, files, reactions)
@@ -81,16 +84,27 @@ def make_rumor(sender_pk: str, peer_pk: str, text: str, now: Optional[int] = Non
     return rumor
 
 
-def make_invite_rumor(sender_pk: str, peer_pk: str, room: str, relays: list[str], now: Optional[int] = None) -> dict:
+def valid_room_key(key: Any) -> bool:
+    """A private room's key: 32 bytes as 64 lowercase hex characters."""
+    return isinstance(key, str) and len(key) == 64 and key.isascii() and all(c in "0123456789abcdef" for c in key)
+
+
+def make_invite_rumor(sender_pk: str, peer_pk: str, room: str, relays: list[str], now: Optional[int] = None,
+                      key: Optional[str] = None) -> dict:
     """The unsigned kind 14 room invite: EMPTY content, the `ninsei` tag, the room's id and up to MAX_CODE_HOSTS relay
-    addresses. Nothing the sender typed goes in: not the room's name, not a note."""
+    addresses. Nothing the sender typed goes in: not the room's name, not a note. With `key` (a private room) the
+    mark is `private_invite` and one `key` tag carries the room's key; the wrap hides it from everyone but the
+    receiver."""
     if not valid_room_id(room):
         raise ValueError("not a room id")
+    if key is not None and not valid_room_key(key):
+        raise ValueError("not a room key")
     urls = codes.clean_relay_tags([["relay", u] for u in relays])
     if urls is None:
         raise ValueError("not a relay list")
     rumor = {"pubkey": sender_pk, "created_at": int(now if now is not None else time.time()), "kind": KIND_RUMOR,
-             "tags": [["p", peer_pk], ["ninsei", ROOM_INVITE], ["h", room]] + [["relay", u] for u in urls], "content": ""}
+             "tags": [["p", peer_pk], ["ninsei", PRIVATE_INVITE if key else ROOM_INVITE], ["h", room]]
+                     + [["relay", u] for u in urls] + ([["key", key]] if key else []), "content": ""}
     rumor["id"] = nostr.event_id(rumor)
     return rumor
 
@@ -185,10 +199,10 @@ def unwrap(my_sk: str, my_pk: str, wrap: Any,
         kind = TEXT
         extra: dict = {}
         if marks:
-            if len(marks) != 1 or len(marks[0]) != 2 or marks[0][1] not in FRIEND_TYPES + (ROOM_INVITE,):
+            if len(marks) != 1 or len(marks[0]) != 2 or marks[0][1] not in FRIEND_TYPES + (ROOM_INVITE, PRIVATE_INVITE):
                 return UNSUPPORTED, None
             kind = marks[0][1]
-            if kind == ROOM_INVITE:
+            if kind in (ROOM_INVITE, PRIVATE_INVITE):
                 # One room id and at most MAX_CODE_HOSTS relay hosts, checked here; whatever else the tags carry is
                 # ignored. A malformed one is garbage: it is never half-read, and no free text can get in.
                 rooms = [t for t in rumor["tags"] if t and t[0] == "h"]
@@ -196,6 +210,14 @@ def unwrap(my_sk: str, my_pk: str, wrap: Any,
                 if len(rooms) != 1 or len(rooms[0]) != 2 or not valid_room_id(rooms[0][1]) or relays is None:
                     return GARBAGE, None
                 extra = {"room": rooms[0][1], "relays": relays}
+                if kind == PRIVATE_INVITE:
+                    # exactly one well-formed key, or the whole invite is garbage. To the engine it is a room
+                    # invite that happens to have a key: the same gate, the same storage.
+                    keys = [t for t in rumor["tags"] if t and t[0] == "key"]
+                    if len(keys) != 1 or len(keys[0]) != 2 or not valid_room_key(keys[0][1]):
+                        return GARBAGE, None
+                    extra["key"] = keys[0][1]
+                    kind = ROOM_INVITE
         else:
             if len(rumor["content"]) > MAX_TEXT:
                 return OVERSIZE, None

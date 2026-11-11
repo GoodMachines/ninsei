@@ -72,7 +72,7 @@ function App(props) {
   const switchingRef = useRef(false)
   switchingRef.current = switching
   const [joinFor, setJoinFor] = useState('')
-  const [joinFrom, setJoinFrom] = useState(null)   // { name, room }: the Join dialog was opened by this friend's invite
+  const [joinFrom, setJoinFrom] = useState(null)   // { name, room, private }: the Join dialog was opened by this friend's invite
   const [inviteFor, setInviteFor] = useState(null)   // { pk, name }: pick a room to invite this friend to
   const rootRef = useRef(null)
   const live = useRef(false)
@@ -100,9 +100,9 @@ function App(props) {
   const openDm = pk => { store.setDm(pk); go('dm') }
   // a `ninsei:` link in a message: a room you are in opens (at the message, if it names one); any other opens the Join dialog
   // `code` is the link as written (it may name relays: the Join preview lists the ones you don't use yet)
-  const openLink = (room, event, code, from, roomName) => {
+  const openLink = (room, event, code, from, roomName, priv) => {
     const joined = ((store.get().snap || {}).rooms || []).some(r => r.id === room)
-    if (!joined) { setJoinFrom(from ? { name: from, room: roomName || '' } : null); setJoinFor(code || room + (event ? '#' + event : '')); return }
+    if (!joined) { setJoinFrom(from ? { name: from, room: roomName || '', private: !!priv } : null); setJoinFor(code || room + (event ? '#' + event : '')); return }
     if (event) wantJump(room, event)
     store.setRoom(room); go('room')
   }
@@ -137,8 +137,8 @@ function App(props) {
     let center
     const dmPk = store.dm()
     if (view === 'hermes') center = jsx(LineView, { store, snap })
-    else if (view === 'dm') center = dmPk === DM_REQUESTS ? jsx(DmRequests, { store, snap }) : dmPk === DM_INVITES ? jsx(DmInvites, { store, snap, onJoin: (code, room, from, name) => openLink(room, '', code, from, name) })
-      : dmPk ? jsx(DmView, { store, snap, pk: dmPk, onPeople: togglePeople, onInvite: (pk, name) => setInviteFor({ pk, name }), onJoin: (code, room, from, name) => openLink(room, '', code, from, name) }, dmPk) : jsx(DmEmpty, { snap })
+    else if (view === 'dm') center = dmPk === DM_REQUESTS ? jsx(DmRequests, { store, snap }) : dmPk === DM_INVITES ? jsx(DmInvites, { store, snap, onJoin: (code, room, from, name, priv) => openLink(room, '', code, from, name, priv) })
+      : dmPk ? jsx(DmView, { store, snap, pk: dmPk, onPeople: togglePeople, onInvite: (pk, name) => setInviteFor({ pk, name }), onJoin: (code, room, from, name, priv) => openLink(room, '', code, from, name, priv) }, dmPk) : jsx(DmEmpty, { snap })
     else if (view === 'settings') center = jsx('div', { className: 'h-scroll', children: jsxs('div', { className: 'h-pane', children: [jsx('h1', { children: 'Settings' }, 'h'), jsx(SettingsForm, { store, snap, inset: true }, 's')] }) })
     else if (showRoom && room) center = jsx(RoomView, { store, snap, room, onPeople: togglePeople }, room.id)
     else if (showRoom) center = jsx('div', { className: 'h-empty', children: 'Opening the room…' })
@@ -302,7 +302,8 @@ function Rail(props) {
       (snap.rooms || []).length === 0 && jsx('div', { className: 'h-faint h-small', style: { padding: '2px 8px' }, children: 'No rooms yet.' }),
       (snap.rooms || []).map(r => jsxs('button', { type: 'button', className: 'h-navrow', 'data-on': view === 'room' && roomId === r.id,
         'aria-current': view === 'room' && roomId === r.id ? 'page' : undefined, onClick: () => open(r.id), children: [
-          jsx('span', { className: 'h-hash', children: '#' }),
+          r.private ? jsx('span', { className: 'h-hash', role: 'img', 'aria-label': 'Private room', children: jsx(K.Icon, { name: 'lock', size: 11 }) })
+            : jsx('span', { className: 'h-hash', children: '#' }),
           jsx('span', { className: 'h-grow h-trunc', style: { fontWeight: r.unread && !r.muted ? 600 : 400, opacity: r.muted ? 0.65 : 1 }, children: r.name }),
           r.muted && jsx(K.Tip, { label: 'Muted', children: jsx('span', { className: 'h-faint', role: 'img', 'aria-label': 'Muted', children: jsx(K.Icon, { name: 'bell-slash', size: 12 }) }) }),
           (drafts[r.id] || waiting[r.id]) && jsx(K.Tip, { label: waiting[r.id] ? 'Your agent is waiting on you' : 'Draft waiting to send', children: jsx(K.Icon, { name: waiting[r.id] ? 'clock' : 'edit', size: 12 }) }),
@@ -332,12 +333,18 @@ function NewRoomDialog(props) {
   const [about, setAbout] = useState('')
   const [interests, setInterests] = useState(() => (snap.settings.interests || []).slice(0, 3))
   const [busy, setBusy] = useState(false)
+  // A private room is invite-only and encrypted: it has no interests, because it is never listed anywhere.
+  const [priv, setPriv] = useState(false)
   const create = async () => {
     setBusy(true)
-    try { const meta = await store.post('/rooms', { name, about, interests }, 'Room created'); props.onDone(meta.id) } catch (_) { setBusy(false) }
+    try {
+      const meta = await store.post('/rooms', { name, about, interests: priv ? [] : interests, private: priv }, priv ? 'Private room created' : 'Room created')
+      props.onDone(meta.id)
+    } catch (_) { setBusy(false) }
   }
   return jsx(Modal, { open: true, onClose: props.onClose, title: 'New room',
-    description: 'Rooms are public: they are listed in the Lobby under their interests, and anyone with the code can join.',
+    description: priv ? 'A private room is not listed anywhere. Only people a member invites can enter it or read it.'
+      : 'Rooms are public: they are listed in the Lobby under their interests, and anyone with the code can join.',
     footer: [
       // the footer says why Create waits, next to it (and tied to it for screen readers)
       !name.trim() && jsx('span', { id: 'h-nr-need', className: 'h-faint h-small', children: 'Name the room to create it.' }, 'n'),
@@ -348,7 +355,9 @@ function NewRoomDialog(props) {
     children: jsxs('div', { className: 'h-col', style: { gap: 12 }, children: [
       jsx(Field, { label: 'Name', id: 'h-nr-name', children: jsx(K.Input, { id: 'h-nr-name', value: name, maxLength: 40, autoFocus: true, placeholder: 'shader club', onChange: e => setName(e.target.value) }) }),
       jsx(Field, { label: 'What it is about', id: 'h-nr-about', children: jsx(K.Input, { id: 'h-nr-about', value: about, maxLength: 200, placeholder: 'pixels, shaders, glitch art', onChange: e => setAbout(e.target.value) }) }),
-      jsx(Field, { label: 'Interests', id: 'h-nr-int', children: jsx(InterestInput, { id: 'h-nr-int', value: interests, onChange: setInterests }) })
+      !priv && jsx(Field, { label: 'Interests', id: 'h-nr-int', children: jsx(InterestInput, { id: 'h-nr-int', value: interests, onChange: setInterests }) }),
+      jsx(K.Toggle, { checked: priv, onChange: v => setPriv(!!v), label: 'Private room',
+        description: 'Invite-only and encrypted. Members’ agents can read it too, and what an agent reads goes to its owner’s model provider. Anyone can still see who posts in it and when, but not what is said.' })
     ] }) })
 }
 
@@ -408,12 +417,16 @@ function JoinDialog(props) {
     d.about && jsx('div', { className: 'h-muted h-small', children: cleanSnippet(d.about, 200) }),
     (d.interests || []).length > 0 && jsx(Chips, { items: d.interests.map(t => cleanSnippet(t, 24)) }),
     jsx('div', { className: 'h-faint h-small', children: previewActivity(d) }),
+    d.private && jsxs('div', { className: 'h-row h-small', style: { gap: 6 }, 'data-preview-private': true, children: [jsx(K.Icon, { name: 'lock', size: 12 }),
+      'Private: only invited people can enter or read it. Members’ agents can read it too.'] }),
     joined && jsx('div', { className: 'h-faint h-small', children: 'You are already in this room.' })
   ] })
   else if (d) body = jsx('div', { className: 'h-faint h-small', role: 'status', 'data-preview': 'none', children: d.reached === false
     ? 'Couldn’t reach your relays. Check your connection, then try again.' : 'Nothing on your relays for this code.' })
   // opened by a friend's invite (and the code not changed since): say whose
   const from = props.from && code === props.initial ? props.from : null
+  // a private room has no code: an invite to one shows the room, not a code to read or change
+  const noCode = !!from && (from.private || !!(d && d.private))
   return jsx(Modal, { open: true, onClose: props.onClose,
     title: from ? cleanSnippet(from.name, 32) + ' invited you to ' + (cleanSnippet(from.room, 40) || 'a room') : 'Join by code',
     description: from ? 'This is what the room looks like on your relays. Nothing joins until you press Join.' : 'Paste a code like ninsei:203f22bcfd1b4b2f, or a link to a message in a room.',
@@ -424,7 +437,7 @@ function JoinDialog(props) {
         children: busy ? 'Joining…' : joined ? 'Open' : 'Join' }, 'j')
     ],
     children: jsxs('div', { className: 'h-col', style: { gap: 12 }, children: [
-      jsx(K.Input, { value: code, autoFocus: true, placeholder: 'ninsei:…', 'aria-label': 'Room code', onChange: e => setCode(e.target.value),
+      !noCode && jsx(K.Input, { value: code, autoFocus: true, placeholder: 'ninsei:…', 'aria-label': 'Room code', onChange: e => setCode(e.target.value),
         onKeyDown: e => { if (e.key === 'Enter' && code.trim() && !busy) join() } }),
       body,
       also.length > 0 && jsxs('div', { className: 'h-row', style: { gap: 8, justifyContent: 'space-between', flexWrap: 'wrap' }, 'data-also': true, children: [
@@ -454,7 +467,8 @@ function InviteToRoomDialog(props) {
     children: jsx('div', { className: 'h-list', role: 'group', 'aria-label': 'Your rooms', style: { maxHeight: 280, overflowY: 'auto' }, children: rooms.length === 0
       ? jsx('div', { className: 'h-faint h-small', children: 'You aren’t in any rooms yet.' })
       : rooms.map(r => jsxs('button', { type: 'button', className: 'h-navrow', disabled: !!busy, onClick: () => send(r), children: [
-        jsx('span', { className: 'h-hash', children: '#' }),
+        r.private ? jsx('span', { className: 'h-hash', role: 'img', 'aria-label': 'Private room', children: jsx(K.Icon, { name: 'lock', size: 11 }) })
+          : jsx('span', { className: 'h-hash', children: '#' }),
         jsx('span', { className: 'h-grow h-trunc', children: r.name }),
         busy === r.id && jsx('span', { className: 'h-faint h-small', children: 'Sending…' })
       ] }, r.id)) }) })

@@ -196,7 +196,7 @@ async def test_a_friends_invite_is_stored_and_shown_with_who_and_which_room_and_
     befriend(e, k)
     assert await e._dm_process(invite_wrap(e, k, relays=["wss://nos.lol", "wss://relay.damus.io"])) == dm.OK
     [inv] = e.dm_summary()["invites"]
-    assert set(inv) == {"pk", "name", "impostor", "room", "room_name", "ts", "code"}
+    assert set(inv) == {"pk", "name", "impostor", "room", "room_name", "ts", "code", "private"} and inv["private"] is False
     assert (inv["pk"], inv["room"], inv["room_name"], inv["impostor"]) == (k.ppk, OTHER, "a room", False)
     assert inv["code"] == f"ninsei:{OTHER}@nos.lol,relay.damus.io"                 # what the Join preview reads its hosts from
     row = e.store.invite_get(k.ppk, k.ppk, OTHER)
@@ -600,7 +600,8 @@ async def test_a_preview_reads_the_creators_metadata_and_a_days_activity_and_cha
     assert out["interests"] == ["demoscene", "chiptune"] and (out["msgs"], out["talkers"]) == (4, 1) and out["last"] >= int(time.time()) - 700
     assert out["joined"] is False and out["reached"] is True
     assert out["unknown_relays"] == ["wss://relay.damus.io"] or out["unknown_relays"] == []      # nos.lol is a default relay
-    assert set(out) == {"id", "found", "name", "about", "interests", "msgs", "talkers", "last", "joined", "unknown_relays", "reached"}
+    assert set(out) == {"id", "found", "name", "about", "interests", "msgs", "talkers", "last", "joined", "unknown_relays", "reached", "private"}
+    assert out["private"] is False
     # no join, no subscription kept, nothing published, no relay setting touched, nothing stored
     assert e.pool.sent == [] and e.pool.subs == [] and room not in e.store.rooms() and room not in e.events
     assert (json.dumps(e.store.rooms(), sort_keys=True), e.settings()["relays"], dict(e.events), e.store.get("settings")) == before

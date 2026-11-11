@@ -1157,3 +1157,71 @@ Two bugs in `RelayPool` turned that into a stuck message:
 
 Not changed: the default relay list. Two of the five were down and two more were not answering writes from this Mac,
 so the list needs a look (see the private-rooms hosting discussion).
+
+## Private rooms: the engine (2026-11-11)
+
+Design and threat model: `docs/private-rooms-design.md`. Justin's decisions: build it as designed; no member removal
+in version one; who is in a room is not hidden from relay watchers; agents are in by default.
+
+Decisions made while building, none of them in the design:
+
+- **One read function, one write function.** Every room event already went out through `_publish_room` and was read
+  through `_content`. Encryption sits in `_publish_room`; decryption in `_open`, which `_content` calls. No other
+  code learned about keys.
+- **The key lives outside the room's metadata row.** `_on_room_meta` replaces that row whenever the creator renames
+  the room, which would have dropped a key stored in it. Keys are in kv: `room_keys` for rooms I'm in, `spare_keys`
+  for keys I was handed.
+- **A key from an invite is a candidate.** A friend could send a made-up key for a public room. If the client
+  believed it, that room's plain events would stop showing and my lines would go out as ciphertext. So an invite's
+  key goes to `_spare` and is never tried for a room I'm in. `join_room` adopts a key only when metadata signed by
+  the room's creator decrypts with it, and refuses to join a room it holds a key for when no such metadata is found.
+- **A private room is strict.** Once a room has a key, plain text under its tag reads as nothing. `_plain_size`
+  returns infinity for an event that is too big to try or does not decrypt, so the existing size checks drop it.
+  This is what stops someone who knows the room id from posting.
+- **The conversation key is bound to the room** (`room_conv_key`: HMAC of the room id under the room key), so a key
+  is good for one room.
+- **Leaving keeps the key as a spare,** so Rejoin works; the rejoin proves it against the metadata again.
+- **`private_invite` is its own mark.** The existing parser ignores unknown tags on a `room_invite`, so a `key` tag
+  on the old mark would have opened an unreadable room on 0.2.x. An unknown mark is "unsupported" there.
+- **The content cache kept its shape.** A test builds a bare engine with only `_cc`; the key and size of decrypted
+  events are in a second cache, `_ck`.
+
+- **An invite reads "private" only once that is proven.** A background security review of the first commit caught
+  this: the invite row was labelled private whenever I held any key for the room, so a friend's made-up key for a
+  public room produced an invite that said "private". The label now needs the creator's metadata to have opened
+  with a key I hold (`_proven`, set in `_room_meta_from`). Joining a room whose creator's metadata is plain drops
+  the keys I was sent for it.
+
+## Private rooms: the page (2026-11-11)
+
+- New room has a "Private room" switch. Turning it on hides Interests (a private room is never listed) and changes
+  the dialog's description. The switch's own text says the two things people would otherwise assume wrong: members'
+  agents read the room and send what they read to their owner's model provider, and who posts and when stays
+  visible.
+- A private room shows a lock and "Private" in its header and a lock in the sidebar. Share code is gone from the
+  header, the empty-room panel and the Games menu; `copyRoomCode` refuses with a line pointing at Invite.
+- The Join preview and invite lines say a room is private, from the engine's proven flag.
+- The Invite dialog says "They need the newest Ninsei to see it" and names no version: the version is bumped at
+  release, which is Justin's call.
+
+Still open: my own invite copy teaches my second install the key, but nothing there offers a Join for a room I
+invited someone to.
+
+## Private rooms: live check on the test seats (2026-11-11)
+
+Two dashboards (`xeniamaya` on 9311, `xeniasam` on 9312) against `tests/local_relay.py` on 7447, both seats' relay
+lists pointed at it for the run and put back to the five defaults afterwards.
+
+- Maya made a private room from New room, said one line and invited Sam. Sam's Invites list showed it as a private
+  room from Maya, the Join preview carried the private line, and after Join he read the line Maya wrote before he
+  came. The members list showed both people and both agents.
+- The relay held 7 events: five kind 4242, one kind 30078, one kind 1059. None of the six room events parsed as
+  JSON, the room's name and the words of the message appeared nowhere in the relay's data, and the metadata event
+  had no `t` tags.
+- Both seats left the room after the check. The room's key stays in each seat's spare keys, as it would for anyone
+  who leaves.
+- Found by looking: the Join dialog for the invite still showed the code field holding `ninsei:<room id>`, though
+  a private room has no code. Fixed in the same branch: an invite passes `private` through to the dialog, and the
+  dialog shows no code field for an invite to a private room (known from the invite at once, or from the preview
+  when the invite did not say). A code typed by hand keeps its field. Join still sends the invite's code.
+- The React switch ignored the browser tool's `form_input`; a real click worked. Nothing wrong with the switch.
